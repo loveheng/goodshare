@@ -3,19 +3,26 @@ import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
+import '../ai/capabilities.dart';
 import '../data/repository.dart';
 import '../models/item.dart';
 import '../share/attachments.dart';
 import '../share/text_collector.dart';
 
 /// FAB 速记（设计 §4.6）：新建文本 / 录音 / 拍照，MVP 语义为「先存下来」——
-/// 录音存 audio 原始条目、拍照存 image 条目并入 ocr 队列；「转待办 / OCR 增强」
-/// 随 V2 端侧能力解锁（F3 决策）。文本走 TextCollector（与分享同路径、同合并模式）。
+/// 录音存 audio 原始条目、拍照存 image 条目并入 ocr 队列；文本走 TextCollector
+/// （与分享同路径、同合并模式）。录音端侧转写受设置开关与本机能力门控（D7）。
 class QuickNoteSheet extends StatefulWidget {
-  const QuickNoteSheet({super.key, required this.repo, required this.collector});
+  const QuickNoteSheet({
+    super.key,
+    required this.repo,
+    required this.collector,
+    required this.caps,
+  });
 
   final Repository repo;
   final TextCollector collector;
+  final AiCapabilities caps;
 
   @override
   State<QuickNoteSheet> createState() => _QuickNoteSheetState();
@@ -102,29 +109,38 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
         _recording = true;
         _transcript = '';
       });
-      // 端侧转写（D7：仅请求 onDevice；不支持则明示回退，仅保存音频）。
+      // 端侧转写：受设置开关与本机检测门控（D7：仅请求 onDevice，不支持则明示仅存音频）。
       // Android 系统语音识别只支持实时流，故转写与录音同步进行。
-      try {
-        final ready = await _stt.initialize();
-        if (!ready) throw StateError('unavailable');
-        await _stt.listen(
-          onResult: (r) {
-            if (r.recognizedWords.isNotEmpty) {
-              setState(() => _transcript = r.recognizedWords);
-            }
-          },
-          listenOptions: SpeechListenOptions(
-            onDevice: true,
-            cancelOnError: true,
-            partialResults: true,
-            listenMode: ListenMode.dictation,
-          ),
-        );
-        setState(() => _sttUnavailable = false);
-      } catch (e) {
-        debugPrint('[QuickNote] STT on-device unavailable: $e');
+      final sttAllowed =
+          widget.caps.sttEnabled && widget.caps.sttAvailable != false;
+      if (!sttAllowed) {
         setState(() => _sttUnavailable = true);
-        _snack('本机不支持端侧语音转写，仅保存音频');
+        _snack(widget.caps.sttEnabled
+            ? '本机不支持端侧语音转写，仅保存音频'
+            : '转写已在设置中关闭，仅保存音频');
+      } else {
+        try {
+          final ready = await _stt.initialize();
+          if (!ready) throw StateError('unavailable');
+          await _stt.listen(
+            onResult: (r) {
+              if (r.recognizedWords.isNotEmpty) {
+                setState(() => _transcript = r.recognizedWords);
+              }
+            },
+            listenOptions: SpeechListenOptions(
+              onDevice: true,
+              cancelOnError: true,
+              partialResults: true,
+              listenMode: ListenMode.dictation,
+            ),
+          );
+          setState(() => _sttUnavailable = false);
+        } catch (e) {
+          debugPrint('[QuickNote] STT on-device unavailable: $e');
+          setState(() => _sttUnavailable = true);
+          _snack('本机不支持端侧语音转写，仅保存音频');
+        }
       }
     } catch (e) {
       _snack('录音启动失败：$e');

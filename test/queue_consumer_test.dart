@@ -149,6 +149,27 @@ void main() {
     expect(await repo.pendingTasks(), isEmpty);
   });
 
+  test('OCR 开关门控：关闭后图片走占位复制（2026-09-27 决策）', () async {
+    final img = await repo.add(InboxItem(
+      itemType: InboxItem.typeImage,
+      sourceType: InboxItem.typeImage,
+      rawContent: '图片附带的文字',
+      rawFilePath: '/tmp/whatever.jpg',
+      createdAt: 3,
+    ));
+    await repo.enqueueTask(img.id!, Repository.taskOcrAndExtract);
+    await QueueConsumer(
+      repo,
+      ReconstructorRegistry([
+        OcrReconstructor(isOcrEnabled: () => false),
+        const PlaceholderReconstructor(),
+      ]),
+    ).pollOnce();
+    final after = await repo.byId(img.id!);
+    expect(after!.humanMd, '图片附带的文字', reason: '开关关闭 → 占位行为，不触发 OCR');
+    expect(after.isProcessed, 1);
+  });
+
   test('已删条目竞态兜底：任务置 cancelled，条目不被写入', () async {
     final it = await repo.add(InboxItem(
       itemType: InboxItem.typeNote,

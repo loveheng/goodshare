@@ -49,36 +49,42 @@ jobs:
       - name: 单测（全过交付线）
         run: flutter test
 
-      # 整包 release（debug 签名）；如需瘦身可加 --split-per-abi（待办评估中）
-      - name: 构建 Release APK
-        run: flutter build apk --release
+      # 整包（自更新兜底/其他设备）+ 分架构精简包（arm64 机型装 app-arm64-v8a）
+      - name: 构建 Release APK（整包 + 分架构）
+        run: |
+          flutter build apk --release
+          flutter build apk --release --split-per-abi
 
       - name: 计算校验和
         run: |
-          SHA=$(sha256sum build/app/outputs/flutter-apk/app-release.apk | cut -d' ' -f1)
-          echo "apk_sha256=$SHA" >> "$GITHUB_OUTPUT"
-          echo "### APK sha256" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "$SHA" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-        id: checksum
+          cd build/app/outputs/flutter-apk
+          sha256sum *.apk | tee sha256sums.txt
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: app-release-${{ github.sha }}
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+            build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+            build/app/outputs/flutter-apk/app-x86_64-release.apk
+            build/app/outputs/flutter-apk/sha256sums.txt
           if-no-files-found: error
 
       - name: 发布 Release（仅 v* 标签）
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: build/app/outputs/flutter-apk/app-release.apk
+          files: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+            build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+            build/app/outputs/flutter-apk/app-x86_64-release.apk
+            build/app/outputs/flutter-apk/sha256sums.txt
           body: |
             拾贝 ${{ github.ref_name }}（debug 签名，个人使用）
 
-            APK sha256:
-            ```
-            ${{ steps.checksum.outputs.apk_sha256 }}
-            ```
+            - arm64 手机（主流机型）装 `app-arm64-v8a-release.apk`（精简）
+            - `app-release.apk` 为全架构整包（自更新兜底）
+            - 各包 sha256 见 `sha256sums.txt`

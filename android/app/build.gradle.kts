@@ -37,8 +37,16 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
+}
+
+dependencies {
+    // ML Kit 中文脚本识别器：google_mlkit_text_recognition 插件仅自带 latin 脚本依赖，
+    // 其余脚本需 app 侧手动引入（否则 R8 minify 报 missing class）。
+    // 走 GMS unbundled 变体：模型由 Play 服务按需下载（标准设备优先，2026-09-27 决策）。
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition-chinese:16.0.0")
 }
 
 kotlin {

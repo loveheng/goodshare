@@ -13,6 +13,18 @@ void main() {
     Db.overridePath(inMemoryDatabasePath);
   });
 
+  setUp(() async {
+    // 清空上例残留（内存库按测试文件共享）：Vault 内外全部软删后物理清理
+    final repo = Repository();
+    for (final it in await repo.list(vault: true, includeDeleted: true)) {
+      await repo.softDelete(it.id!);
+    }
+    for (final it in await repo.list(includeDeleted: true)) {
+      await repo.softDelete(it.id!);
+    }
+    await repo.purgeAllDeleted();
+  });
+
   test('入库生成 uuid，默认查询排除 Vault 与已删', () async {
     final repo = Repository();
     final a = await repo.add(
@@ -77,6 +89,20 @@ void main() {
     expect(purged, 1);
     expect((await repo.listDeleted()), isEmpty);
     expect(await repo.byId(it.id!, includeDeleted: true), isNull);
+  });
+
+  test('deleteForever 立即物理删除回收站条目', () async {
+    final repo = Repository();
+    final it = await repo.add(
+      InboxItem(itemType: InboxItem.typeNote, rawContent: '手动彻底删除', createdAt: 1),
+    );
+    await repo.softDelete(it.id!);
+    expect((await repo.listDeleted()).length, 1);
+
+    await repo.deleteForever(it.id!);
+    expect((await repo.listDeleted()), isEmpty);
+    expect(await repo.byId(it.id!, includeDeleted: true), isNull);
+    expect(await repo.count(), 0);
   });
 
   test('update 按列写回，byId 反映新值', () async {

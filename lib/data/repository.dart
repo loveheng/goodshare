@@ -176,6 +176,25 @@ class Repository extends ChangeNotifier {
     return rows.length;
   }
 
+  /// 立即彻底删除单条已删条目（含附件），不保留恢复窗口（最近删除页手动操作）。
+  Future<void> deleteForever(String id) async {
+    final item = await byId(id, includeDeleted: true, includeVault: true);
+    if (item == null) return;
+    final f = item.rawFilePath;
+    if (f != null && f.isNotEmpty) {
+      try {
+        final file = File(f);
+        if (await file.exists()) await file.delete();
+      } catch (_) {/* 附件可能已不存在，忽略 */}
+    }
+    final db = await _database();
+    await db.delete('inbox_items', where: 'id = ?', whereArgs: [id]);
+    notifyListeners();
+  }
+
+  /// 清空回收站（立即物理删除全部已删条目）。
+  Future<void> purgeAllDeleted() => purgeDeleted(retention: Duration.zero);
+
   /// 入队后台 AI 任务（摄入与 reprocess 共用）。task_action 可空＝按 item_type 通用重构。
   Future<void> enqueueTask(String itemId, String? taskAction) async {
     final db = await _database();

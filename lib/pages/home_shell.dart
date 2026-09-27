@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../action/item_action_handler.dart';
+import '../ai/capabilities.dart';
 import '../data/repository.dart';
 import '../share/text_collector.dart';
 import '../service/mcp_controller.dart';
@@ -20,12 +21,14 @@ class HomeShell extends StatefulWidget {
     required this.handler,
     required this.collector,
     required this.mcp,
+    required this.caps,
   });
 
   final Repository repo;
   final ItemActionHandler handler;
   final TextCollector collector;
   final McpController mcp;
+  final AiCapabilities caps;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
@@ -40,9 +43,9 @@ class _HomeShellState extends State<HomeShell> {
     VaultPage(repo: widget.repo, handler: widget.handler),
     SettingsPage(
       repo: widget.repo,
+      caps: widget.caps,
       collector: widget.collector,
       mcp: widget.mcp,
-      onCollectorChanged: () => setState(() {}),
     ),
   ];
 
@@ -75,7 +78,11 @@ class _HomeShellState extends State<HomeShell> {
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
-      builder: (_) => QuickNoteSheet(repo: widget.repo, collector: widget.collector),
+      builder: (_) => QuickNoteSheet(
+        repo: widget.repo,
+        collector: widget.collector,
+        caps: widget.caps,
+      ),
     );
   }
 }

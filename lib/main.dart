@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'action/item_action_handler.dart';
+import 'ai/capabilities.dart';
 import 'ai/ocr_reconstructor.dart';
 import 'ai/queue_consumer.dart';
 import 'ai/reconstructor.dart';
@@ -20,17 +21,30 @@ Future<void> main() async {
   await repo.purgeDeleted();
   final collector = TextCollector(repo);
   await collector.load();
+  final caps = AiCapabilities();
+  await caps.load();
+  // 本机能力检测：首次执行后持久化，此后不再检测
+  await caps.ensureDetected();
   final handler = ItemActionHandler(repo);
   final mcp = McpController(repo: repo);
   await mcp.load();
   await RemoteConfigStore.instance.load();
   await ShareIntake(repo, collector).init();
-  // AI 队列消费者：v1 = 图片 ML Kit OCR + 其余占位复制；V2 经 Registry 换系统模型实现
+  // AI 队列消费者：v1 = 图片 ML Kit OCR（受设置开关门控）+ 其余占位复制
   QueueConsumer(
     repo,
-    ReconstructorRegistry([const OcrReconstructor(), const PlaceholderReconstructor()]),
+    ReconstructorRegistry([
+      OcrReconstructor(isOcrEnabled: () => caps.ocrEnabled),
+      const PlaceholderReconstructor(),
+    ]),
   ).start();
-  runApp(GoodShareApp(repo: repo, handler: handler, collector: collector, mcp: mcp));
+  runApp(GoodShareApp(
+    repo: repo,
+    handler: handler,
+    collector: collector,
+    mcp: mcp,
+    caps: caps,
+  ));
 }
 
 class GoodShareApp extends StatelessWidget {
@@ -40,12 +54,14 @@ class GoodShareApp extends StatelessWidget {
     required this.handler,
     required this.collector,
     required this.mcp,
+    required this.caps,
   });
 
   final Repository repo;
   final ItemActionHandler handler;
   final TextCollector collector;
   final McpController mcp;
+  final AiCapabilities caps;
 
   @override
   Widget build(BuildContext context) {
@@ -64,7 +80,13 @@ class GoodShareApp extends StatelessWidget {
         ),
       ),
       themeMode: ThemeMode.system,
-      home: HomeShell(repo: repo, handler: handler, collector: collector, mcp: mcp),
+      home: HomeShell(
+        repo: repo,
+        handler: handler,
+        collector: collector,
+        mcp: mcp,
+        caps: caps,
+      ),
     );
   }
 }
