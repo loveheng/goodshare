@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'ai/queue_consumer.dart';
+import 'ai/reconstructor.dart';
 import 'data/db.dart';
 import 'data/repository.dart';
 import 'pages/list_page.dart';
@@ -19,6 +21,8 @@ Future<void> main() async {
   await mcp.load();
   await RemoteConfigStore.instance.load();
   await ShareIntake(repo, collector).init();
+  // AI 队列消费者：v1 占位管线（raw 原样入 human_md），V2 经 Registry 换系统模型实现
+  QueueConsumer(repo, ReconstructorRegistry.defaultRegistry()).start();
   runApp(GoodShareApp(repo: repo, mcp: mcp));
 }
 

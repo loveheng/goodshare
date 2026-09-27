@@ -187,6 +187,24 @@ class Repository extends ChangeNotifier {
     );
   }
 
+  /// 认领任务：pending → processing。返回是否认领成功（已取消/已认领则否）。
+  Future<bool> claimTask(String taskId) async {
+    final db = await _database();
+    final n = await db.update(
+      'ai_task_queue',
+      {'status': 'processing'},
+      where: 'task_id = ? AND status = ?',
+      whereArgs: [taskId, 'pending'],
+    );
+    return n > 0;
+  }
+
+  /// 结束任务：completed / failed / cancelled。
+  Future<void> finishTask(String taskId, String status) async {
+    final db = await _database();
+    await db.update('ai_task_queue', {'status': status}, where: 'task_id = ?', whereArgs: [taskId]);
+  }
+
   /// 合并模式的追加候选：最近的 merge 条目（同来源、公开、未删），窗口过滤由调用方按末段时间做。
   Future<List<InboxItem>> recentMergeItems({String? sourceApp, int limit = 5}) async {
     final db = await _database();
