@@ -153,13 +153,14 @@ class Repository extends ChangeNotifier {
 
   /// 物理清理超过保留期的已删条目，一并删除本 app 复制落盘的附件。
   /// 返回清理条数；返回 0 时不广播（例行任务常态）。
+  /// 注意比较用 <=：retention 为 0 时 cutoff 与清理时间同毫秒，< 会漏删同毫秒条目（CI 实测 flake）。
   Future<int> purgeDeleted({Duration retention = const Duration(days: 30)}) async {
     final db = await _database();
     final cutoff = DateTime.now().subtract(retention).millisecondsSinceEpoch;
     final rows = await db.query(
       'inbox_items',
       columns: ['id', 'raw_file_path'],
-      where: 'is_deleted = 1 AND deleted_at IS NOT NULL AND deleted_at < ?',
+      where: 'is_deleted = 1 AND deleted_at IS NOT NULL AND deleted_at <= ?',
       whereArgs: [cutoff],
     );
     for (final r in rows) {

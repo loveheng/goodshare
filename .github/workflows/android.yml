@@ -49,16 +49,15 @@ jobs:
       - name: 单测（全过交付线）
         run: flutter test
 
-      # 整包（自更新兜底/其他设备）+ 分架构精简包（arm64 机型装 app-arm64-v8a）
-      - name: 构建 Release APK（整包 + 分架构）
-        run: |
-          flutter build apk --release
-          flutter build apk --release --split-per-abi
+      # 只构建 arm64-v8a 单架构（2026-09-27 决策：个人 arm64 设备用，体积最小；
+      # 产物仍命名 app-release.apk，自更新流程零改动）
+      - name: 构建 Release APK（arm64）
+        run: flutter build apk --release --target-platform android-arm64
 
       - name: 计算校验和
         run: |
           cd build/app/outputs/flutter-apk
-          sha256sum *.apk | tee sha256sums.txt
+          sha256sum app-release.apk | tee sha256sums.txt
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
@@ -66,9 +65,6 @@ jobs:
           name: app-release-${{ github.sha }}
           path: |
             build/app/outputs/flutter-apk/app-release.apk
-            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
-            build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
-            build/app/outputs/flutter-apk/app-x86_64-release.apk
             build/app/outputs/flutter-apk/sha256sums.txt
           if-no-files-found: error
 
@@ -78,13 +74,6 @@ jobs:
         with:
           files: |
             build/app/outputs/flutter-apk/app-release.apk
-            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
-            build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
-            build/app/outputs/flutter-apk/app-x86_64-release.apk
             build/app/outputs/flutter-apk/sha256sums.txt
           body: |
-            拾贝 ${{ github.ref_name }}（debug 签名，个人使用）
-
-            - arm64 手机（主流机型）装 `app-arm64-v8a-release.apk`（精简）
-            - `app-release.apk` 为全架构整包（自更新兜底）
-            - 各包 sha256 见 `sha256sums.txt`
+            拾贝 ${{ github.ref_name }}（debug 签名，个人使用，仅 arm64-v8a）
