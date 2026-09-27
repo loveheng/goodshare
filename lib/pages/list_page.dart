@@ -12,6 +12,7 @@ import 'mcp_page.dart';
 import 'update_page.dart';
 
 /// 收集列表主页：搜索 + 列表 + 详情。
+/// MVP 轻量版；5 tab 导航与模板化详情在步骤 6 重构为此形态。
 class ListPage extends StatefulWidget {
   const ListPage({super.key, required this.repo, required this.mcp});
 
@@ -25,7 +26,7 @@ class ListPage extends StatefulWidget {
 class _ListPageState extends State<ListPage> {
   final _searchCtrl = TextEditingController();
   Timer? _debounce;
-  List<CollectItem> _items = [];
+  List<InboxItem> _items = [];
   bool _loading = true;
 
   @override
@@ -57,7 +58,7 @@ class _ListPageState extends State<ListPage> {
     _debounce = Timer(const Duration(milliseconds: 300), _reload);
   }
 
-  void _openDetail(CollectItem item) {
+  void _openDetail(InboxItem item) {
     showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -67,11 +68,12 @@ class _ListPageState extends State<ListPage> {
   }
 
   IconData _typeIcon(String type) => switch (type) {
-        CollectItem.typeLink => Icons.link,
-        CollectItem.typeImage => Icons.image_outlined,
-        CollectItem.typeVideo => Icons.movie_outlined,
-        CollectItem.typeAudio => Icons.audiotrack,
-        CollectItem.typeFile => Icons.insert_drive_file_outlined,
+        InboxItem.typeUrl => Icons.link,
+        InboxItem.typeImage => Icons.image_outlined,
+        InboxItem.typeVideo => Icons.movie_outlined,
+        InboxItem.typeAudio => Icons.audiotrack,
+        InboxItem.typeChatlog => Icons.forum_outlined,
+        InboxItem.typeDocument => Icons.insert_drive_file_outlined,
         _ => Icons.notes,
       };
 
@@ -155,7 +157,7 @@ class _ListPageState extends State<ListPage> {
                     itemBuilder: (context, i) {
                       final it = _items[i];
                       return ListTile(
-                        leading: Icon(_typeIcon(it.type)),
+                        leading: Icon(_typeIcon(it.itemType)),
                         title: Text(
                           it.preview.isEmpty ? '（无文本内容）' : it.preview,
                           maxLines: 2,
@@ -166,7 +168,7 @@ class _ListPageState extends State<ListPage> {
                             if (it.sourceApp?.isNotEmpty ?? false) it.sourceApp!,
                             _timeLabel(it.createdAt),
                             if (it.tags.isNotEmpty) '#${it.tags.join(' #')}',
-                            if (it.hasAttachment) '📎${it.files.length}',
+                            if (it.hasAttachment) '📎',
                           ].join(' · '),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
@@ -184,7 +186,7 @@ class _DetailSheet extends StatelessWidget {
   const _DetailSheet({required this.repo, required this.item, required this.onChanged});
 
   final Repository repo;
-  final CollectItem item;
+  final InboxItem item;
   final Future<void> Function() onChanged;
 
   Future<void> _delete(BuildContext context) async {
@@ -192,6 +194,7 @@ class _DetailSheet extends StatelessWidget {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('删除这条收集？'),
+        content: const Text('删除后 30 天内可在「最近删除」恢复。'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
           FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('删除')),
@@ -199,7 +202,7 @@ class _DetailSheet extends StatelessWidget {
       ),
     );
     if (ok == true) {
-      await repo.delete(item.id!);
+      await repo.softDelete(item.id!);
       if (context.mounted) Navigator.pop(context);
       await onChanged();
     }
@@ -208,9 +211,9 @@ class _DetailSheet extends StatelessWidget {
   Future<void> _reshare(BuildContext context) async {
     await SharePlus.instance.share(
       ShareParams(
-        text: item.text,
-        title: item.title,
-        files: [for (final f in item.files) XFile(f)],
+        text: item.bodyText.isEmpty ? null : item.bodyText,
+        title: item.humanTitle,
+        files: [if (item.hasAttachment) XFile(item.rawFilePath!)],
       ),
     );
   }
@@ -219,8 +222,7 @@ class _DetailSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     final meta = [
       if (item.sourceApp?.isNotEmpty ?? false) '来源：${item.sourceApp}',
-      if (item.sourcePackage?.isNotEmpty ?? false) item.sourcePackage!,
-      if (item.mime?.isNotEmpty ?? false) item.mime!,
+      if (item.sourceType != item.itemType && item.sourceType != null) '原类型：${item.sourceType}',
       if (item.tags.isNotEmpty) '标签：${item.tags.join('、')}',
     ].join(' · ');
 
@@ -232,29 +234,42 @@ class _DetailSheet extends StatelessWidget {
         controller: scrollCtrl,
         padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
         children: [
-          if (item.title?.isNotEmpty ?? false)
+          if (item.humanTldr?.isNotEmpty ?? false)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
-              child: Text(item.title!, style: Theme.of(context).textTheme.titleLarge),
+              child: Text(item.humanTldr!,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.primary,
+                      )),
+            ),
+          if (item.humanTitle?.isNotEmpty ?? false)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(item.humanTitle!, style: Theme.of(context).textTheme.titleLarge),
             ),
           if (meta.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(bottom: 12),
               child: Text(meta, style: Theme.of(context).textTheme.bodySmall),
             ),
-          if (item.text?.isNotEmpty ?? false)
-            SelectableText(item.text!, style: const TextStyle(height: 1.5)),
-          for (final f in item.files)
+          if (item.bodyText.isNotEmpty)
+            SelectableText(item.bodyText, style: const TextStyle(height: 1.5))
+          else
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text('暂无人类态（基础模式）', style: Theme.of(context).textTheme.bodySmall),
+            ),
+          if (item.hasAttachment)
             Padding(
               padding: const EdgeInsets.only(top: 12),
               child: item.isImage
                   ? ClipRRect(
                       borderRadius: BorderRadius.circular(12),
-                      child: Image.file(File(f), fit: BoxFit.contain),
+                      child: Image.file(File(item.rawFilePath!), fit: BoxFit.contain),
                     )
                   : ListTile(
                       leading: const Icon(Icons.attach_file),
-                      title: Text(f.split('/').last),
+                      title: Text(item.rawFilePath!.split('/').last),
                     ),
             ),
           const SizedBox(height: 20),
@@ -263,7 +278,7 @@ class _DetailSheet extends StatelessWidget {
             children: [
               OutlinedButton.icon(
                 onPressed: () {
-                  Clipboard.setData(ClipboardData(text: item.text ?? item.title ?? ''));
+                  Clipboard.setData(ClipboardData(text: item.bodyText.isEmpty ? (item.humanTitle ?? '') : item.bodyText));
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已复制')));
                 },
                 icon: const Icon(Icons.copy),

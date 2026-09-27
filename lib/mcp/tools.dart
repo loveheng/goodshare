@@ -5,22 +5,24 @@ import '../data/repository.dart';
 import '../models/item.dart';
 import 'jsonrpc.dart';
 
-/// MCP 工具集 v1：list_items / get_item / add_item。
+/// MCP 工具集：list_items / get_item / add_item（§7 工具族第一步，后续步骤扩展）。
 /// 返回 MCP content 块列表（text / image）。
+/// 隐私硬约束由 Repository 默认查询保证：Vault 与已删条目物理不可见。
 List<Map<String, Object?>> toolSchemas() => [
       {
         'name': 'list_items',
         'description':
             '列出或搜索「拾贝」收集器里的条目（用户日常分享收集的文本、链接、图片等）。'
-                '支持关键词搜索（命中标题/正文/标签）与按类型过滤，按时间倒序分页。',
+                '支持关键词搜索（命中标题/正文/标签）与按类型过滤，按时间倒序分页。'
+                'Vault 私密条目与已删条目永远不可见。',
         'inputSchema': {
           'type': 'object',
           'properties': {
             'query': {'type': 'string', 'description': '关键词，留空列出最近条目'},
             'type': {
               'type': 'string',
-              'enum': ['TEXT', 'LINK', 'IMAGE', 'VIDEO', 'AUDIO', 'FILE'],
-              'description': '按类型过滤，可省略',
+              'enum': InboxItem.allTypes,
+              'description': '按 item_type 过滤，可省略',
             },
             'limit': {'type': 'integer', 'default': 20, 'maximum': 100},
             'offset': {'type': 'integer', 'default': 0},
@@ -29,11 +31,11 @@ List<Map<String, Object?>> toolSchemas() => [
       },
       {
         'name': 'get_item',
-        'description': '读取单个收集条目的完整内容；图片条目会返回 base64 图像内容块。',
+        'description': '读取单个收集条目的完整内容（原文 + 人类态/机器态）；图片条目会返回 base64 图像内容块。',
         'inputSchema': {
           'type': 'object',
           'properties': {
-            'id': {'type': 'integer', 'description': '条目 id（list_items 返回）'},
+            'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
           },
           'required': ['id'],
         },
@@ -85,44 +87,48 @@ Future<List<Map<String, Object?>>> callTool(
             for (final it in items)
               {
                 'id': it.id,
-                'type': it.type,
-                'title': it.title,
+                'type': it.itemType,
+                'title': it.humanTitle,
                 'preview': it.preview,
                 'tags': it.tags,
-                'source': it.sourceApp ?? it.sourcePackage,
+                'source': it.sourceApp,
                 'createdAt': DateTime.fromMillisecondsSinceEpoch(it.createdAt).toIso8601String(),
-                if (it.hasAttachment) 'attachments': it.files.length,
+                if (it.hasAttachment) 'attachments': 1,
               },
           ],
         })),
       ];
 
     case 'get_item':
-      final id = args['id'] is int ? args['id'] as int : int.tryParse('${args['id']}');
-      if (id == null) throw McpRpcError(errInvalidParams, '参数 id 必须是整数');
-      final it = await repo.byId(id);
+      final id = args['id'] is String ? args['id'] as String : '${args['id']}';
+      if (id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      final it = await repo.byId(id); // 默认排除 Vault 与已删条目
       if (it == null) throw McpRpcError(errInvalidParams, '条目不存在: id=$id');
       final blocks = <Map<String, Object?>>[
         _text(jsonEncode({
           'id': it.id,
-          'type': it.type,
-          'title': it.title,
-          'text': it.text,
+          'type': it.itemType,
+          'title': it.humanTitle,
+          'tldr': it.humanTldr,
+          'text': it.bodyText,
+          'machine_json': it.machineJson == null ? null : jsonDecode(it.machineJson!),
           'tags': it.tags,
-          'source': {'package': it.sourcePackage, 'app': it.sourceApp},
+          'source': {'app': it.sourceApp, 'type': it.sourceType},
           'createdAt': DateTime.fromMillisecondsSinceEpoch(it.createdAt).toIso8601String(),
-          'files': it.files,
+          'file': it.rawFilePath,
         })),
       ];
-      for (final f in it.files) {
+      final f = it.rawFilePath;
+      if (f != null && f.isNotEmpty) {
         final file = File(f);
-        if (!await file.exists()) continue;
-        final mime = it.mime ?? _mimeOf(f);
-        if (mime.startsWith('image/') && await file.length() <= 4 * 1024 * 1024) {
-          final b64 = base64Encode(await file.readAsBytes());
-          blocks.add({'type': 'image', 'data': b64, 'mimeType': mime});
-        } else {
-          blocks.add(_text('[附件] $f（$mime，未内联）'));
+        if (await file.exists()) {
+          final mime = _mimeOf(f);
+          if (mime.startsWith('image/') && await file.length() <= 4 * 1024 * 1024) {
+            final b64 = base64Encode(await file.readAsBytes());
+            blocks.add({'type': 'image', 'data': b64, 'mimeType': mime});
+          } else {
+            blocks.add(_text('[附件] $f（$mime，未内联）'));
+          }
         }
       }
       return blocks;
@@ -134,15 +140,16 @@ Future<List<Map<String, Object?>>> callTool(
       }
       final tags = (args['tags'] as List?)?.whereType<String>().toList() ?? const [];
       final type = _detectType(content.trim());
-      final id = await repo.add(CollectItem(
-        type: type,
-        title: args['title'] is String ? args['title'] as String : null,
-        text: content.trim(),
+      final saved = await repo.add(InboxItem(
+        itemType: type,
+        sourceType: type,
+        humanTitle: args['title'] is String ? args['title'] as String : null,
+        rawContent: content.trim(),
         sourceApp: 'MCP (AI 写入)',
         tags: tags,
         createdAt: DateTime.now().millisecondsSinceEpoch,
       ));
-      return [_text('已收集：id=$id, type=$type')];
+      return [_text('已收集：id=${saved.id}, type=$type')];
 
     default:
       throw McpRpcError(errInvalidParams, 'Unknown tool: $name');
@@ -150,7 +157,7 @@ Future<List<Map<String, Object?>>> callTool(
 }
 
 String _detectType(String content) =>
-    RegExp(r'^https?://\S+$').hasMatch(content) ? CollectItem.typeLink : CollectItem.typeText;
+    RegExp(r'^https?://\S+$').hasMatch(content) ? InboxItem.typeUrl : InboxItem.typeNote;
 
 String _mimeOf(String path) {
   final ext = path.split('.').last.toLowerCase();

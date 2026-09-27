@@ -7,8 +7,10 @@ import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 import '../data/repository.dart';
 import '../models/item.dart';
 
-/// 系统分享入口：把 receive_sharing_intent 的事件归一成 CollectItem 落库。
+/// 系统分享入口：把 receive_sharing_intent 的事件归一成 InboxItem 落库。
 /// 附件会复制到 app 私有目录（documents/shares/），不依赖源 app 的 content URI。
+/// 分层约定：文本/链接写 raw_content，附件写 raw_file_path（每附件一条）；
+/// human_* 由 AI 队列占位管线填充，此处只入原始层。
 class ShareIntake {
   ShareIntake(this._repo);
 
@@ -39,37 +41,29 @@ class ShareIntake {
     _busy = true;
     try {
       final (texts, files) = classify(medias);
+      final now = DateTime.now().millisecondsSinceEpoch;
 
-      if (files.isNotEmpty) {
-        final local = <String>[];
-        String? mime;
-        bool allImage = true;
-        for (final f in files) {
-          final saved = await _copyToAppDir(f.path, f.mimeType);
-          if (saved != null) local.add(saved);
-          mime ??= f.mimeType;
-          if (f.type != SharedMediaType.image) allImage = false;
-        }
-        if (local.isNotEmpty) {
-          await _repo.add(CollectItem(
-            type: allImage ? CollectItem.typeImage : (files.length == 1 ? _typeOfMedia(files.first) : CollectItem.typeFile),
-            title: _baseName(files.first.path),
-            text: texts.isNotEmpty ? texts.join('\n') : null,
-            mime: mime,
-            tags: const [],
-            files: local,
-            createdAt: DateTime.now().millisecondsSinceEpoch,
-          ));
-        }
+      for (final f in files) {
+        final saved = await _copyToAppDir(f.path, f.mimeType);
+        if (saved == null) continue; // 源文件失效，丢弃该附件
+        final t = _typeOfMedia(f);
+        await _repo.add(InboxItem(
+          itemType: t,
+          sourceType: t,
+          humanTitle: _baseName(f.path),
+          rawFilePath: saved,
+          createdAt: now,
+        ));
       }
 
       for (final t in texts) {
         final parsed = parseText(t);
-        await _repo.add(CollectItem(
-          type: parsed.type,
-          title: parsed.title,
-          text: parsed.text,
-          createdAt: DateTime.now().millisecondsSinceEpoch,
+        await _repo.add(InboxItem(
+          itemType: parsed.type,
+          sourceType: parsed.type,
+          humanTitle: parsed.title,
+          rawContent: parsed.text,
+          createdAt: now,
         ));
       }
     } catch (e) {
@@ -104,20 +98,20 @@ class ShareIntake {
   }
 
   /// 文本/链接归一：
-  /// - 纯 URL → LINK
-  /// - 「标题\nURL」→ LINK，首行作标题
-  /// - 其余 → TEXT
+  /// - 纯 URL → url
+  /// - 「标题\nURL」→ url，首行作标题
+  /// - 其余 → note
   ({String type, String? title, String text}) parseText(String raw) {
     final urlRe = RegExp(r'https?://\S+', caseSensitive: false);
     final match = urlRe.firstMatch(raw);
     if (match == null) {
-      return (type: CollectItem.typeText, title: _firstLine(raw), text: raw);
+      return (type: InboxItem.typeNote, title: _firstLine(raw), text: raw);
     }
     final url = match.group(0)!;
     final around = raw.replaceFirst(url, '').trim();
     final isPureUrl = around.isEmpty && raw.trim() == url;
     return (
-      type: CollectItem.typeLink,
+      type: InboxItem.typeUrl,
       title: isPureUrl ? null : (around.isEmpty ? null : around.split('\n').first.trim()),
       text: raw,
     );
@@ -129,11 +123,11 @@ class ShareIntake {
   }
 
   String _typeOfMedia(SharedMediaFile m) => switch (m.type) {
-        SharedMediaType.image => CollectItem.typeImage,
-        SharedMediaType.video => CollectItem.typeVideo,
-        SharedMediaType.file => CollectItem.typeFile,
-        SharedMediaType.url => CollectItem.typeLink,
-        SharedMediaType.text => CollectItem.typeText,
+        SharedMediaType.image => InboxItem.typeImage,
+        SharedMediaType.video => InboxItem.typeVideo,
+        SharedMediaType.file => InboxItem.typeDocument,
+        SharedMediaType.url => InboxItem.typeUrl,
+        SharedMediaType.text => InboxItem.typeNote,
       };
 
   /// 复制到 app 私有目录；返回落盘路径，失败返回 null（源文件失效时不让整条分享丢失）。

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:goodshare/data/db.dart';
 import 'package:goodshare/data/repository.dart';
 import 'package:goodshare/mcp/jsonrpc.dart';
 import 'package:goodshare/mcp/mcp_server.dart';
@@ -17,9 +18,10 @@ Map<String, Object?> errorOf(Map<String, Object?>? body) =>
 
 void main() {
   setUpAll(() {
-    // VM 单测用 ffi 数据库工厂
+    // VM 单测用 ffi 数据库工厂；内存库做 isolate 级隔离（套件并行不互踩）
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
+    Db.overridePath(inMemoryDatabasePath);
   });
 
   Future<({McpServer server, HttpClient client, String base})> spinUp({String? token}) async {
@@ -126,11 +128,11 @@ void main() {
 
   test('文本归一：纯链接 / 标题+链接 / 纯文本', () {
     final intake = ShareIntake(Repository());
-    expect(intake.parseText('https://a.b/c').type, 'LINK');
+    expect(intake.parseText('https://a.b/c').type, 'url');
     final t2 = intake.parseText('一篇好文章\nhttps://a.b/c');
-    expect(t2.type, 'LINK');
+    expect(t2.type, 'url');
     expect(t2.title, '一篇好文章');
-    expect(intake.parseText('随手记点什么').type, 'TEXT');
+    expect(intake.parseText('随手记点什么').type, 'note');
   });
 
   test('分享分类：插件 1.9.0 文本在 path 字段（message 为 null）', () {
