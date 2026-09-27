@@ -20,6 +20,15 @@ class Repository extends ChangeNotifier {
   static const taskSummarizeUrl = 'summarize_url';
   static const taskTranscribeAudio = 'transcribe_audio';
 
+  /// item_type → 默认队列动作；note/document 无专属动作返回 null（消费者按类型通用重构）。
+  static String? taskActionFor(String itemType) => switch (itemType) {
+        InboxItem.typeUrl => taskSummarizeUrl,
+        InboxItem.typeImage => taskOcrAndExtract,
+        InboxItem.typeChatlog => taskParseChatlog,
+        InboxItem.typeAudio => taskTranscribeAudio,
+        _ => null,
+      };
+
   /// 入库；id 为空时生成 uuid。返回带 id 的完整条目。
   Future<InboxItem> add(InboxItem item) async {
     final db = await _database();
@@ -176,6 +185,19 @@ class Repository extends ChangeNotifier {
       orderBy: 'rowid',
       limit: limit,
     );
+  }
+
+  /// 合并模式的追加候选：最近的 merge 条目（同来源、公开、未删），窗口过滤由调用方按末段时间做。
+  Future<List<InboxItem>> recentMergeItems({String? sourceApp, int limit = 5}) async {
+    final db = await _database();
+    final rows = await db.query(
+      'inbox_items',
+      where: "collect_mode = 'merge' AND is_deleted = 0 AND is_vault = 0 AND source_app IS ?",
+      whereArgs: [sourceApp],
+      orderBy: 'created_at DESC, rowid DESC',
+      limit: limit,
+    );
+    return rows.map(InboxItem.fromMap).toList();
   }
 
   (String, List<Object?>) _filters({

@@ -74,11 +74,12 @@ class ItemActionHandler {
   }
 
   /// 重新处理（= UI「重新处理」/ MCP reprocess_item）：重置处理态并入队。
-  /// task_action 按类型映射；note/document 无专属动作时置 null，由队列消费者按 item_type 通用重构。
+  /// task_action 按类型映射（Repository.taskActionFor）；note/document 无专属动作时置 null，
+  /// 由队列消费者按 item_type 通用重构。
   Future<void> reprocess(String id, {bool vaultContext = false}) async {
     final item = await _require(id, vaultContext: vaultContext);
     await _repo.update(id, {'is_processed': 0});
-    await _repo.enqueueTask(id, _taskActionFor(item.itemType));
+    await _repo.enqueueTask(id, Repository.taskActionFor(item.itemType));
   }
 
   /// 解除合并项编辑锁（= MCP unlock_edit）：edit_locked→0，随后 edit 方可写入。单向，不重锁。
@@ -86,14 +87,6 @@ class ItemActionHandler {
     await _require(id, vaultContext: vaultContext);
     await _repo.update(id, {'edit_locked': 0});
   }
-
-  String? _taskActionFor(String itemType) => switch (itemType) {
-        InboxItem.typeUrl => Repository.taskSummarizeUrl,
-        InboxItem.typeImage => Repository.taskOcrAndExtract,
-        InboxItem.typeChatlog => Repository.taskParseChatlog,
-        InboxItem.typeAudio => Repository.taskTranscribeAudio,
-        _ => null, // note / document：通用重构，消费者按 item_type 处理
-      };
 
   /// 重分类白名单校验。返回 null 表示允许，否则为拒绝原因。
   String? _reclassifyError(InboxItem item, String to) {

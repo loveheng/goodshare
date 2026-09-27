@@ -5,6 +5,7 @@ import 'data/repository.dart';
 import 'pages/list_page.dart';
 import 'service/mcp_controller.dart';
 import 'share/share_intake.dart';
+import 'share/text_collector.dart';
 import 'update/remote_config_store.dart';
 
 Future<void> main() async {
@@ -12,10 +13,12 @@ Future<void> main() async {
   final repo = Repository();
   // 预热数据库，避免首页先闪空态
   await Db.instance();
+  final collector = TextCollector(repo);
+  await collector.load();
   final mcp = McpController(repo: repo);
   await mcp.load();
   await RemoteConfigStore.instance.load();
-  await ShareIntake(repo).init();
+  await ShareIntake(repo, collector).init();
   runApp(GoodShareApp(repo: repo, mcp: mcp));
 }
 

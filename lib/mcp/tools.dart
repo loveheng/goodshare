@@ -149,6 +149,8 @@ Future<List<Map<String, Object?>>> callTool(
         tags: tags,
         createdAt: DateTime.now().millisecondsSinceEpoch,
       ));
+      // 入库即入队（PRD 模块二）；add_item 不参与合并模式（F6 决策），永远独立成条
+      await repo.enqueueTask(saved.id!, Repository.taskActionFor(type));
       return [_text('已收集：id=${saved.id}, type=$type')];
 
     default:

@@ -149,7 +149,7 @@ CREATE VIRTUAL TABLE search_index USING fts5(
 |---|---|---|
 | 系统级 Share 接收 URL / 图片 / 文件 / TXT 聊天记录 | **MVP** | `receive_sharing_intent` 已依赖，需补接收→写 `raw_content`→入队逻辑 |
 | 剪贴板智能嗅探 | V2 | 唤醒时校验剪贴板，过滤乱码，高价值 URL 弹窗捕获 |
-| 文本收集模式（合并 / 分散，默认分散） | **MVP** | 分散：每次收集 1 条；合并：**同一来源 App + 5 分钟内**的连续文本收集追加为 1 条并附 `appendix_json`，`edit_locked=1`，需 解除编辑 方可改；MCP `add_item` 不参与合并（详见 §5.3 / 设计 §4.9） |
+| 文本收集模式（合并 / 分散，默认分散） | **MVP** | 分散：每次收集 1 条；合并：**同一来源 App + 5 分钟内**的连续文本收集追加为 1 条并附 `appendix_json`，`edit_locked=1`，需 解除编辑 方可改；**纯 URL 段不参与合并**（独立成条供 `summarize_url` 处理）；MCP `add_item` 不参与合并（详见 §5.3 / 设计 §4.9） |
 | 锁屏/桌面小组件（录音转待办 / 相机 OCR） | V3 | `home_widget` |
 | 静默抓取 Health / 日历 | V3 | `health` + `device_calendar` → 写 `daily_metrics` |
 

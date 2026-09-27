@@ -6,15 +6,18 @@ import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 
 import '../data/repository.dart';
 import '../models/item.dart';
+import 'text_collector.dart';
+import 'text_parse.dart';
 
 /// 系统分享入口：把 receive_sharing_intent 的事件归一成 InboxItem 落库。
 /// 附件会复制到 app 私有目录（documents/shares/），不依赖源 app 的 content URI。
-/// 分层约定：文本/链接写 raw_content，附件写 raw_file_path（每附件一条）；
-/// human_* 由 AI 队列占位管线填充，此处只入原始层。
+/// 分层约定：文本/链接写 raw_content（经 TextCollector 支持合并模式），附件写
+/// raw_file_path（每附件一条）；human_* 由 AI 队列占位管线填充，此处只入原始层并入队。
 class ShareIntake {
-  ShareIntake(this._repo);
+  ShareIntake(this._repo, this._collector);
 
   final Repository _repo;
+  final TextCollector _collector;
   bool _busy = false;
 
   Future<void> init() async {
@@ -47,24 +50,19 @@ class ShareIntake {
         final saved = await _copyToAppDir(f.path, f.mimeType);
         if (saved == null) continue; // 源文件失效，丢弃该附件
         final t = _typeOfMedia(f);
-        await _repo.add(InboxItem(
+        final item = await _repo.add(InboxItem(
           itemType: t,
           sourceType: t,
           humanTitle: _baseName(f.path),
           rawFilePath: saved,
           createdAt: now,
         ));
+        await _repo.enqueueTask(item.id!, Repository.taskActionFor(t));
       }
 
       for (final t in texts) {
-        final parsed = parseText(t);
-        await _repo.add(InboxItem(
-          itemType: parsed.type,
-          sourceType: parsed.type,
-          humanTitle: parsed.title,
-          rawContent: parsed.text,
-          createdAt: now,
-        ));
+        // 文本走 TextCollector：分散/合并模式与入队在其内统一处理
+        await _collector.collectText(t);
       }
     } catch (e) {
       debugPrint('[ShareIntake] handle error: $e');
@@ -97,30 +95,8 @@ class ShareIntake {
     return (texts, files);
   }
 
-  /// 文本/链接归一：
-  /// - 纯 URL → url
-  /// - 「标题\nURL」→ url，首行作标题
-  /// - 其余 → note
-  ({String type, String? title, String text}) parseText(String raw) {
-    final urlRe = RegExp(r'https?://\S+', caseSensitive: false);
-    final match = urlRe.firstMatch(raw);
-    if (match == null) {
-      return (type: InboxItem.typeNote, title: _firstLine(raw), text: raw);
-    }
-    final url = match.group(0)!;
-    final around = raw.replaceFirst(url, '').trim();
-    final isPureUrl = around.isEmpty && raw.trim() == url;
-    return (
-      type: InboxItem.typeUrl,
-      title: isPureUrl ? null : (around.isEmpty ? null : around.split('\n').first.trim()),
-      text: raw,
-    );
-  }
-
-  String? _firstLine(String s) {
-    final line = s.trim().split('\n').first.trim();
-    return line.isEmpty ? null : (line.length > 80 ? '${line.substring(0, 80)}…' : line);
-  }
+  /// 文本/链接归一（薄委托，供既有测试使用；实现见 text_parse.dart）。
+  ({String type, String? title, String text}) parseText(String raw) => parseCollectedText(raw);
 
   String _typeOfMedia(SharedMediaFile m) => switch (m.type) {
         SharedMediaType.image => InboxItem.typeImage,

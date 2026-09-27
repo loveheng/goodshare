@@ -7,6 +7,7 @@ import 'package:goodshare/data/repository.dart';
 import 'package:goodshare/mcp/jsonrpc.dart';
 import 'package:goodshare/mcp/mcp_server.dart';
 import 'package:goodshare/share/share_intake.dart';
+import 'package:goodshare/share/text_collector.dart';
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -127,7 +128,8 @@ void main() {
   });
 
   test('文本归一：纯链接 / 标题+链接 / 纯文本', () {
-    final intake = ShareIntake(Repository());
+    final repo = Repository();
+    final intake = ShareIntake(repo, TextCollector(repo));
     expect(intake.parseText('https://a.b/c').type, 'url');
     final t2 = intake.parseText('一篇好文章\nhttps://a.b/c');
     expect(t2.type, 'url');
