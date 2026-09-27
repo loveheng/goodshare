@@ -1,0 +1,84 @@
+# 拾贝（goodshare）Android 云端构建
+# - push main / PR / 手动触发：analyze + test + release 构建 + 产物上传
+# - 推送 v* 标签：额外创建 GitHub Release 并附 APK（供手机端自更新下载）
+# 约定：release APK 使用 debug 签名（个人使用口径，仓库内无 keystore，勿加 secrets）
+
+name: android-ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: android-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # 仅 Release 步骤需要（写 tag release）
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Gradle 9.3.1 需要 JDK 17+；与本地工具链对齐
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      # 版本锁定与本地一致（workflow skill：Flutter 3.47.5 stable）
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.47.5
+          channel: stable
+          cache: true
+
+      - name: 依赖
+        run: flutter pub get
+
+      - name: 静态检查（0 issue 交付线）
+        run: flutter analyze
+
+      - name: 单测（全过交付线）
+        run: flutter test
+
+      # 整包 release（debug 签名）；如需瘦身可加 --split-per-abi（待办评估中）
+      - name: 构建 Release APK
+        run: flutter build apk --release
+
+      - name: 计算校验和
+        run: |
+          SHA=$(sha256sum build/app/outputs/flutter-apk/app-release.apk | cut -d' ' -f1)
+          echo "apk_sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "### APK sha256" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "$SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+        id: checksum
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-${{ github.sha }}
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+
+      - name: 发布 Release（仅 v* 标签）
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/app/outputs/flutter-apk/app-release.apk
+          body: |
+            拾贝 ${{ github.ref_name }}（debug 签名，个人使用）
+
+            APK sha256:
+            ```
+            ${{ steps.checksum.outputs.apk_sha256 }}
+            ```
