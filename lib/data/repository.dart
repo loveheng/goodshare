@@ -155,8 +155,8 @@ class Repository extends ChangeNotifier {
     return rows.length;
   }
 
-  /// 入队后台 AI 任务（摄入与 reprocess 共用）。
-  Future<void> enqueueTask(String itemId, String taskAction) async {
+  /// 入队后台 AI 任务（摄入与 reprocess 共用）。task_action 可空＝按 item_type 通用重构。
+  Future<void> enqueueTask(String itemId, String? taskAction) async {
     final db = await _database();
     await db.insert('ai_task_queue', {
       'task_id': InboxItem.newId(),
