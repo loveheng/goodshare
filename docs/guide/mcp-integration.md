@@ -1,7 +1,9 @@
-# MCP 接入指南
+---
+status: active
+updated: 2026-09-27
+---
 
-> status: stable
-> updated: 2026-09-27
+# MCP 接入指南
 
 ## 手机端准备
 
@@ -54,13 +56,23 @@ curl -s http://127.0.0.1:8765/mcp \
 
 ## 工具一览
 
+所有写/改动作与手机 UI 走同一实现（`ItemActionHandler`），校验语义完全一致。Vault 条目对 MCP 物理不可见——仅可 `set_vault(on=true)` 移入，无法读取或移出。
+
 | 工具 | 参数 | 说明 |
 |---|---|---|
 | `list_items` | `query?` `type?` `limit?(≤100)` `offset?` | 关键词命中标题/正文/标签，时间倒序分页 |
-| `get_item` | `id` | 全文；图片返回 base64 image 内容块（≤4MB），超大文件返回路径 |
-| `add_item` | `content` `title?` `tags?[]` | AI 侧写入文本/链接，自动识别纯 URL |
+| `get_item` | `id` | 全文（含人类态/机器态）；图片返回 base64 image 内容块（≤4MB） |
+| `add_item` | `content` `title?` `tags?[]` | AI 侧写入文本/链接，自动识别纯 URL；不参与合并模式 |
+| `query_machine_data` | `query?` `type?` `limit?` `offset?` | 机器态结构化数组（仅含已有 machine_json 的条目） |
+| `get_timeline_context` | `date`（YYYY-MM-DD） | 当日多维上下文；健康/事件随 V3 健康接入填充，当前为空 |
+| `update_item` | `id` `patch{title? tldr? tags? human_md? machine_json? item_type?}` | 编辑；machine_json 须过领域 Schema 校验；合并锁定条目拒绝写入 |
+| `delete_item` | `id` | 软删除（30 天内用户可恢复），关联 AI 任务一并取消 |
+| `set_vault` | `id` `on:true` | 移入保险箱（之后对 MCP 不可见）；移出仅限手机端操作 |
+| `reprocess_item` | `id` | 重新触发双态重构（重置处理态并重新入队） |
+| `unlock_edit` | `id` | 解除合并条目编辑锁，随后 `update_item` 方可写入 |
 
 ## 安全提示
 
 - 令牌泄露即等同手机收集内容泄露，怀疑泄露立即在 app 内重置（旧令牌即时失效）
 - 局域网直连未加 TLS，仅限可信网络；跨网访问建议走 adb reverse 或自建隧道
+- Vault 条目对 MCP 物理隔离：大模型只能建议「移入」，永远读不到内容，也不能自行移出

@@ -105,6 +105,18 @@ class Repository extends ChangeNotifier {
     return rows.map(InboxItem.fromMap).toList();
   }
 
+  /// 某天的公开条目（本机时区；供 get_timeline_context 时光机上下文）。
+  Future<List<InboxItem>> listByDate(String date, {int limit = 200}) async {
+    final db = await _database();
+    final rows = await db.rawQuery(
+      "SELECT * FROM inbox_items WHERE is_vault = 0 AND is_deleted = 0 "
+      "AND date(created_at/1000, 'unixepoch', 'localtime') = ? "
+      'ORDER BY created_at ASC LIMIT ?',
+      [date, limit],
+    );
+    return rows.map(InboxItem.fromMap).toList();
+  }
+
   /// 按 id 更新列。values 的键必须是 inbox_items 合法列名，由调用方（ItemActionHandler）保证。
   Future<void> update(String id, Map<String, Object?> values) async {
     final db = await _database();

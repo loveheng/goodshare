@@ -10,7 +10,7 @@ updated: 2026-09-27
 ## product（产品 / 跨域需求）
 
 - [product-requirements.md](product/product-requirements.md) — goodshare 全局 PRD：愿景、已确认架构决策、数据模型、五大模块需求、MCP 接口规范与分期路线图。
-- [v2-requirements.md](product/v2-requirements.md) — V2 需求：离线双态 AI 重构（llama_cpp_dart + GBNF 约束解码）、多源健康接入、通用截图解析接口（OCR→LLM 归一各厂商截图）。
+- [v2-requirements.md](product/v2-requirements.md) — V2 需求：离线双态 AI 重构（调用系统自带模型，零下载）+ 通用截图解析接口（OCR→LLM 归一截图）；多源健康接入已推迟 V3。
 
 ## architecture（架构）
 
@@ -18,4 +18,9 @@ updated: 2026-09-27
 
 ## guide（接入指南）
 
-- [mcp-integration.md](guide/mcp-integration.md) — MCP 接入指南：手机端准备、USB/局域网连接、stdio 客户端配置、工具一览与安全提示。⚠️ 同上，frontmatter 待归一。
+- [mcp-integration.md](guide/mcp-integration.md) — MCP 接入指南：手机端准备、USB/局域网连接、stdio 客户端配置、工具一览与安全提示。
+- [self-update.md](guide/self-update.md) — 自更新手册：更新源配置、清单/下载/校验/安装流程与 Shorebird 受阻记录。⚠️ 同上，frontmatter 待归一。
+
+## design（UI 设计规范）
+
+- [ui-spec.md](design/ui-spec.md) — UI 设计规范：Material You/M3 视觉系统、5 底 tab + FAB 导航、页面清单、设置树、组件库与双态呈现；配套约束见项目 skill `goodshare-ui`。

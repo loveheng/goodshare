@@ -210,7 +210,7 @@ flowchart LR
 | `get_timeline_context` | `date` | 返回 `{ health, events, ingested_items }`；MVP/V2 阶段 `health`/`events` 恒为空（健康/日历 V3 接入） | MVP |
 | `update_item` | `id, patch{title?,tldr?,tags?,human_md?,machine_json?,item_type?}` | 编辑（= UI 详情 / 侧边栏编辑），写回并可触发重处理；`machine_json` 落库前须通过对应领域 Schema 校验（如 `invoice.v1`），失败整单拒写；`item_type` 仅允许白名单方向 `image→chatlog/document` 且要求 `source_type='image'`（人工/PC 纠正通道，2026-09-27 决策） | MVP |
 | `delete_item` | `id` | 软删除（`is_deleted`→1，关联 `ai_task_queue` 任务取消；30 天后物理清理，期间可恢复） | MVP |
-| `set_vault` | `id, on:bool` | 移入 / 移出保险箱（置 `is_vault`；真实加密 V3） | MVP |
+| `set_vault` | `id, on:bool` | 移入保险箱（置 `is_vault`；真实加密 V3）；**MCP 仅可移入（on=true）——移出走 UI 生物识别后操作，防大模型自行解除 Vault 隔离（实现期明确，与隐私硬约束同源）** | MVP |
 | `reprocess_item` | `id` | 重新入 `ai_task_queue`（= UI「重新处理」；MVP 占位管线下为幂等重跑） | MVP |
 | `unlock_edit` | `id` | 解除合并项编辑锁（`edit_locked`→0），随后 `update_item` 方可写入 | MVP |
 
