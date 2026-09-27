@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/repository.dart';
 import '../mcp/mcp_server.dart';
+import '../update/remote_config_store.dart';
 import '../util/lan_ip.dart';
 
 /// MCP 服务总控：token 与开关持久化 + 内嵌 HTTP server + 前台服务保活。
@@ -80,7 +81,12 @@ class McpController extends ChangeNotifier {
         notificationTitle: '拾贝 · MCP 服务运行中',
         notificationText: 'http://${addr ?? '127.0.0.1'}:$defaultPort/mcp（地址见 app 内 MCP 页）',
       );
-      _server ??= McpServer(repo: repo, tokenProvider: () => _token);
+      _server ??= McpServer(
+        repo: repo,
+        tokenProvider: () => _token,
+        // 配置热更：远程下发的 mcpInstructions 非空时覆盖内置说明
+        instructionsProvider: () => RemoteConfigStore.instance.current.mcpInstructions,
+      );
       await _server!.start(port: defaultPort);
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_prefEnabled, true);

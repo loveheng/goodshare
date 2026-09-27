@@ -13,3 +13,7 @@ format: v2
 - (风险)[medium] 国产 ROM 省电策略可能杀前台服务：真机验证华为/小米等存活情况，必要时引导加白名单
 - (优化)[low] 自定义 app 图标与启动页（flutter_launcher_icons）
 - (文档)[low] release 签名配置文档化（keytool + signingConfig）
+- (优化)[low] 图文同分享（相册带文案）时文案会被插件丢弃（toJsonObject 只取 uri），需 fork 插件或自写 intent 解析才能补齐
+- (功能)[medium] Shorebird 接入收尾：本机被两件事挡住——官方安装脚本 404（改用 GitHub release 包手动装）+ api.shorebird.dev TLS 握手失败（需代理）；用户侧网络可用时按 docs/guide/self-update.md §2 走 shorebird init/login/release
+- (风险)[low] 自更新 release 包当前用 debug 签名（模板默认），正式分发前配置 release keystore 并在 shorebird 流程中统一
+- (优化)[low] 更新页增加「强制最低版本」逻辑（清单 minVersionCode，低于即全屏提示必须升级）

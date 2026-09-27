@@ -9,6 +9,7 @@ import '../data/repository.dart';
 import '../models/item.dart';
 import '../service/mcp_controller.dart';
 import 'mcp_page.dart';
+import 'update_page.dart';
 
 /// 收集列表主页：搜索 + 列表 + 详情。
 class ListPage extends StatefulWidget {
@@ -91,6 +92,14 @@ class _ListPageState extends State<ListPage> {
         title: const Text('拾贝'),
         centerTitle: false,
         actions: [
+          IconButton(
+            tooltip: '更新',
+            icon: const Icon(Icons.system_update_alt),
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(builder: (_) => const UpdatePage()),
+            ),
+          ),
           IconButton(
             tooltip: 'MCP 服务',
             icon: Icon(

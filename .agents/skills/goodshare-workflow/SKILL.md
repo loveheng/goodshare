@@ -31,9 +31,10 @@ description: 拾贝 goodshare（Flutter/Dart 分享收集器+内嵌 MCP 服务�
 export PATH="$HOME/flutter/bin:$PATH" ANDROID_HOME="$HOME/android-sdk"
 flutter pub get                 # 依赖（pub.dev 直连偶发停滞，重跑即可）
 flutter analyze                 # 静态检查 → 0 issue 为交付线
-flutter test                    # 单测 → 全过为交付线
+flutter test                    # 单测（MCP 协议/文本归一/自更新）→ 全过为交付线
 node mcp-bridge/e2e-check.mjs   # 桥接端到端 → E2E PASS
 flutter build apk --debug       # 构建 → build/app/outputs/flutter-apk/app-debug.apk
+flutter build apk --release     # 自更新发布用整包（debug 签名，个人使用可用）
 adb reverse tcp:8765 tcp:8765   # USB 场景让桌面访问手机端 /mcp
 ```
 

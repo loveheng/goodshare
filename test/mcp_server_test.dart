@@ -6,6 +6,7 @@ import 'package:goodshare/data/repository.dart';
 import 'package:goodshare/mcp/jsonrpc.dart';
 import 'package:goodshare/mcp/mcp_server.dart';
 import 'package:goodshare/share/share_intake.dart';
+import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 Map<String, Object?> resultOf(Map<String, Object?>? body) =>
@@ -130,5 +131,16 @@ void main() {
     expect(t2.type, 'LINK');
     expect(t2.title, '一篇好文章');
     expect(intake.parseText('随手记点什么').type, 'TEXT');
+  });
+
+  test('分享分类：插件 1.9.0 文本在 path 字段（message 为 null）', () {
+    // 还原插件 Android 侧真实 payload 形状：text 分享时 message=null，文本在 path
+    final textShare = SharedMediaFile(path: '看看这篇 https://a.b/c', type: SharedMediaType.text);
+    final urlShare = SharedMediaFile(path: 'https://x.y/z', type: SharedMediaType.url);
+    final img = SharedMediaFile(path: '/tmp/a.jpg', type: SharedMediaType.image, mimeType: 'image/jpeg');
+    final (texts, files) = ShareIntake.classify([textShare, urlShare, img]);
+    expect(texts.length, 2, reason: '文本分享必须被收进来（回归：曾因只读 message 而丢失）');
+    expect(texts.first, contains('https://a.b/c'));
+    expect(files.length, 1);
   });
 }

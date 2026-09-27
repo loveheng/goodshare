@@ -5,10 +5,13 @@
   "packages": [
     {
       "name": "goodshare",
-      "version": "0.1.0+1",
+      "version": "1.1.0+3",
       "dependencies": [
+        "crypto",
         "flutter",
         "flutter_foreground_task",
+        "open_filex",
+        "package_info_plus",
         "path",
         "path_provider",
         "receive_sharing_intent",
@@ -129,6 +132,30 @@
       "dependencies": []
     },
     {
+      "name": "package_info_plus",
+      "version": "10.2.1",
+      "dependencies": [
+        "clock",
+        "ffi",
+        "flutter",
+        "flutter_web_plugins",
+        "http",
+        "meta",
+        "package_info_plus_platform_interface",
+        "path",
+        "web",
+        "win32"
+      ]
+    },
+    {
+      "name": "open_filex",
+      "version": "4.7.0",
+      "dependencies": [
+        "ffi",
+        "flutter"
+      ]
+    },
+    {
       "name": "flutter_foreground_task",
       "version": "11.0.3",
       "dependencies": [
@@ -148,6 +175,13 @@
         "meta",
         "sky_engine",
         "vector_math"
+      ]
+    },
+    {
+      "name": "crypto",
+      "version": "3.0.7",
+      "dependencies": [
+        "typed_data"
       ]
     },
     {
@@ -510,6 +544,25 @@
       ]
     },
     {
+      "name": "package_info_plus_platform_interface",
+      "version": "4.1.0",
+      "dependencies": [
+        "flutter",
+        "meta",
+        "plugin_platform_interface"
+      ]
+    },
+    {
+      "name": "http",
+      "version": "1.6.0",
+      "dependencies": [
+        "async",
+        "http_parser",
+        "meta",
+        "web"
+      ]
+    },
+    {
       "name": "platform",
       "version": "3.2.0",
       "dependencies": [
@@ -534,10 +587,10 @@
       "dependencies": []
     },
     {
-      "name": "crypto",
-      "version": "3.0.7",
+      "name": "typed_data",
+      "version": "1.4.0",
       "dependencies": [
-        "typed_data"
+        "collection"
       ]
     },
     {
@@ -571,13 +624,6 @@
         "pub_semver",
         "record_use",
         "yaml"
-      ]
-    },
-    {
-      "name": "typed_data",
-      "version": "1.4.0",
-      "dependencies": [
-        "collection"
       ]
     },
     {
@@ -693,6 +739,16 @@
         "package_config",
         "path",
         "plugin_platform_interface"
+      ]
+    },
+    {
+      "name": "http_parser",
+      "version": "4.1.2",
+      "dependencies": [
+        "collection",
+        "source_span",
+        "string_scanner",
+        "typed_data"
       ]
     },
     {

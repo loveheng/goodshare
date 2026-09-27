@@ -5,6 +5,7 @@ import 'data/repository.dart';
 import 'pages/list_page.dart';
 import 'service/mcp_controller.dart';
 import 'share/share_intake.dart';
+import 'update/remote_config_store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -13,6 +14,7 @@ Future<void> main() async {
   await Db.instance();
   final mcp = McpController(repo: repo);
   await mcp.load();
+  await RemoteConfigStore.instance.load();
   await ShareIntake(repo).init();
   runApp(GoodShareApp(repo: repo, mcp: mcp));
 }

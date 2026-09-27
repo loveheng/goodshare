@@ -29,5 +29,8 @@ last-merge: 2026-09-27
 - [2026-09-27] v1 代码全量落地并四项验证通过：analyze 0 issue / test 6/6 / bridge e2e 5/5 / assembleDebug ✓（app-debug.apk 165MB，在 build/app/outputs/flutter-apk/）。构建踩坑：receive_sharing_intent 1.9.0 要求 compileSdk ≥37（高于 flutter 默认 36，已提为 37）；pub 下载偶发停滞（清 _temp 重跑可解）
 - [2026-09-27] 真机验证（分享接收/前台服务存活/MCP 实连）未做——本机无设备
 
+## 进度（追加）
+- [2026-09-27] 更新体系落地：自更新（清单/流式下载/分块 sha256/open_filex 安装）+ 配置热更（公告/MCP instructions 注入）+ 更新页；版本 1.1.0+3；release 包 52.7MB（sha256 前缀 1c867ac9）。Shorebird 被安装脚本 404 + api.shorebird.dev 网络不通挡住，手册在 docs/guide/self-update.md
+
 ## 断点
-- [断点] 下一步：真机侧载 app-debug.apk 验证分享接收/前台服务/MCP 实连；随后按 todos.md 推进（PROCESS_TEXT、标签管理、iOS/鸿蒙）
+- [断点] 下一步：真机验证自更新闭环（配 gitee 更新源→发布 1.1.0+3→app 内升级）与分享采集回归；Shorebird 等用户侧网络/账号

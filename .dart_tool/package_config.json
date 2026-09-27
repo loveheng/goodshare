@@ -128,6 +128,18 @@
       "languageVersion": "3.10"
     },
     {
+      "name": "http",
+      "rootUri": "file:///home/zzh/.pub-cache/hosted/pub.dev/http-1.6.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    },
+    {
+      "name": "http_parser",
+      "rootUri": "file:///home/zzh/.pub-cache/hosted/pub.dev/http_parser-4.1.2",
+      "packageUri": "lib/",
+      "languageVersion": "3.4"
+    },
+    {
       "name": "jni",
       "rootUri": "file:///home/zzh/.pub-cache/hosted/pub.dev/jni-1.0.3",
       "packageUri": "lib/",
@@ -212,10 +224,28 @@
       "languageVersion": "3.10"
     },
     {
+      "name": "open_filex",
+      "rootUri": "file:///home/zzh/.pub-cache/hosted/pub.dev/open_filex-4.7.0",
+      "packageUri": "lib/",
+      "languageVersion": "2.17"
+    },
+    {
       "name": "package_config",
       "rootUri": "file:///home/zzh/.pub-cache/hosted/pub.dev/package_config-3.0.0",
       "packageUri": "lib/",
       "languageVersion": "3.11"
+    },
+    {
+      "name": "package_info_plus",
+      "rootUri": "file:///home/zzh/.pub-cache/hosted/pub.dev/package_info_plus-10.2.1",
+      "packageUri": "lib/",
+      "languageVersion": "3.10"
+    },
+    {
+      "name": "package_info_plus_platform_interface",
+      "rootUri": "file:///home/zzh/.pub-cache/hosted/pub.dev/package_info_plus_platform_interface-4.1.0",
+      "packageUri": "lib/",
+      "languageVersion": "3.10"
     },
     {
       "name": "path",

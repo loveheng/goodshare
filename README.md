@@ -11,6 +11,7 @@
 - **MCP 服务**：内嵌 HTTP 服务（默认 `0.0.0.0:8765`，端点 `/mcp`），前台服务保活；X-Api-Key 令牌防护
   - 工具：`list_items`（搜索/过滤/分页）、`get_item`（全文+图片内容块）、`add_item`（AI 代写入）
 - **桌面接入**：USB（`adb reverse`）或局域网直连；stdio 型客户端用仓库自带桥 `mcp-bridge/stdio-bridge.mjs`
+- **更新体系**：应用内自更新（清单→下载→SHA-256 校验→拉起安装器）+ 配置热更（公告 / MCP instructions 远程下发）；可选接入 Shorebird 做 Dart 代码补丁热更，见 [docs/guide/self-update.md](docs/guide/self-update.md)
 
 ## 快速开始（桌面连手机）
 

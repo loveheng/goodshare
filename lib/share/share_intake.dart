@@ -38,20 +38,7 @@ class ShareIntake {
     if (_busy) return; // 事件流可能重放，防重复入库
     _busy = true;
     try {
-      final texts = <String>[];
-      final files = <SharedMediaFile>[];
-      for (final m in medias) {
-        switch (m.type) {
-          case SharedMediaType.text:
-            if (m.message?.trim().isNotEmpty ?? false) texts.add(m.message!.trim());
-          case SharedMediaType.url:
-            texts.add(m.path.trim());
-          case SharedMediaType.image:
-          case SharedMediaType.video:
-          case SharedMediaType.file:
-            files.add(m);
-        }
-      }
+      final (texts, files) = classify(medias);
 
       if (files.isNotEmpty) {
         final local = <String>[];
@@ -90,6 +77,30 @@ class ShareIntake {
     } finally {
       _busy = false;
     }
+  }
+
+  /// 事件分类：文本进 texts、附件进 files。
+  /// 插件 1.9.0 Android 侧（ReceiveSharingIntentPlugin.toJsonObject）把分享文本
+  /// 放进 path（`path ?: text`），message 恒为 null——文本类型必须以 path 为准，
+  /// message 仅作未来版本兜底，字段以 pub 缓存插件源码为准。
+  @visibleForTesting
+  static (List<String>, List<SharedMediaFile>) classify(List<SharedMediaFile> medias) {
+    final texts = <String>[];
+    final files = <SharedMediaFile>[];
+    for (final m in medias) {
+      switch (m.type) {
+        case SharedMediaType.text:
+          final t = (m.message?.trim().isNotEmpty ?? false) ? m.message!.trim() : m.path.trim();
+          if (t.isNotEmpty) texts.add(t);
+        case SharedMediaType.url:
+          if (m.path.trim().isNotEmpty) texts.add(m.path.trim());
+        case SharedMediaType.image:
+        case SharedMediaType.video:
+        case SharedMediaType.file:
+          files.add(m);
+      }
+    }
+    return (texts, files);
   }
 
   /// 文本/链接归一：

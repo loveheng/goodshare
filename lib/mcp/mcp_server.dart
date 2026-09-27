@@ -10,12 +10,19 @@ import 'tools.dart';
 /// v1 不做服务端主动推送：GET/DELETE 返回 405；也不签发会话 id（规范允许 MAY，
 /// 无状态更简单，桌面桥与直连客户端都不依赖会话）。
 class McpServer {
-  McpServer({required this.repo, required this.tokenProvider});
+  McpServer({required this.repo, required this.tokenProvider, this.instructionsProvider});
 
   final Repository repo;
 
   /// 返回当前生效 token；为空表示关闭鉴权。
   final String? Function() tokenProvider;
+
+  /// initialize 返回的 instructions；非空时覆盖内置文案（配置热更入口）。
+  final String? Function()? instructionsProvider;
+
+  static const _builtinInstructions =
+      '「拾贝」是用户的日常分享收集器。用 list_items 检索/浏览收集内容（支持关键词与类型过滤），'
+      'get_item 读取全文与图片，add_item 可代用户写入文本或链接。';
 
   HttpServer? _server;
   bool get running => _server != null;
@@ -110,9 +117,7 @@ class McpServer {
             'tools': {'listChanged': false},
           },
           'serverInfo': {'name': 'goodshare', 'version': '1.0.0'},
-          'instructions':
-              '「拾贝」是用户的日常分享收集器。用 list_items 检索/浏览收集内容（支持关键词与类型过滤），'
-                  'get_item 读取全文与图片，add_item 可代用户写入文本或链接。',
+          'instructions': instructionsProvider?.call() ?? _builtinInstructions,
         };
       case 'ping':
         return <String, Object?>{};
