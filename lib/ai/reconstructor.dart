@@ -5,12 +5,14 @@ class ReconstructInput {
     required this.itemType,
     this.sourceType,
     this.rawContent,
+    this.rawFilePath,
   });
 
   final String itemId;
   final String itemType;
   final String? sourceType;
   final String? rawContent;
+  final String? rawFilePath; // 附件路径（图片 OCR / 音频处理用）
 }
 
 /// AI 双态重构产出：人类态 / 机器态 / 标签 / 重分类 / 多视角聚类。

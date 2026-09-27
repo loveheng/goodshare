@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodshare/action/item_action_handler.dart';
+import 'package:goodshare/ai/ocr_reconstructor.dart';
 import 'package:goodshare/ai/queue_consumer.dart';
 import 'package:goodshare/ai/reconstructor.dart';
 import 'package:goodshare/data/db.dart';
@@ -119,6 +120,33 @@ void main() {
     final after = await repo.byId(it.id!);
     expect(after!.humanMd, '再处理一次', reason: '占位重跑覆盖旧产出');
     expect(after.isProcessed, 1);
+  });
+
+  test('OcrReconstructor：非图片走占位复制；图片 OCR 不可用时优雅降级不置死信', () async {
+    // 非图片：占位复制
+    final note = await repo.add(InboxItem(itemType: InboxItem.typeNote, rawContent: '普通文本', createdAt: 1));
+    await repo.enqueueTask(note.id!, null);
+    await QueueConsumer(
+      repo,
+      ReconstructorRegistry([const OcrReconstructor(), const PlaceholderReconstructor()]),
+    ).pollOnce();
+    expect((await repo.byId(note.id!))!.humanMd, '普通文本');
+
+    // 图片：VM 测试无 ML Kit 平台通道 → 实现内捕获并降级为占位行为（is_processed=1，非死信）
+    final img = await repo.add(InboxItem(
+      itemType: InboxItem.typeImage,
+      sourceType: InboxItem.typeImage,
+      rawFilePath: '/tmp/nonexistent.jpg',
+      createdAt: 2,
+    ));
+    await repo.enqueueTask(img.id!, Repository.taskOcrAndExtract);
+    await QueueConsumer(
+      repo,
+      ReconstructorRegistry([const OcrReconstructor(), const PlaceholderReconstructor()]),
+    ).pollOnce();
+    final after = await repo.byId(img.id!);
+    expect(after!.isProcessed, 1, reason: 'OCR 失败降级不置 -1');
+    expect(await repo.pendingTasks(), isEmpty);
   });
 
   test('已删条目竞态兜底：任务置 cancelled，条目不被写入', () async {

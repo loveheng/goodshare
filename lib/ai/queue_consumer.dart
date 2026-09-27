@@ -72,6 +72,7 @@ class QueueConsumer {
         itemType: item.itemType,
         sourceType: item.sourceType,
         rawContent: item.rawContent,
+        rawFilePath: item.rawFilePath,
       ));
       await _repo.update(item.id!, {
         'human_md': result.humanMd,

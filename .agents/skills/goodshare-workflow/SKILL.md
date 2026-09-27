@@ -53,3 +53,6 @@ adb reverse tcp:8765 tcp:8765   # USB 场景让桌面访问手机端 /mcp
 - `receive_sharing_intent` 1.9.0：`SharedMediaFile{path, thumbnail, duration, type, mimeType, message}`（无 source 字段），类型枚举 `SharedMediaType.{image,video,text,file,url}`
 - `flutter_foreground_task` 11.0.3：先 `init()` 再 `startService(serviceTypes: [ForegroundServiceTypes.dataSync], ...)`；manifest service 名不可改
 - `share_plus` 13.3.0：`SharePlus.instance.share(ShareParams(text:, title:, files:))`
+- `google_mlkit_text_recognition` 0.17.1：`TextRecognizer(script: TextRecognitionScript.chinese)` + `InputImage.fromFilePath`；Android 走 Play 服务（模型按需下载，首次需联网），**无 GMS 设备不可用**（bundled 变体适配待做）
+- `speech_to_text` 7.5.0：`initialize()` + `listen(onResult:, listenOptions: SpeechListenOptions(onDevice: true))`；**仅实时流、无文件转写**——速记录音转写在采集时与录音同步完成，转写文本随 raw 层入库
+- `record` 7.1.1：`AudioRecorder()` + `hasPermission()` + `start(RecordConfig(encoder: AudioEncoder.aacLc), path:)` + `stop()` 返回落盘路径

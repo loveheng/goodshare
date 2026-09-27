@@ -30,8 +30,8 @@ V2 不改变 MVP 的数据模型主干（`inbox_items` 三态字段、`daily_met
 |---|---|---|---|
 | iOS | **Apple Foundation Models**（`SystemLanguageModel.default`，iOS 26+ / A17+） | Flutter 经 platform channel 或 `flutter_apple_foundation_models` 调用 | 完全端侧、无下载；支持 `Guide` 约束输出（类 GBNF，可锁 JSON Schema） |
 | Android | **Gemini Nano via AICore**（`com.google.android.aicore`，Pixel / 部分旗舰 Android 15+） | Jetpack/ML API 或 platform channel | 系统级 on-device；**仅部分设备可用**，缺失则回退 V1（见 §3.7） |
-| OCR（通用） | **`google_mlkit_text_recognition`** | Flutter 插件 | 系统模型多为**纯文本**，截图须先 OCR 出文本再喂系统模型；各厂商通用 |
-| STT（音频转写，通用） | **`speech_to_text`** | Flutter 插件 | 音频条目先转写为文本再走双态重构；**仅当系统 STT 支持端侧识别时启用**（iOS `requiresOnDeviceRecognition` / Android 端侧能力探测，见 §3.7），否则音频条目回退 V1 占位并在 UI 明示；长音频可分段；与 OCR 同属「非文本源 → 文本」前置管线 |
+| OCR（通用） | **`google_mlkit_text_recognition`** | Flutter 插件 | **已随 v1 提前落地（2026-09-27 分期调整，标准 GMS 设备，中文脚本）**；截图先 OCR 出文本再喂系统模型；无 GMS 设备待 bundled 变体适配 |
+| STT（音频转写，通用） | **`speech_to_text`** | Flutter 插件 | **转写已随 v1 提前落地（2026-09-27 分期调整）**：速记采集时同步端侧转写（onDevice 请求，不支持则 UI 明示仅存音频；Android 系统识别仅实时流，故采集时同步）；仅当系统 STT 支持端侧识别时启用（见 §3.7），长音频分段与文件转写随 V2 LLM 管线增强 |
 | 调度 | 复用 `flutter_foreground_task` + `ai_task_queue` | — | 充电/空闲时批处理，避免前台卡顿 |
 
 **关键约束**：系统模型普遍**仅文本、无视觉输入** → 截图解析坚持 OCR-first（§4），不依赖 VLM。结构化输出靠 iOS `Guide`；Android 侧若无语法约束则用「提示词 + JSON 校验/重试」兜底。
@@ -186,6 +186,7 @@ PRD §6 模块三承诺的 V2 能力，均依赖 §3.1 系统模型（不可用�
 | 系统模型中断 / 拒答 | 低内存 / 过热时 OS 拒答或报错 | §3.6 优雅中断 + `try/catch` 回滚 pending 自愈 |
 | 能力误判 | 可用性探测不准导致误开 / 漏开 | 手动覆盖开关 + 调用失败自动降档（§3.6/§3.7） |
 | 剪贴板嗅探权限 | Android 10+ 仅前台焦点窗口可读剪贴板；iOS 14+ 读取弹系统提示 | 仅 App 前台恢复时读取（合规）；iOS 弹窗配合隐私页明示用途 |
+| 无 GMS 设备 OCR 缺口 | 华为/荣耀等无 Play 服务的机器 ML Kit 不可用 | bundled 变体（模型内置 apk）适配待做；先支持标准设备（2026-09-27 决策） |
 
 **开放问题（待决策）**：① Android AICore 不可用时的产品表述（仅 V1 / 提示换机）；② 是否允许「离线失败可临时回落云端」的用户开关（与隐私承诺冲突，需明示）。
 

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
+import 'package:speech_to_text/speech_to_text.dart';
 
 import '../data/repository.dart';
 import '../models/item.dart';
@@ -23,13 +24,17 @@ class QuickNoteSheet extends StatefulWidget {
 class _QuickNoteSheetState extends State<QuickNoteSheet> {
   final _textCtrl = TextEditingController();
   final _recorder = AudioRecorder();
+  final _stt = SpeechToText();
   bool _recording = false;
   bool _busy = false;
+  bool _sttUnavailable = false;
+  String _transcript = '';
 
   @override
   void dispose() {
     _textCtrl.dispose();
     _recorder.dispose();
+    _stt.stop();
     super.dispose();
   }
 
@@ -59,6 +64,7 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
       _busy = true;
       try {
         final path = await _recorder.stop();
+        await _stt.stop();
         setState(() => _recording = false);
         if (path == null) {
           _snack('录音未保存');
@@ -70,12 +76,14 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
           sourceType: InboxItem.typeAudio,
           sourceApp: '速记',
           humanTitle: '速记录音 ${now.hour}:${now.minute.toString().padLeft(2, '0')}',
+          rawContent: _transcript.isEmpty ? null : _transcript,
           rawFilePath: path,
           createdAt: now.millisecondsSinceEpoch,
         ));
-        // 转写随 V2 端侧 STT 解锁；MVP 占位管线保底
+        // 转写文本在采集时已入 raw 层，消费者占位复制到 human_md
         await widget.repo.enqueueTask(item.id!, Repository.taskActionFor(InboxItem.typeAudio));
-        await _closeSnack('录音已收集');
+        await _closeSnack(
+            _transcript.isEmpty ? '录音已收集（未产生转写文本）' : '录音已收集（含转写文本）');
       } finally {
         _busy = false;
       }
@@ -90,7 +98,34 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
       final dir = await appShareDir();
       final path = '${dir.path}/${DateTime.now().millisecondsSinceEpoch}.m4a';
       await _recorder.start(const RecordConfig(encoder: AudioEncoder.aacLc), path: path);
-      setState(() => _recording = true);
+      setState(() {
+        _recording = true;
+        _transcript = '';
+      });
+      // 端侧转写（D7：仅请求 onDevice；不支持则明示回退，仅保存音频）。
+      // Android 系统语音识别只支持实时流，故转写与录音同步进行。
+      try {
+        final ready = await _stt.initialize();
+        if (!ready) throw StateError('unavailable');
+        await _stt.listen(
+          onResult: (r) {
+            if (r.recognizedWords.isNotEmpty) {
+              setState(() => _transcript = r.recognizedWords);
+            }
+          },
+          listenOptions: SpeechListenOptions(
+            onDevice: true,
+            cancelOnError: true,
+            partialResults: true,
+            listenMode: ListenMode.dictation,
+          ),
+        );
+        setState(() => _sttUnavailable = false);
+      } catch (e) {
+        debugPrint('[QuickNote] STT on-device unavailable: $e');
+        setState(() => _sttUnavailable = true);
+        _snack('本机不支持端侧语音转写，仅保存音频');
+      }
     } catch (e) {
       _snack('录音启动失败：$e');
     } finally {
@@ -143,6 +178,24 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
             ),
           ),
           const SizedBox(height: 12),
+          if (_recording) ...[
+            if (_transcript.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  _transcript,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            if (_sttUnavailable)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text('本机不支持端侧语音转写，仅保存音频',
+                    style: Theme.of(context).textTheme.bodySmall),
+              ),
+          ],
           Row(
             children: [
               IconButton.filledTonal(

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'action/item_action_handler.dart';
+import 'ai/ocr_reconstructor.dart';
 import 'ai/queue_consumer.dart';
 import 'ai/reconstructor.dart';
 import 'data/db.dart';
@@ -24,8 +25,11 @@ Future<void> main() async {
   await mcp.load();
   await RemoteConfigStore.instance.load();
   await ShareIntake(repo, collector).init();
-  // AI 队列消费者：v1 占位管线（raw 原样入 human_md），V2 经 Registry 换系统模型实现
-  QueueConsumer(repo, ReconstructorRegistry.defaultRegistry()).start();
+  // AI 队列消费者：v1 = 图片 ML Kit OCR + 其余占位复制；V2 经 Registry 换系统模型实现
+  QueueConsumer(
+    repo,
+    ReconstructorRegistry([const OcrReconstructor(), const PlaceholderReconstructor()]),
+  ).start();
   runApp(GoodShareApp(repo: repo, handler: handler, collector: collector, mcp: mcp));
 }
 

@@ -90,7 +90,7 @@ graph TD
 
 ### 4.6 FAB 速记
 
-- 新建 note / 录音转待办 / 相机 OCR → 写 `raw_content` + 入 `ai_task_queue`（pending）。MVP 三入口语义为「先存下来」：录音→`audio` 原始条目、相机→`image` 条目（入 `ocr_and_extract` 占位）；「转待办 / OCR 增强」V2 端侧探测通过后解锁（2026-09-27 决策）。
+- 新建 note / 录音 / 拍照 → 写 `raw_content` + 入 `ai_task_queue`（pending）。**图片 OCR 与录音转写已提前至 v1（2026-09-27 分期调整）**：图片经 ML Kit 端侧识别产出文本（标准 GMS 设备）；录音采集时同步端侧转写（onDevice 探测，不支持则明示仅存音频）；「转待办」提炼随 V2 LLM 管线解锁。
 
 ### 4.7 侧边栏（文件类型分类 + 简单查看 / 编辑）
 

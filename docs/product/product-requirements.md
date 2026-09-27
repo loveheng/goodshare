@@ -165,7 +165,7 @@ CREATE VIRTUAL TABLE search_index USING fts5(
 | 自动打标 2–3 个 + 身份证/银行卡默认打码 | V2 | 规则 + LLM |
 | 通用截图解析（发票 / 名片 / 聚会计划，OCR→LLM 套领域 Schema） | V2 | ScreenshotParser 通用管线，详见 V2 §4 |
 
-**v1 管线行为（已定）**：队列消费者把 `raw_content` 原样复制进 `human_md`，`machine_json` 置空，`is_processed=1`，保证端到端不卡死；AI 能力以接口 `AiReconstructor` 抽象（详见 V2 §3.8），系统模型 / 占位 / 云端兜底等多实现可插拔替换该消费者，架构不变。
+**v1 管线行为（已定）**：队列消费者把 `raw_content` 原样复制进 `human_md`，`machine_json` 置空，`is_processed=1`，保证端到端不卡死；AI 能力以接口 `AiReconstructor` 抽象（详见 V2 §3.8），系统模型 / 占位 / 云端兜底等多实现可插拔替换该消费者，架构不变。**2026-09-27 分期调整：OCR 与音频转写提前至 v1**——图片条目经 ML Kit 端侧文字识别（中文脚本，标准 GMS 设备）产出文本；速记录音在采集时经系统语音识别端侧转写（onDevice 探测，不支持则 UI 明示仅存音频），转写文本随原始层入库；无 GMS 设备的 bundled OCR 适配为后续项；LLM 双态重构仍为 V2。
 
 ### 模块三：便签编辑器与人类干预
 
@@ -240,7 +240,7 @@ sequenceDiagram
 
 ## 9. 分期路线图
 
-- **MVP（本次目标）**：重建 Schema（§5.3，含 `facets_json`；v1 旧表功能未经设计，直接弃旧数据重建、不做迁移）→ Share 入库 + 入队 → 扩展 MCP 机器态工具（§7）→ UI（时光机轻量版［=按天分组内容线］+ 全部·分类视图 + 详情 + MCP 设置页）→ AI 队列脚手架（§6 模块二 v1 行为，仅接口占位）。铁三角：*数据进得来、双态存得下、PC 读得到*。**MVP 不含**：Vault 真加密（V3）、离线双态 AI 重构（V2，仅接口与占位）、AI 多视角聚类（V2，facets 为空时 AI 分类空态）。导航 5 tab 全展示，但 AI 分类 / 保险箱 MVP 为占位空态，V2/V3 填充。
+- **MVP（本次目标）**：重建 Schema（§5.3，含 `facets_json`；v1 旧表功能未经设计，直接弃旧数据重建、不做迁移）→ Share 入库 + 入队 → 扩展 MCP 机器态工具（§7）→ UI（时光机轻量版［=按天分组内容线］+ 全部·分类视图 + 详情 + MCP 设置页）→ AI 队列脚手架（§6 模块二 v1 行为；图片 OCR 与速记转写已提前实现（2026-09-27），LLM 双态重构仍为占位）。铁三角：*数据进得来、双态存得下、PC 读得到*。**MVP 不含**：Vault 真加密（V3）、离线双态 AI 重构（V2，仅接口与占位）、AI 多视角聚类（V2，facets 为空时 AI 分类空态）。导航 5 tab 全展示，但 AI 分类 / 保险箱 MVP 为占位空态，V2/V3 填充。
 - **V2**：双态 AI 重构（调用系统自带模型：iOS Foundation Models / Android AICore Gemini Nano，零下载；不可用设备回退 V1）、通用截图解析（发票/名片/聚会）、剪贴板嗅探、便签编辑器、Timeline、FTS5 检索。
 - **V3**：Vault AES 加密、Health/日历静默抓取、锁屏/桌面组件、鸿蒙适配。
 
