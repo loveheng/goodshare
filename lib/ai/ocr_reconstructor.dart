@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
 import 'reconstructor.dart';
+import 'url_extract.dart';
 
 /// v1 消费者实现（2026-09-27 分期调整：OCR 从 V2 提前）：
 /// - 图片条目：ML Kit 端侧文字识别（中文脚本），OCR 文本写入人类态；
@@ -13,10 +14,13 @@ import 'reconstructor.dart';
 /// 转写在速记采集时同步完成（写 raw 层，消费者照常占位复制），见 QuickNoteSheet。
 /// 无 GMS 设备的 bundled OCR 变体适配为后续项（先支持标准设备）。
 class OcrReconstructor implements AiReconstructor {
-  const OcrReconstructor({this.isOcrEnabled});
+  const OcrReconstructor({this.isOcrEnabled, this.isUrlFetchEnabled});
 
   /// 是否允许 OCR（设置开关门控）；null = 恒允许。
   final bool Function()? isOcrEnabled;
+
+  /// 是否允许链接离线抓取网页正文（设置开关门控）；null = 恒允许。
+  final bool Function()? isUrlFetchEnabled;
 
   @override
   Future<bool> get isAvailable async => true;
@@ -28,6 +32,15 @@ class OcrReconstructor implements AiReconstructor {
       final text = await _ocr(input.rawFilePath!);
       // OCR 不可用（无 GMS/模型未就绪）时优雅降级为占位行为，不置死信
       return ReconstructResult(humanMd: text ?? (input.rawContent ?? ''));
+    }
+    // 链接离线成内容（2026-09-27 决策）：抓取网页正文写入人类态；失败回退占位
+    final fetchOn = isUrlFetchEnabled?.call() ?? true;
+    if (fetchOn && input.itemType == 'url') {
+      final url = firstUrl(input.rawContent ?? '');
+      if (url != null) {
+        final content = await fetchReadable(url);
+        if (content != null) return ReconstructResult(humanMd: content);
+      }
     }
     return ReconstructResult(humanMd: input.rawContent ?? '');
   }

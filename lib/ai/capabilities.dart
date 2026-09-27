@@ -13,12 +13,14 @@ import 'package:speech_to_text/speech_to_text.dart';
 class AiCapabilities extends ChangeNotifier {
   static const _prefOcrEnabled = 'ai_ocr_enabled';
   static const _prefSttEnabled = 'ai_stt_enabled';
+  static const _prefUrlFetchEnabled = 'ai_url_fetch_enabled';
   static const _prefDetected = 'ai_capability_detected';
   static const _prefOcrAvailable = 'ai_ocr_available';
   static const _prefSttAvailable = 'ai_stt_available';
 
   bool ocrEnabled = true; // 用户开关
   bool sttEnabled = true;
+  bool urlFetchEnabled = true; // 链接离线抓取网页正文（无设备能力依赖，不需要检测）
   bool? ocrAvailable; // 本机检测结果（null = 尚未检测）
   bool? sttAvailable;
   bool _detected = false;
@@ -30,6 +32,7 @@ class AiCapabilities extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     ocrEnabled = prefs.getBool(_prefOcrEnabled) ?? true;
     sttEnabled = prefs.getBool(_prefSttEnabled) ?? true;
+    urlFetchEnabled = prefs.getBool(_prefUrlFetchEnabled) ?? true;
     _detected = prefs.getBool(_prefDetected) ?? false;
     if (_detected) {
       // 首次检测后结果持久化，此后不再检测
@@ -94,6 +97,13 @@ class AiCapabilities extends ChangeNotifier {
     sttEnabled = v;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_prefSttEnabled, v);
+    notifyListeners();
+  }
+
+  Future<void> setUrlFetchEnabled(bool v) async {
+    urlFetchEnabled = v;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_prefUrlFetchEnabled, v);
     notifyListeners();
   }
 }

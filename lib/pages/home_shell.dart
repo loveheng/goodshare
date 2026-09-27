@@ -5,6 +5,7 @@ import '../ai/capabilities.dart';
 import '../data/repository.dart';
 import '../share/text_collector.dart';
 import '../service/mcp_controller.dart';
+import '../ui/floating_ball.dart';
 import 'ai_tags_page.dart';
 import 'inbox_page.dart';
 import 'quick_note_sheet.dart';
@@ -38,7 +39,12 @@ class _HomeShellState extends State<HomeShell> {
   int _index = 0;
   late final List<Widget> _pages = [
     TimelinePage(repo: widget.repo, handler: widget.handler),
-    InboxPage(repo: widget.repo, handler: widget.handler),
+    InboxPage(
+      repo: widget.repo,
+      handler: widget.handler,
+      collector: widget.collector,
+      caps: widget.caps,
+    ),
     const AiTagsPage(),
     VaultPage(repo: widget.repo, handler: widget.handler),
     SettingsPage(
@@ -52,13 +58,13 @@ class _HomeShellState extends State<HomeShell> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(index: _index, children: _pages),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _showQuickNote,
-        icon: const Icon(Icons.add),
-        label: const Text('速记'),
+      // 悬浮球贴边（速记入口，可拖拽吸附左右边），取代原中央 FAB
+      body: Stack(
+        children: [
+          IndexedStack(index: _index, children: _pages),
+          FloatingBall(onTap: _showQuickNote),
+        ],
       ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
         onDestinationSelected: (i) => setState(() => _index = i),

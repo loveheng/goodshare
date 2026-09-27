@@ -105,6 +105,13 @@ class _SettingsPageState extends State<SettingsPage> {
                 ? null
                 : (v) => caps.setSttEnabled(v),
           ),
+          SwitchListTile(
+            secondary: const Icon(Icons.download_outlined),
+            title: const Text('链接离线抓取正文'),
+            subtitle: const Text('添加链接后自动抓取网页内容存为文本'),
+            value: caps.urlFetchEnabled,
+            onChanged: (v) => caps.setUrlFetchEnabled(v),
+          ),
           ListTile(
             enabled: false,
             leading: const Icon(Icons.auto_awesome_outlined),

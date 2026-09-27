@@ -30,11 +30,14 @@ Future<void> main() async {
   await mcp.load();
   await RemoteConfigStore.instance.load();
   await ShareIntake(repo, collector).init();
-  // AI 队列消费者：v1 = 图片 ML Kit OCR（受设置开关门控）+ 其余占位复制
+  // AI 队列消费者：v1 = 图片 ML Kit OCR（受设置开关门控）+ 链接离线抓取 + 其余占位复制
   QueueConsumer(
     repo,
     ReconstructorRegistry([
-      OcrReconstructor(isOcrEnabled: () => caps.ocrEnabled),
+      OcrReconstructor(
+        isOcrEnabled: () => caps.ocrEnabled,
+        isUrlFetchEnabled: () => caps.urlFetchEnabled,
+      ),
       const PlaceholderReconstructor(),
     ]),
   ).start();

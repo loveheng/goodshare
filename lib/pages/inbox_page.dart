@@ -1,18 +1,30 @@
 import 'package:flutter/material.dart';
 
 import '../action/item_action_handler.dart';
+import '../ai/capabilities.dart';
 import '../data/repository.dart';
 import '../models/item.dart';
+import '../share/text_collector.dart';
 import '../ui/content_card.dart';
 import 'item_detail_page.dart';
+import 'quick_note_sheet.dart';
 
-/// 全部（分类视图）：顶部固定搜索 + 类型 FilterChip，条目按 item_type 分组带计数。
+/// 全部（分类视图）：顶部固定搜索 + 类型 FilterChip，条目按 item_type 分组带计数，
+/// 每个分类可直接添加对应内容（设计 §4.7）。
 /// 时间轴视图随 V3 与时光机分化后再加入（F5 决策，MVP/V2 仅分类视图）。
 class InboxPage extends StatefulWidget {
-  const InboxPage({super.key, required this.repo, required this.handler});
+  const InboxPage({
+    super.key,
+    required this.repo,
+    required this.handler,
+    required this.collector,
+    required this.caps,
+  });
 
   final Repository repo;
   final ItemActionHandler handler;
+  final TextCollector collector;
+  final AiCapabilities caps;
 
   @override
   State<InboxPage> createState() => _InboxPageState();
@@ -141,7 +153,7 @@ class _InboxPageState extends State<InboxPage> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
                             child: Row(
                               children: [
                                 Icon(ContentCard.iconOf(type), size: 18),
@@ -154,6 +166,23 @@ class _InboxPageState extends State<InboxPage> {
                                 const SizedBox(width: 8),
                                 Text('${list.length}',
                                     style: Theme.of(context).textTheme.bodySmall),
+                                const Spacer(),
+                                // 分类内直接添加对应内容（设计 §4.7 分类添加）
+                                IconButton(
+                                  tooltip: '添加${ContentCard.labelOf(type)}',
+                                  icon: const Icon(Icons.add_circle_outline),
+                                  onPressed: () => showModalBottomSheet<void>(
+                                    context: context,
+                                    showDragHandle: true,
+                                    isScrollControlled: true,
+                                    builder: (_) => QuickNoteSheet(
+                                      repo: widget.repo,
+                                      collector: widget.collector,
+                                      caps: widget.caps,
+                                      initialType: type,
+                                    ),
+                                  ),
+                                ),
                               ],
                             ),
                           ),
