@@ -17,13 +17,16 @@ description: 拾贝 goodshare（Flutter/Dart 分享收集器+内嵌 MCP 服务�
 
 | 目录 | 职责 |
 |---|---|
-| `lib/share/` | 系统分享接收、文本/链接归一、附件复制落盘 |
-| `lib/data/` | sqflite 单表 + Repository（UI/MCP 共用入口） |
-| `lib/mcp/` | JSON-RPC、工具集（list/get/add_item）、Streamable HTTP 服务 |
+| `lib/share/` | 系统分享接收、文本/链接归一、附件复制落盘、文本收集合并/分散（TextCollector） |
+| `lib/data/` | sqflite 三表（inbox_items/daily_metrics/ai_task_queue）+ Repository（UI/MCP 共用查询入口） |
+| `lib/action/` | UI/MCP 共用写路径动作层（ItemActionHandler）+ machine_json Schema 校验 |
+| `lib/ai/` | AiReconstructor 抽象/占位实现/Registry + 队列消费者 |
+| `lib/mcp/` | JSON-RPC、工具集（PRD §7 全量 10 工具）、Streamable HTTP 服务 |
 | `lib/service/` | McpController（token/开关/前台保活总控） |
-| `lib/pages/` | 收集列表页、MCP 设置页 |
+| `lib/pages/` | 5 tab 主壳（时光机/全部/AI 分类/保险箱/设置）、详情、速记、最近删除 |
+| `lib/ui/` | ItemViewTemplate/ItemViewRegistry、ContentCard 等 UI 框架件 |
 | `mcp-bridge/` | 桌面 stdio↔HTTP 桥接器（纯 Node，零依赖） |
-| `test/` | MCP 协议/文本归一单测（VM，ffi 数据库工厂） |
+| `test/` | 数据层/动作层/收集模式/队列/MCP 协议单测（VM，ffi 内存库） |
 
 ## 命令（2026-09-27 实测）
 

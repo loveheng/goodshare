@@ -1,11 +1,9 @@
-import 'dart:io';
-
 import 'package:flutter/foundation.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 
 import '../data/repository.dart';
 import '../models/item.dart';
+import 'attachments.dart';
 import 'text_collector.dart';
 import 'text_parse.dart';
 
@@ -47,7 +45,7 @@ class ShareIntake {
       final now = DateTime.now().millisecondsSinceEpoch;
 
       for (final f in files) {
-        final saved = await _copyToAppDir(f.path, f.mimeType);
+        final saved = await copyToAppDir(f.path);
         if (saved == null) continue; // 源文件失效，丢弃该附件
         final t = _typeOfMedia(f);
         final item = await _repo.add(InboxItem(
@@ -105,25 +103,6 @@ class ShareIntake {
         SharedMediaType.url => InboxItem.typeUrl,
         SharedMediaType.text => InboxItem.typeNote,
       };
-
-  /// 复制到 app 私有目录；返回落盘路径，失败返回 null（源文件失效时不让整条分享丢失）。
-  Future<String?> _copyToAppDir(String sourcePath, String? mime) async {
-    try {
-      final src = File(sourcePath);
-      if (!await src.exists()) return null;
-      final dir = Directory('${(await getApplicationDocumentsDirectory()).path}/shares');
-      await dir.create(recursive: true);
-      final ts = DateTime.now().millisecondsSinceEpoch;
-      final ext = sourcePath.contains('.') ? sourcePath.split('.').last : null;
-      final name = ext == null || ext.length > 8 ? '$ts' : '$ts.$ext';
-      final dest = File('${dir.path}/$name');
-      await src.copy(dest.path);
-      return dest.path;
-    } catch (e) {
-      debugPrint('[ShareIntake] copy failed: $e');
-      return null;
-    }
-  }
 
   String _baseName(String path) {
     final base = path.split('/').last;
