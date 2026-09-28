@@ -19,7 +19,7 @@ description: 拾贝 goodshare（Flutter 分享收集器+MCP 服务）的「功�
 |---|---|---|---|
 | 采集 | 系统分享接收、文本/链接归一、附件落盘 | `lib/share/`（`find lib/share -type f`） | docs/architecture/overview.md |
 | 存储 | sqflite 表结构、Repository 查询/删除 | `lib/data/`（`find lib/data -type f`） | docs/architecture/overview.md |
-| 动作层 | UI/MCP 共用写路径（编辑/软删/重分类/set_vault/reprocess/unlock_edit）、machine_json Schema 校验 | `lib/action/`（`find lib/action -type f`） | docs/product/product-requirements.md（§7 关键约束） |
+| 动作层 | UI/MCP/AI 管线共用写路径：命令协议（`ItemCommand`/`CommandResult`/`ActionException`/`CommandActor`）、`ItemActionHandler.execute`（编辑/软删/重分类/set_vault/reprocess/unlock_edit/collect/restore/批量事务）、machine_json Schema 校验 | `lib/action/`（`find lib/action -type f`） | docs/architecture/human-ai-parity.md、docs/product/product-requirements.md（§7 关键约束） |
 | AI 管线 | AiReconstructor 接口/占位实现/Registry、ai_task_queue 消费者 | `lib/ai/`（`find lib/ai -type f`） | docs/product/v2-requirements.md（§3.7·§3.8） |
 | 浏览 | 收集列表/搜索/详情/再分享 UI、导航/页面/设置树/组件规范、详情模板注册表 | `lib/pages/` `lib/ui/` `lib/main.dart`（`find lib/pages lib/ui -type f`） | docs/design/ui-spec.md |
 | MCP 服务 | 端点/鉴权/版本协商、工具集、token 总控、前台保活 | `lib/mcp/` `lib/service/`（`find lib/mcp lib/service -type f`） | docs/guide/mcp-integration.md、docs/architecture/overview.md |

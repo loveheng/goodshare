@@ -1,14 +1,18 @@
 import 'package:flutter/material.dart';
 
+import '../ui/drawer_menu_button.dart';
+
 /// AI 分类（多视角聚类，设计 §4.10）：MVP 无 facets 时为空态占位。
 /// 视角/聚类标签由 AI 打标（V2 §3.8 ReconstructResult.facets）动态生成。
 class AiTagsPage extends StatelessWidget {
-  const AiTagsPage({super.key});
+  const AiTagsPage({super.key, this.onOpenDrawer});
+
+  final VoidCallback? onOpenDrawer;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('AI 分类')),
+      appBar: AppBar(leading: drawerMenuLeading(onOpenDrawer), title: const Text('AI 分类')),
       body: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,

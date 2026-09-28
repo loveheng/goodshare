@@ -1,10 +1,19 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import '../action/commands.dart';
 import '../action/item_action_handler.dart';
+import '../app/lifecycle_manager.dart';
 import '../data/repository.dart';
+import '../models/draft_store.dart';
 import '../models/item.dart';
+import '../service/secure_window.dart';
 import '../ui/content_card.dart';
+import '../ui/draft_controller.dart';
 import '../ui/item_view_template.dart';
+import '../ui/repo_auto_reload.dart';
+import '../ui/tokens.dart';
 
 /// 详情页：ItemViewTemplate 双态外壳 + 动作区。
 /// 全部写操作经 ItemActionHandler（与 MCP 同一实现）；vaultContext=true 表示
@@ -27,20 +36,32 @@ class ItemDetailPage extends StatefulWidget {
   State<ItemDetailPage> createState() => _ItemDetailPageState();
 }
 
-class _ItemDetailPageState extends State<ItemDetailPage> {
+class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   late InboxItem _item = widget.item;
+  EditDraft? _editDraft;
+  StreamSubscription<AppLifecycleState>? _lifecycleSub;
+
+  @override
+  Repository get repo => widget.repo;
 
   @override
   void initState() {
     super.initState();
-    widget.repo.addListener(_reload);
+    // 退后台时强制落盘正在编辑的草稿
+    _lifecycleSub = AppLifecycleManager.instance.onBackgrounded.listen((_) => _editDraft?.flushAll());
+    // Vault 敏感内容：开启 FLAG_SECURE 防截屏（离开时清除）
+    if (widget.vaultContext) unawaited(SecureWindow.setSecure(true));
   }
 
   @override
   void dispose() {
-    widget.repo.removeListener(_reload);
+    _lifecycleSub?.cancel();
+    if (widget.vaultContext) unawaited(SecureWindow.setSecure(false));
     super.dispose();
   }
+
+  @override
+  void reload() => _reload();
 
   Future<void> _reload() async {
     final fresh = await widget.repo.byId(_item.id!, includeDeleted: true);
@@ -54,7 +75,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<void> _run(Future<void> Function() action, String done) async {
+  Future<void> _run(Future<Object?> Function() action, String done) async {
     try {
       await action();
       _snack(done);
@@ -78,7 +99,10 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
     );
     if (ok == true) {
       await _run(
-        () => widget.handler.delete(_item.id!, vaultContext: widget.vaultContext),
+        () => widget.handler.execute(
+          DeleteItemCommand(_item.id!),
+          vaultContext: widget.vaultContext,
+        ),
         '已删除（30 天内可恢复）',
       );
       if (mounted) Navigator.pop(context);
@@ -86,35 +110,47 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
   }
 
   Future<void> _edit() async {
-    final titleCtrl = TextEditingController(text: _item.humanTitle ?? '');
-    final tldrCtrl = TextEditingController(text: _item.humanTldr ?? '');
-    final bodyCtrl = TextEditingController(text: _item.humanMd ?? _item.rawContent ?? '');
+    if (_editDraft != null) return; // 防重入
+    final store = DraftStore();
+    final id = _item.id!;
+    final baseId = 'edit:$id';
+    final title = DraftController(draftId: '$baseId:title', targetId: id, store: store, initialContent: _item.humanTitle ?? '');
+    final tldr = DraftController(draftId: '$baseId:tldr', targetId: id, store: store, initialContent: _item.humanTldr ?? '');
+    final body = DraftController(draftId: '$baseId:body', targetId: id, store: store, initialContent: _item.humanMd ?? _item.rawContent ?? '');
+    _editDraft = EditDraft(baseId: baseId, targetId: id, store: store, title: title, tldr: tldr, body: body);
+    await _editDraft!.loadAll(); // 优先恢复已落盘草稿
+    if (!mounted) {
+      _editDraft!.dispose();
+      _editDraft = null;
+      return;
+    }
+
     final saved = await showModalBottomSheet<bool>(
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
       builder: (ctx) => Padding(
-        padding: EdgeInsets.fromLTRB(16, 0, 16, 16 + MediaQuery.of(ctx).viewInsets.bottom),
+        padding: EdgeInsets.fromLTRB(Insets.lg, 0, Insets.lg, Insets.lg + MediaQuery.of(ctx).viewInsets.bottom),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             TextField(
-              controller: titleCtrl,
+              controller: _editDraft!.title.text,
               decoration: const InputDecoration(labelText: '标题'),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: Insets.sm),
             TextField(
-              controller: tldrCtrl,
+              controller: _editDraft!.tldr.text,
               decoration: const InputDecoration(labelText: 'TL;DR'),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: Insets.sm),
             TextField(
-              controller: bodyCtrl,
+              controller: _editDraft!.body.text,
               maxLines: 6,
               decoration: const InputDecoration(labelText: '内容（Markdown）'),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: Insets.md),
             FilledButton(
               onPressed: () => Navigator.pop(ctx, true),
               child: const Text('保存'),
@@ -123,17 +159,26 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
         ),
       ),
     );
-    if (saved != true) return;
+    if (saved != true) {
+      _editDraft!.dispose();
+      _editDraft = null;
+      return;
+    }
     await _run(
-      () => widget.handler.edit(
-        _item.id!,
-        title: titleCtrl.text.trim(),
-        tldr: tldrCtrl.text.trim(),
-        humanMd: bodyCtrl.text,
+      () => widget.handler.execute(
+        UpdateItemCommand(
+          id: _item.id!,
+          title: title.text.text.trim(),
+          tldr: tldr.text.text.trim(),
+          humanMd: body.text.text,
+        ),
         vaultContext: widget.vaultContext,
       ),
       '已保存',
     );
+    await _editDraft!.clearAll();
+    _editDraft!.dispose();
+    _editDraft = null;
   }
 
   Future<void> _reclassify() async {
@@ -144,7 +189,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Padding(padding: EdgeInsets.all(12), child: Text('重分类为（AI 未处理时的手动纠正）')),
+            const Padding(padding: EdgeInsets.all(Insets.md), child: Text('重分类为（AI 未处理时的手动纠正）')),
             ListTile(
               leading: const Icon(Icons.forum_outlined),
               title: const Text('聊天记录'),
@@ -161,7 +206,10 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
     );
     if (target == null) return;
     await _run(
-      () => widget.handler.reclassify(_item.id!, target, vaultContext: widget.vaultContext),
+      () => widget.handler.execute(
+        ReclassifyCommand(_item.id!, target),
+        vaultContext: widget.vaultContext,
+      ),
       '已重分类',
     );
   }
@@ -172,7 +220,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
     return Scaffold(
       appBar: AppBar(title: Text('${ContentCard.labelOf(_item.itemType)}详情')),
       body: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+        padding: const EdgeInsets.fromLTRB(Insets.xl, Insets.md, Insets.xl, Insets.xxl),
         children: [
           ItemViewTemplate(item: _item),
           const Divider(height: 32),
@@ -188,7 +236,10 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
               if (_item.editLocked)
                 FilledButton.tonalIcon(
                   onPressed: () => _run(
-                    () => widget.handler.unlockEdit(_item.id!, vaultContext: widget.vaultContext),
+                    () => widget.handler.execute(
+                      UnlockEditCommand(_item.id!),
+                      vaultContext: widget.vaultContext,
+                    ),
                     '已解除编辑锁定',
                   ),
                   icon: const Icon(Icons.lock_open),
@@ -202,7 +253,10 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
                 ),
               OutlinedButton.icon(
                 onPressed: () => _run(
-                  () => widget.handler.reprocess(_item.id!, vaultContext: widget.vaultContext),
+                  () => widget.handler.execute(
+                    ReprocessCommand(_item.id!),
+                    vaultContext: widget.vaultContext,
+                  ),
                   '已重新处理',
                 ),
                 icon: const Icon(Icons.refresh),
@@ -211,7 +265,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
               if (!vault)
                 OutlinedButton.icon(
                   onPressed: () => _run(
-                    () => widget.handler.setVault(_item.id!, true),
+                    () => widget.handler.execute(SetVaultCommand(_item.id!, true)),
                     '已移入保险箱',
                   ),
                   icon: const Icon(Icons.lock_outline),
@@ -220,7 +274,10 @@ class _ItemDetailPageState extends State<ItemDetailPage> {
               else if (widget.vaultContext)
                 OutlinedButton.icon(
                   onPressed: () => _run(
-                    () => widget.handler.setVault(_item.id!, false, vaultContext: true),
+                    () => widget.handler.execute(
+                      SetVaultCommand(_item.id!, false),
+                      vaultContext: true,
+                    ),
                     '已移出保险箱',
                   ),
                   icon: const Icon(Icons.lock_open_outlined),

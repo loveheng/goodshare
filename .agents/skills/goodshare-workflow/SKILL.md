@@ -19,7 +19,7 @@ description: 拾贝 goodshare（Flutter/Dart 分享收集器+内嵌 MCP 服务�
 |---|---|
 | `lib/share/` | 系统分享接收、文本/链接归一、附件复制落盘、文本收集合并/分散（TextCollector） |
 | `lib/data/` | sqflite 三表（inbox_items/daily_metrics/ai_task_queue）+ Repository（UI/MCP 共用查询入口） |
-| `lib/action/` | UI/MCP 共用写路径动作层（ItemActionHandler）+ machine_json Schema 校验 |
+| `lib/action/` | Human-AI 对称性核心：命令协议 `commands.dart`（ItemCommand/CommandResult/CommandActor/ActionException）+ 唯一写入口 `ItemActionHandler.execute/executeAll`（事务批量）+ machine_json Schema 校验 |
 | `lib/ai/` | AiReconstructor 抽象/占位实现/Registry + 队列消费者 |
 | `lib/mcp/` | JSON-RPC、工具集（PRD §7 全量 10 工具）、Streamable HTTP 服务 |
 | `lib/service/` | McpController（token/开关/前台保活总控） |

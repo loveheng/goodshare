@@ -8,6 +8,7 @@ import '../data/repository.dart';
 import '../mcp/mcp_server.dart';
 import '../update/remote_config_store.dart';
 import '../util/lan_ip.dart';
+import 'foreground_task_init.dart';
 
 /// MCP 服务总控：token 与开关持久化 + 内嵌 HTTP server + 前台服务保活。
 class McpController extends ChangeNotifier {
@@ -60,21 +61,8 @@ class McpController extends ChangeNotifier {
   Future<String?> enable() async {
     _lastError = null;
     try {
-      FlutterForegroundTask.init(
-        androidNotificationOptions: AndroidNotificationOptions(
-          channelId: 'goodshare_mcp',
-          channelName: 'MCP 服务',
-          channelDescription: '拾贝收集器的 MCP 服务运行通知',
-          channelImportance: NotificationChannelImportance.LOW,
-          priority: NotificationPriority.LOW,
-        ),
-        iosNotificationOptions: const IOSNotificationOptions(showNotification: true),
-        foregroundTaskOptions: ForegroundTaskOptions(
-          eventAction: ForegroundTaskEventAction.nothing(),
-          autoRunOnBoot: false,
-          allowWakeLock: true,
-        ),
-      );
+      // 统一前台服务初始化（与 AI 队列共用单实例，避免重复 init）
+      await ensureForegroundTaskInit();
       final addr = await lanIpv4();
       await FlutterForegroundTask.startService(
         serviceTypes: [ForegroundServiceTypes.dataSync],

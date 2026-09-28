@@ -1,21 +1,31 @@
 import 'package:flutter/material.dart';
 
+import '../action/commands.dart';
+import '../action/item_action_handler.dart';
 import '../data/repository.dart';
 import '../models/item.dart';
+import '../ui/repo_auto_reload.dart';
 
 /// 最近删除：保留期内可恢复或手动彻底删除；30 天后启动时自动物理清理。
 class RecentDeletedPage extends StatefulWidget {
-  const RecentDeletedPage({super.key, required this.repo});
+  const RecentDeletedPage({super.key, required this.handler, required this.repo});
 
+  final ItemActionHandler handler;
   final Repository repo;
 
   @override
   State<RecentDeletedPage> createState() => _RecentDeletedPageState();
 }
 
-class _RecentDeletedPageState extends State<RecentDeletedPage> {
+class _RecentDeletedPageState extends State<RecentDeletedPage> with RepoAutoReload {
   List<InboxItem> _items = [];
   bool _loading = true;
+
+  @override
+  Repository get repo => widget.repo;
+
+  @override
+  void reload() => _reload();
 
   @override
   void initState() {
@@ -24,7 +34,7 @@ class _RecentDeletedPageState extends State<RecentDeletedPage> {
   }
 
   Future<void> _reload() async {
-    final items = await widget.repo.listDeleted();
+    final items = await widget.handler.listDeleted();
     if (!mounted) return;
     setState(() {
       _items = items;
@@ -46,7 +56,7 @@ class _RecentDeletedPageState extends State<RecentDeletedPage> {
       ),
     );
     if (ok == true) {
-      await widget.repo.purgeAllDeleted();
+      await widget.handler.purgeAllDeleted();
       await _reload();
     }
   }
@@ -64,7 +74,7 @@ class _RecentDeletedPageState extends State<RecentDeletedPage> {
       ),
     );
     if (ok == true) {
-      await widget.repo.deleteForever(it.id!);
+      await widget.handler.execute(DeleteForeverCommand(it.id!));
       await _reload();
     }
   }
@@ -110,7 +120,7 @@ class _RecentDeletedPageState extends State<RecentDeletedPage> {
                         children: [
                           TextButton(
                             onPressed: () async {
-                              await widget.repo.restore(it.id!);
+                              await widget.handler.execute(RestoreCommand(it.id!));
                               await _reload();
                             },
                             child: const Text('恢复'),

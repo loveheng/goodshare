@@ -1,7 +1,14 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'action/item_action_handler.dart';
+import 'app/lifecycle_manager.dart';
+import 'ui/privacy_blur_overlay.dart';
+import 'ai/asr_reconstructor.dart';
+import 'ai/ai_queue_service.dart';
 import 'ai/capabilities.dart';
+import 'ai/model_manager.dart';
 import 'ai/ocr_reconstructor.dart';
 import 'ai/queue_consumer.dart';
 import 'ai/reconstructor.dart';
@@ -15,38 +22,61 @@ import 'update/remote_config_store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 规则二：限制图片缓存水位，长列表缩略图不会撑爆内存（默认 1000 张 / 100MB 过高）
+  PaintingBinding.instance.imageCache
+    ..maximumSizeBytes = 100 << 20 // 100MB
+    ..maximumSize = 500; // 缩略图体积小，允许较多条目常驻缓存
   final repo = Repository();
   // 预热数据库，避免首页先闪空态；顺带物理清理超过 30 天的已删条目
   await Db.instance();
   await repo.purgeDeleted();
-  final collector = TextCollector(repo);
+  // 动作层先建：摄入（TextCollector/ShareIntake）与 MCP 共用同一写入口
+  final handler = ItemActionHandler(repo);
+  final collector = TextCollector(handler);
   await collector.load();
   final caps = AiCapabilities();
   await caps.load();
   // 本机能力检测：首次执行后持久化，此后不再检测
   await caps.ensureDetected();
-  final handler = ItemActionHandler(repo);
   final mcp = McpController(repo: repo);
   await mcp.load();
   await RemoteConfigStore.instance.load();
-  await ShareIntake(repo, collector).init();
-  // AI 队列消费者：v1 = 图片 ML Kit OCR（受设置开关门控）+ 链接离线抓取 + 其余占位复制
-  QueueConsumer(
+  final models = ModelManager();
+  await models.load();
+  await ShareIntake(handler, collector).init();
+  // AI 队列消费者：v1 = 图片 ML Kit OCR + 音频 Sherpa 离线转写（均受设置开关门控）
+  // + 链接离线抓取 + 其余占位复制
+  final consumer = QueueConsumer(
     repo,
     ReconstructorRegistry([
       OcrReconstructor(
         isOcrEnabled: () => caps.ocrEnabled,
         isUrlFetchEnabled: () => caps.urlFetchEnabled,
       ),
+      AsrReconstructor(
+        isAsrEnabled: () => caps.asrEnabled,
+        models: models,
+      ),
       const PlaceholderReconstructor(),
     ]),
-  ).start();
+    handler,
+  );
+  consumer.start();
+  // 第 3 档：前台服务保活 + 设备状态感知调度 + 内存压力优雅中断
+  // （consumer 启动 / 僵尸回收 / resumed 排空均收口进 AiQueueService）
+  final aiQueue = AiQueueService(repo: repo, consumer: consumer, mcp: mcp);
+  consumer.canProcess = () async => aiQueue.inferenceAllowed;
+  await aiQueue.init();
+  // 规则一/三/四枢纽：生命周期广播，各模块（队列回收 / 安全中心 / 草稿）自行订阅
+  AppLifecycleManager.instance.init();
   runApp(GoodShareApp(
     repo: repo,
     handler: handler,
     collector: collector,
     mcp: mcp,
     caps: caps,
+    models: models,
+    aiQueue: aiQueue,
   ));
 }
 
@@ -58,6 +88,8 @@ class GoodShareApp extends StatelessWidget {
     required this.collector,
     required this.mcp,
     required this.caps,
+    required this.models,
+    required this.aiQueue,
   });
 
   final Repository repo;
@@ -65,12 +97,24 @@ class GoodShareApp extends StatelessWidget {
   final TextCollector collector;
   final McpController mcp;
   final AiCapabilities caps;
+  final ModelManager models;
+  final AiQueueService aiQueue;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: '拾贝',
       debugShowCheckedModeBanner: false,
+      // 规则五：全局钳制字号缩放上限 1.5x，避免系统特大字体下 RenderFlex overflow
+      builder: (context, child) {
+        final data = MediaQuery.of(context);
+        return MediaQuery(
+          data: data.copyWith(
+            textScaler: data.textScaler.clamp(minScaleFactor: 1.0, maxScaleFactor: 1.5),
+          ),
+          child: PrivacyBlurOverlay(child: child!),
+        );
+      },
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF00897B)),
@@ -89,6 +133,8 @@ class GoodShareApp extends StatelessWidget {
         collector: collector,
         mcp: mcp,
         caps: caps,
+        models: models,
+        aiQueue: aiQueue,
       ),
     );
   }

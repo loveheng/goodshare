@@ -3,8 +3,12 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:just_audio/just_audio.dart';
+import 'package:video_player/video_player.dart';
 
 import '../models/item.dart';
+import 'image_annotator.dart';
+import 'tokens.dart';
 
 /// 详情查看模板 + 按类型注册表（设计 §4.3/§6）。
 /// 通用外壳（tldr/标题/机器态切换/元信息/操作）由 ItemViewTemplate 承载，
@@ -21,8 +25,8 @@ class ItemViewRegistry {
     InboxItem.typeDocument: _documentView,
     InboxItem.typeUrl: _textView,
     InboxItem.typeImage: _imageView,
-    InboxItem.typeVideo: _mediaView,
-    InboxItem.typeAudio: _mediaView,
+    InboxItem.typeVideo: _videoView,
+    InboxItem.typeAudio: _audioView,
   };
 
   /// 注册/覆盖某类型的专属区（扩展点）。
@@ -56,7 +60,7 @@ class _ItemViewTemplateState extends State<ItemViewTemplate> {
         // 顶部固定 TL;DR（人类态摘要）
         if (item.humanTldr?.isNotEmpty ?? false)
           Padding(
-            padding: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.only(bottom: Insets.sm),
             child: Text(
               item.humanTldr!,
               style: theme.textTheme.bodyMedium
@@ -65,12 +69,12 @@ class _ItemViewTemplateState extends State<ItemViewTemplate> {
           ),
         if (item.humanTitle?.isNotEmpty ?? false)
           Padding(
-            padding: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.only(bottom: Insets.sm),
             child: Text(item.humanTitle!, style: theme.textTheme.titleLarge),
           ),
         // 机器态切换（双态呈现：机器态需显式切换；空态明示 V1 基础模式）
         Padding(
-          padding: const EdgeInsets.only(bottom: 8),
+          padding: const EdgeInsets.only(bottom: Insets.sm),
           child: Row(
             children: [
               Text('机器态', style: theme.textTheme.labelLarge),
@@ -86,11 +90,11 @@ class _ItemViewTemplateState extends State<ItemViewTemplate> {
         if (_machineMode && (item.machineJson?.isNotEmpty ?? false))
           Container(
             width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(Insets.md),
+            margin: const EdgeInsets.only(bottom: Insets.md),
             decoration: BoxDecoration(
               color: theme.colorScheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(Radii.md),
             ),
             child: SelectableText(
               const JsonEncoder.withIndent('  ').convert(jsonDecode(item.machineJson!)),
@@ -128,49 +132,332 @@ Widget _documentView(BuildContext context, InboxItem item) {
           selectable: true,
           styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: Insets.sm),
       ],
       _FileTile(path: item.rawFilePath),
     ],
   );
 }
 
-/// 图片专属区：图片 + OCR 文本（OCR 文本 V2 管线产出）。
-Widget _imageView(BuildContext context, InboxItem item) {
+/// 图片专属区：查看/标注双态（标注业务优先，UI 暂最简）。
+Widget _imageView(BuildContext context, InboxItem item) => _ImageView(item: item);
+
+class _ImageView extends StatefulWidget {
+  const _ImageView({required this.item});
+  final InboxItem item;
+
+  @override
+  State<_ImageView> createState() => _ImageViewState();
+}
+
+class _ImageViewState extends State<_ImageView> {
+  bool _annotating = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final item = widget.item;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (item.hasAttachment)
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              FilledButton.tonalIcon(
+                onPressed: () => setState(() => _annotating = !_annotating),
+                icon: Icon(_annotating ? Icons.check : Icons.edit_outlined),
+                label: Text(_annotating ? '完成标注' : '标注图片'),
+              ),
+              if (_annotating) ...[
+                const SizedBox(width: Insets.sm),
+                Expanded(
+                  child: Text(
+                    '选上方类型后在图上拖拽绘制；文字/序号点击图上输入',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        if (_annotating)
+          ImageAnnotator(item: item)
+        else ...[
+          if (item.hasAttachment)
+            ClipRRect(
+              borderRadius: BorderRadius.circular(Radii.md),
+              child: Image.file(
+                File(item.rawFilePath!),
+                fit: BoxFit.contain,
+                errorBuilder: (_, _, _) => const _EmptyView(text: '图片文件已不存在'),
+              ),
+            ),
+          if (item.bodyText.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: Insets.sm),
+              child: SelectableText(item.bodyText),
+            ),
+        ],
+      ],
+    );
+  }
+}
+
+/// 音频专属区：内嵌简单播放器（2026-09-27；转写文本随 V2 管线解锁后展示）。
+Widget _audioView(BuildContext context, InboxItem item) {
+  if (!item.hasAttachment) return const _EmptyView(text: '无音频文件');
   return Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      if (item.hasAttachment)
-        ClipRRect(
-          borderRadius: BorderRadius.circular(12),
-          child: Image.file(
-            File(item.rawFilePath!),
-            fit: BoxFit.contain,
-            errorBuilder: (_, _, _) => const _EmptyView(text: '图片文件已不存在'),
-          ),
-        ),
       if (item.bodyText.isNotEmpty)
         Padding(
-          padding: const EdgeInsets.only(top: 8),
+          padding: const EdgeInsets.only(bottom: Insets.sm),
           child: SelectableText(item.bodyText),
         ),
+      _AudioPlayer(path: item.rawFilePath!),
     ],
   );
 }
 
-/// 音视频专属区：MVP 显示文件信息（内嵌播放器为 V2 打磨项，可经「再分享」播放）。
-Widget _mediaView(BuildContext context, InboxItem item) {
+/// 视频专属区：内嵌简单播放器（2026-09-27；转写文本随 V2 管线解锁后展示）。
+Widget _videoView(BuildContext context, InboxItem item) {
+  if (!item.hasAttachment) return const _EmptyView(text: '无视频文件');
   return Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       if (item.bodyText.isNotEmpty)
         Padding(
-          padding: const EdgeInsets.only(bottom: 8),
+          padding: const EdgeInsets.only(bottom: Insets.sm),
           child: SelectableText(item.bodyText),
         ),
-      _FileTile(path: item.rawFilePath),
+      _VideoPlayer(path: item.rawFilePath!),
     ],
   );
+}
+
+String _fmtTime(Duration d) =>
+    '${d.inMinutes.toString().padLeft(2, '0')}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
+
+/// 音频简单播放器：播放/暂停 + 进度条 + 时间；加载/解码失败给错误态。
+class _AudioPlayer extends StatefulWidget {
+  const _AudioPlayer({required this.path});
+
+  final String path;
+
+  @override
+  State<_AudioPlayer> createState() => _AudioPlayerState();
+}
+
+class _AudioPlayerState extends State<_AudioPlayer> {
+  late final AudioPlayer _player = AudioPlayer();
+  Duration _position = Duration.zero;
+  Duration _duration = Duration.zero;
+  bool _playing = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _player.positionStream.listen((p) => setState(() => _position = p));
+    _player.durationStream.listen((d) {
+      if (d != null) setState(() => _duration = d);
+    });
+    _player.playerStateStream.listen((s) {
+      if (mounted) setState(() => _playing = s.playing);
+    });
+    _player.setFilePath(widget.path).catchError((Object e) {
+      debugPrint('[AudioPlayer] load failed: $e');
+      if (mounted) setState(() => _error = '音频文件加载失败');
+      return Duration.zero;
+    });
+  }
+
+  @override
+  void dispose() {
+    _player.dispose();
+    super.dispose();
+  }
+
+  Future<void> _toggle() async {
+    try {
+      if (_playing) {
+        await _player.pause();
+      } else {
+        if (_player.processingState == ProcessingState.completed) {
+          await _player.seek(Duration.zero);
+        }
+        await _player.play();
+      }
+    } catch (e) {
+      if (mounted) setState(() => _error = '播放失败：$e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      margin: const EdgeInsets.only(top: Insets.xs),
+      padding: const EdgeInsets.symmetric(horizontal: Insets.md, vertical: Insets.sm),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(Radii.md),
+      ),
+      child: _error != null
+          ? Row(
+              children: [
+                Icon(Icons.error_outline,
+                    size: 18, color: theme.colorScheme.error),
+                const SizedBox(width: Insets.sm),
+                Expanded(child: Text(_error!, style: theme.textTheme.bodySmall)),
+              ],
+            )
+          : Column(
+              children: [
+                Row(
+                  children: [
+                    IconButton.filledTonal(
+                      onPressed: _toggle,
+                      icon: Icon(_playing ? Icons.pause : Icons.play_arrow),
+                    ),
+                    const SizedBox(width: Insets.xs),
+                    Expanded(
+                      child: Text(
+                        '音频 ${_fmtTime(_position)} / ${_fmtTime(_duration)}',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ),
+                  ],
+                ),
+                if (_duration > Duration.zero)
+                  Slider(
+                    value: _position.inMilliseconds.toDouble()
+                        .clamp(0, _duration.inMilliseconds.toDouble()),
+                    onChanged: (v) =>
+                        _player.seek(Duration(milliseconds: v.round())),
+                  ),
+              ],
+            ),
+    );
+  }
+}
+
+/// 视频简单播放器：画面 + 播放/暂停 + 进度条 + 时间；加载/解码失败给错误态。
+class _VideoPlayer extends StatefulWidget {
+  const _VideoPlayer({required this.path});
+
+  final String path;
+
+  @override
+  State<_VideoPlayer> createState() => _VideoPlayerState();
+}
+
+class _VideoPlayerState extends State<_VideoPlayer> {
+  late final VideoPlayerController _controller =
+      VideoPlayerController.file(File(widget.path));
+  bool _ready = false;
+  bool _playing = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_onChanged);
+    _controller.initialize().then((_) {
+      if (!mounted) return;
+      final desc = _controller.value.errorDescription;
+      setState(() {
+        _ready = true;
+        _playing = _controller.value.isPlaying;
+        if (desc != null) _error = '视频文件加载失败';
+      });
+    }).catchError((Object e) {
+      debugPrint('[VideoPlayer] initialize failed: $e');
+      if (mounted) setState(() => _error = '视频文件加载失败');
+    });
+  }
+
+  void _onChanged() {
+    if (mounted) setState(() => _playing = _controller.value.isPlaying);
+  }
+
+  Future<void> _toggle() async {
+    try {
+      if (_controller.value.isPlaying) {
+        await _controller.pause();
+      } else {
+        await _controller.play();
+      }
+    } catch (e) {
+      if (mounted) setState(() => _error = '播放失败：$e');
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.removeListener(_onChanged);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final pos = _controller.value.position;
+    final dur = _controller.value.duration;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(Radii.md),
+          child: _error != null
+              ? Container(
+                  height: 160,
+                  color: theme.colorScheme.surfaceContainerHighest,
+                  child: Center(
+                    child: Text(_error!, style: theme.textTheme.bodySmall),
+                  ),
+                )
+              : !_ready
+                  ? Container(
+                      height: 160,
+                      color: theme.colorScheme.surfaceContainerHighest,
+                      child:
+                          const Center(child: CircularProgressIndicator()),
+                    )
+                  : AspectRatio(
+                      aspectRatio: _controller.value.aspectRatio,
+                      child: VideoPlayer(_controller),
+                    ),
+        ),
+        if (_error == null)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: Insets.xs),
+            child: Row(
+              children: [
+                IconButton.filledTonal(
+                  onPressed: _ready ? _toggle : null,
+                  icon: Icon(_playing ? Icons.pause : Icons.play_arrow),
+                ),
+                const SizedBox(width: Insets.xs),
+                Text(_fmtTime(pos), style: theme.textTheme.bodySmall),
+                const SizedBox(width: Insets.sm),
+                Expanded(
+                  child: dur > Duration.zero
+                      ? Slider(
+                          value: pos.inMilliseconds.toDouble()
+                              .clamp(0.0, dur.inMilliseconds.toDouble()),
+                          onChanged: (v) => _controller.seekTo(
+                              Duration(milliseconds: v.round())),
+                        )
+                      : const SizedBox.shrink(),
+                ),
+                Text(_fmtTime(dur), style: theme.textTheme.bodySmall),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
 }
 
 Widget _fallbackView(BuildContext context, InboxItem item) => _textView(context, item);

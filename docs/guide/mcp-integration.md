@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-09-27
+updated: 2026-09-28
 ---
 
 # MCP 接入指南
@@ -56,7 +56,9 @@ curl -s http://127.0.0.1:8765/mcp \
 
 ## 工具一览
 
-所有写/改动作与手机 UI 走同一实现（`ItemActionHandler`），校验语义完全一致。Vault 条目对 MCP 物理不可见——仅可 `set_vault(on=true)` 移入，无法读取或移出。
+所有写/改动作与手机 UI 走同一实现（MCP 把 JSON 反序列化成 `ItemCommand`，交给与 UI 同一个 `ItemActionHandler`），校验语义完全一致。Vault 条目对 MCP 物理不可见——仅可 `set_vault(on=true)` 移入，无法读取或移出。
+
+写工具**返回修改后的最新条目快照**（与 `get_item` 同一形状），后续推理请以返回值而非记忆中的旧值为准；被拒时 `error.data` 带 `{code, hint}`，可据此自我纠正（如 `edit_locked` → 先调 `unlock_edit`）。详见 docs/architecture/human-ai-parity.md。
 
 | 工具 | 参数 | 说明 |
 |---|---|---|
@@ -65,11 +67,15 @@ curl -s http://127.0.0.1:8765/mcp \
 | `add_item` | `content` `title?` `tags?[]` | AI 侧写入文本/链接，自动识别纯 URL；不参与合并模式 |
 | `query_machine_data` | `query?` `type?` `limit?` `offset?` | 机器态结构化数组（仅含已有 machine_json 的条目） |
 | `get_timeline_context` | `date`（YYYY-MM-DD） | 当日多维上下文；健康/事件随 V3 健康接入填充，当前为空 |
-| `update_item` | `id` `patch{title? tldr? tags? human_md? machine_json? item_type?}` | 编辑；machine_json 须过领域 Schema 校验；合并锁定条目拒绝写入 |
+| `update_item` | `id` `patch{title? tldr? tags? human_md? machine_json? item_type?}` `expected_version?` | 编辑；machine_json 须过领域 Schema 校验；合并锁定条目拒绝写入；`expected_version` 为乐观锁（见下） |
 | `delete_item` | `id` | 软删除（30 天内用户可恢复），关联 AI 任务一并取消 |
 | `set_vault` | `id` `on:true` | 移入保险箱（之后对 MCP 不可见）；移出仅限手机端操作 |
 | `reprocess_item` | `id` | 重新触发双态重构（重置处理态并重新入队） |
 | `unlock_edit` | `id` | 解除合并条目编辑锁，随后 `update_item` 方可写入 |
+| `batch_items` | `commands[]`（1–20 条，形如 `{"op":"update","id":"...","title":"..."}`） | **原子批量**：全部成功才提交，任一条失败整批回滚；可用 op：update/delete/set_vault/reclassify/reprocess/unlock_edit/collect/append_segment/restore；不支持 delete_forever |
+| `append_segment` | `id` `text` `source_app?` `expected_version?` | 往合并链末尾追加一段（等价于手机端连续速记自动并链）；仅合并模式条目、末段在 5 分钟窗口内可追加，超窗改用 `add_item` |
+
+**乐观锁（`expected_version`）**：`get_item` / 写工具返回值里的 `version` 即当前版本号。多步规划时把读到的 `version` 原样带回，若期间条目已被用户或他人改动，写入会被拒绝并返回 `version_conflict`（而不是静默覆盖）——此时重新 `get_item` 取最新状态再决策即可。不传则不校验。
 
 ## 安全提示
 

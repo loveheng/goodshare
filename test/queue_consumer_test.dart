@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:goodshare/action/commands.dart';
 import 'package:goodshare/action/item_action_handler.dart';
 import 'package:goodshare/ai/ocr_reconstructor.dart';
 import 'package:goodshare/ai/queue_consumer.dart';
@@ -53,7 +54,7 @@ void main() {
       createdAt: 1,
     ));
     await repo.enqueueTask(it.id!, null);
-    final consumer = QueueConsumer(repo, ReconstructorRegistry.defaultRegistry());
+    final consumer = QueueConsumer(repo, ReconstructorRegistry.defaultRegistry(), handler);
 
     final n = await consumer.pollOnce();
     expect(n, 1);
@@ -84,7 +85,7 @@ void main() {
       )),
       const PlaceholderReconstructor(),
     ]);
-    await QueueConsumer(repo, registry).pollOnce();
+    await QueueConsumer(repo, registry, handler).pollOnce();
 
     final after = await repo.byId(it.id!);
     expect(after!.humanMd, '重分类产出');
@@ -101,7 +102,7 @@ void main() {
       createdAt: 1,
     ));
     await repo.enqueueTask(it.id!, null);
-    await QueueConsumer(repo, ReconstructorRegistry([fake(throwError: true)])).pollOnce();
+    await QueueConsumer(repo, ReconstructorRegistry([fake(throwError: true)]), handler).pollOnce();
 
     expect((await repo.byId(it.id!))!.isProcessed, -1);
     expect(await repo.pendingTasks(), isEmpty);
@@ -114,8 +115,8 @@ void main() {
       createdAt: 1,
     ));
     await repo.update(it.id!, {'is_processed': 1, 'human_md': '旧产出'});
-    await handler.reprocess(it.id!);
-    await QueueConsumer(repo, ReconstructorRegistry.defaultRegistry()).pollOnce();
+    await handler.execute(ReprocessCommand(it.id!));
+    await QueueConsumer(repo, ReconstructorRegistry.defaultRegistry(), handler).pollOnce();
 
     final after = await repo.byId(it.id!);
     expect(after!.humanMd, '再处理一次', reason: '占位重跑覆盖旧产出');
@@ -129,6 +130,7 @@ void main() {
     await QueueConsumer(
       repo,
       ReconstructorRegistry([const OcrReconstructor(), const PlaceholderReconstructor()]),
+      handler,
     ).pollOnce();
     expect((await repo.byId(note.id!))!.humanMd, '普通文本');
 
@@ -143,6 +145,7 @@ void main() {
     await QueueConsumer(
       repo,
       ReconstructorRegistry([const OcrReconstructor(), const PlaceholderReconstructor()]),
+      handler,
     ).pollOnce();
     final after = await repo.byId(img.id!);
     expect(after!.isProcessed, 1, reason: 'OCR 失败降级不置 -1');
@@ -164,6 +167,7 @@ void main() {
         OcrReconstructor(isOcrEnabled: () => false),
         const PlaceholderReconstructor(),
       ]),
+      handler,
     ).pollOnce();
     final after = await repo.byId(img.id!);
     expect(after!.humanMd, '图片附带的文字', reason: '开关关闭 → 占位行为，不触发 OCR');
@@ -178,11 +182,49 @@ void main() {
     ));
     await repo.enqueueTask(it.id!, null);
     await repo.softDelete(it.id!);
-    await QueueConsumer(repo, ReconstructorRegistry.defaultRegistry()).pollOnce();
+    await QueueConsumer(repo, ReconstructorRegistry.defaultRegistry(), handler).pollOnce();
 
     expect(await repo.pendingTasks(), isEmpty);
     final deleted = await repo.byId(it.id!, includeDeleted: true);
     expect(deleted!.humanMd, isNull, reason: '已删条目不被管线写入');
+  });
+
+  test('管线 machine_json 校验：非法 Schema → 任务 failed、is_processed=-1（堵脏数据）', () async {
+    final it = await repo.add(InboxItem(
+      itemType: InboxItem.typeImage,
+      sourceType: InboxItem.typeImage,
+      rawFilePath: '/tmp/a.jpg',
+      createdAt: 1,
+    ));
+    await repo.enqueueTask(it.id!, Repository.taskOcrAndExtract);
+    final registry = ReconstructorRegistry([
+      fake(result: ReconstructResult(
+        humanMd: '产出',
+        machineJson: {'schema': '未知', 'foo': 1}, // 非法 schema
+      )),
+    ]);
+    await QueueConsumer(repo, registry, handler).pollOnce();
+
+    expect((await repo.byId(it.id!))!.isProcessed, -1, reason: '非法 machine_json 被拒写，任务失败');
+    expect(await repo.pendingTasks(), isEmpty);
+  });
+
+  test('第 3 档门控：canProcess=false 时不认领任务，队列停留 pending 等待时机', () async {
+    final it = await repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      rawContent: '待处理脏数据',
+      createdAt: 1,
+    ));
+    await repo.enqueueTask(it.id!, null);
+    final consumer = QueueConsumer(repo, ReconstructorRegistry.defaultRegistry(), handler)
+      ..canProcess = () async => false; // 低电量 / 内存压力：不允许推理
+
+    final n = await consumer.pollOnce();
+
+    expect(n, 0);
+    expect(await repo.pendingCount(), 1, reason: '门控关闭：任务不被认领，仍为 pending（留待时机续跑）');
+    expect((await repo.byId(it.id!))!.humanMd, isNull, reason: '门控关闭时管线未执行，条目保持未处理');
+    expect((await repo.byId(it.id!))!.isProcessed, isNot(-1), reason: '非失败：未置死信');
   });
 }
 
@@ -191,14 +233,20 @@ class FakeReconstructor implements AiReconstructor {
     required this.available,
     this.result,
     this.throwError = false,
+    this.handlesItemTypes,
   });
 
   final bool available;
   final ReconstructResult? result;
   final bool throwError;
+  final Set<String>? handlesItemTypes;
 
   @override
   Future<bool> get isAvailable async => available;
+
+  @override
+  Future<bool> handles(ReconstructInput input) async =>
+      handlesItemTypes == null || handlesItemTypes!.contains(input.itemType);
 
   @override
   Future<ReconstructResult> reconstruct(ReconstructInput input) async {

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:goodshare/action/item_action_handler.dart';
 import 'package:goodshare/data/db.dart';
 import 'package:goodshare/data/repository.dart';
 import 'package:goodshare/mcp/tools.dart';
@@ -16,12 +17,14 @@ void main() {
   });
 
   late Repository repo;
+  late ItemActionHandler handler;
   late TextCollector collector;
 
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
     repo = Repository();
-    collector = TextCollector(repo);
+    handler = ItemActionHandler(repo);
+    collector = TextCollector(handler);
     // 清空上例残留（内存库按测试文件共享）：Vault 内外全部软删后物理清理
     for (final it in await repo.list(vault: true, includeDeleted: true)) {
       await repo.softDelete(it.id!);

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:goodshare/action/item_action_handler.dart';
 import 'package:goodshare/data/db.dart';
 import 'package:goodshare/data/repository.dart';
 import 'package:goodshare/mcp/jsonrpc.dart';
@@ -129,7 +130,8 @@ void main() {
 
   test('文本归一：纯链接 / 标题+链接 / 纯文本', () {
     final repo = Repository();
-    final intake = ShareIntake(repo, TextCollector(repo));
+    final handler = ItemActionHandler(repo);
+    final intake = ShareIntake(handler, TextCollector(handler));
     expect(intake.parseText('https://a.b/c').type, 'url');
     final t2 = intake.parseText('一篇好文章\nhttps://a.b/c');
     expect(t2.type, 'url');

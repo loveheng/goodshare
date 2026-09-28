@@ -1,6 +1,10 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../models/item.dart';
+import 'goodshare_image.dart';
+import 'tokens.dart';
 
 /// 列表通用卡片（设计 §6 ContentCard）：type 图标 + 预览 + 元信息。
 class ContentCard extends StatelessWidget {
@@ -40,11 +44,30 @@ class ContentCard extends StatelessWidget {
     return '${t.year}-${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')}';
   }
 
+  /// 列表左侧缩略图：图片条目显示真实缩略图（2026-09-27），其余类型用 type 图标。
+  Widget _leading(BuildContext context) {
+    if (item.itemType != InboxItem.typeImage || !item.hasAttachment) {
+      return Icon(iconOf(item.itemType));
+    }
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(Radii.sm),
+      child: SizedBox(
+        width: 48,
+        height: 48,
+        child: GoodshareImage(
+          file: File(item.rawFilePath!),
+          fit: BoxFit.cover,
+          cacheWidth: 96, // 2x of 48px 框，严格走缩略图配置，避免原图解码撑爆缓存
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListTile(
       onTap: onTap,
-      leading: Icon(iconOf(item.itemType)),
+      leading: _leading(context),
       title: Text(
         item.preview.isEmpty ? '（无文本内容）' : item.preview,
         maxLines: 2,

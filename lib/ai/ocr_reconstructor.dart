@@ -10,8 +10,7 @@ import 'url_extract.dart';
 /// - 图片条目：ML Kit 端侧文字识别（中文脚本），OCR 文本写入人类态；
 /// - 其余类型：占位行为（raw_content 原样入 human_md）。
 /// 受设置页「图片 OCR」开关门控（AiCapabilities），关闭或无能力时走占位。
-/// 音频转写不在消费者内完成——Android 系统语音识别仅支持实时流，
-/// 转写在速记采集时同步完成（写 raw 层，消费者照常占位复制），见 QuickNoteSheet。
+/// 音频转写不做（2026-09-27 用户拍板去掉边录边转），录音仅存音频文件。
 /// 无 GMS 设备的 bundled OCR 变体适配为后续项（先支持标准设备）。
 class OcrReconstructor implements AiReconstructor {
   const OcrReconstructor({this.isOcrEnabled, this.isUrlFetchEnabled});
@@ -24,6 +23,11 @@ class OcrReconstructor implements AiReconstructor {
 
   @override
   Future<bool> get isAvailable async => true;
+
+  /// 仅处理图片（OCR）与链接（离线抓取）；音频/文本由其他实现或占位兜底。
+  @override
+  Future<bool> handles(ReconstructInput input) async =>
+      input.itemType == 'image' || input.itemType == 'url';
 
   @override
   Future<ReconstructResult> reconstruct(ReconstructInput input) async {

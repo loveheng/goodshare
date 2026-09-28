@@ -1,7 +1,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
 
-import '../data/repository.dart';
+import '../action/commands.dart';
+import '../action/item_action_handler.dart';
 import '../models/item.dart';
 import 'attachments.dart';
 import 'text_collector.dart';
@@ -11,12 +12,18 @@ import 'text_parse.dart';
 /// 附件会复制到 app 私有目录（documents/shares/），不依赖源 app 的 content URI。
 /// 分层约定：文本/链接写 raw_content（经 TextCollector 支持合并模式），附件写
 /// raw_file_path（每附件一条）；human_* 由 AI 队列占位管线填充，此处只入原始层并入队。
+///
+/// 入库一律经 `ItemActionHandler`（`CollectCommand`）——与手动添加、MCP `add_item` 同源，
+/// 共享同一套防呆与入队出口（Human-AI 对称性：写必走动作层）。
 class ShareIntake {
-  ShareIntake(this._repo, this._collector);
+  ShareIntake(this._handler, this._collector);
 
-  final Repository _repo;
+  final ItemActionHandler _handler;
   final TextCollector _collector;
   bool _busy = false;
+
+  /// 来源标识：插件 1.9.0 不提供来源 App 信息，统一记为「系统分享」便于溯源。
+  static const _sourceApp = '系统分享';
 
   Future<void> init() async {
     // 冷启动（app 未运行时通过分享拉起）
@@ -42,25 +49,22 @@ class ShareIntake {
     _busy = true;
     try {
       final (texts, files) = classify(medias);
-      final now = DateTime.now().millisecondsSinceEpoch;
 
       for (final f in files) {
         final saved = await copyToAppDir(f.path);
         if (saved == null) continue; // 源文件失效，丢弃该附件
         final t = _typeOfMedia(f);
-        final item = await _repo.add(InboxItem(
+        await _handler.execute(CollectCommand(
           itemType: t,
-          sourceType: t,
+          sourceApp: _sourceApp,
           humanTitle: _baseName(f.path),
           rawFilePath: saved,
-          createdAt: now,
         ));
-        await _repo.enqueueTask(item.id!, Repository.taskActionFor(t));
       }
 
       for (final t in texts) {
         // 文本走 TextCollector：分散/合并模式与入队在其内统一处理
-        await _collector.collectText(t);
+        await _collector.collectText(t, sourceApp: _sourceApp);
       }
     } catch (e) {
       debugPrint('[ShareIntake] handle error: $e');

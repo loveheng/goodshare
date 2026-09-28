@@ -5,3 +5,7 @@ analyzer:
     - build/**
     - android/**
     - ios/**
+  errors:
+    # 2026-09-28 UI 规范：强制 const 构造器，编译期固化不变 UI 树，减轻 GC、保滑动满帧。
+    prefer_const_constructors: error
+    prefer_const_constructor_duplicates: error

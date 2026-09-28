@@ -49,22 +49,22 @@ jobs:
       - name: 单测（全过交付线）
         run: flutter test
 
-      # 只构建 arm64-v8a 单架构（2026-09-27 决策：个人 arm64 设备用，体积最小；
-      # 产物仍命名 app-release.apk，自更新流程零改动）
+      # 只构建 arm64-v8a（2026-09-27 决策）。注意：--target-platform 必须配合
+      # --split-per-abi 才会真正裁 ABI（单用仍产出三架构包），产物为 app-arm64-v8a-release.apk
       - name: 构建 Release APK（arm64）
-        run: flutter build apk --release --target-platform android-arm64
+        run: flutter build apk --release --split-per-abi --target-platform android-arm64
 
       - name: 计算校验和
         run: |
           cd build/app/outputs/flutter-apk
-          sha256sum app-release.apk | tee sha256sums.txt
+          sha256sum app-arm64-v8a-release.apk | tee sha256sums.txt
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: app-release-${{ github.sha }}
           path: |
-            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
             build/app/outputs/flutter-apk/sha256sums.txt
           if-no-files-found: error
 
@@ -73,7 +73,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
             build/app/outputs/flutter-apk/sha256sums.txt
           body: |
             拾贝 ${{ github.ref_name }}（debug 签名，个人使用，仅 arm64-v8a）

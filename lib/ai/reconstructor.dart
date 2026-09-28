@@ -40,6 +40,9 @@ abstract class AiReconstructor {
   /// 设备是否具备运行该实现的能力（供运行期门控路由）。
   Future<bool> get isAvailable;
 
+  /// 是否处理该输入类型（按条目类型路由，防止先注册的实现截胡其他类型的任务）。
+  Future<bool> handles(ReconstructInput input);
+
   /// 执行双态重构：输入脏数据，产出人类态 / 机器态 / 标签。
   Future<ReconstructResult> reconstruct(ReconstructInput input);
 }
@@ -53,12 +56,16 @@ class PlaceholderReconstructor implements AiReconstructor {
   Future<bool> get isAvailable async => true;
 
   @override
+  Future<bool> handles(ReconstructInput input) async => true;
+
+  @override
   Future<ReconstructResult> reconstruct(ReconstructInput input) async {
     return ReconstructResult(humanMd: input.rawContent ?? '');
   }
 }
 
-/// 运行期路由（V2 §3.7/§3.8）：取首个 isAvailable 的实现；占位实现恒可用，兜底不卡死。
+/// 运行期路由（V2 §3.7/§3.8）：按输入类型取首个 handles 且 isAvailable 的实现；
+/// 占位实现 handles 恒真、isAvailable 恒真，兜底不卡死。
 /// 档位持久化与手动覆盖（强制 V1 / 尝试 V2）随 V2 §3.7 落地。
 class ReconstructorRegistry {
   ReconstructorRegistry(this._impls) : assert(_impls.isNotEmpty, 'Registry 至少包含一个实现');
@@ -69,11 +76,11 @@ class ReconstructorRegistry {
   static ReconstructorRegistry defaultRegistry() =>
       ReconstructorRegistry([const PlaceholderReconstructor()]);
 
-  Future<AiReconstructor> resolve() async {
+  Future<AiReconstructor> resolve(ReconstructInput input) async {
     for (final impl in _impls) {
-      if (await impl.isAvailable) return impl;
+      if (await impl.handles(input) && await impl.isAvailable) return impl;
     }
-    // 正常不可达：占位实现 isAvailable 恒真
+    // 正常不可达：占位实现 handles/isAvailable 恒真
     throw StateError('Registry 中没有可用实现（应始终包含 PlaceholderReconstructor 兜底）');
   }
 }

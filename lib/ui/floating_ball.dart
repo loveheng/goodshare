@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
-/// 速记悬浮球：可拖拽、松手自动贴左右边（设计 §4.6 悬浮球形态）。
+/// 添加悬浮球：可拖拽、松手自动贴左右边（设计 §4.6 悬浮球形态）。
+/// 2026-09-27 改版：由「速记」升级为全类型通用添加入口（图标随之换 add_circle）。
 /// 仅在 app 内悬浮；跨 app 系统级悬浮窗需 overlay 插件 + 悬浮权限，为后续项。
 class FloatingBall extends StatefulWidget {
   const FloatingBall({super.key, required this.onTap, this.size = 52});
@@ -62,13 +63,17 @@ class _FloatingBallState extends State<FloatingBall> {
             elevation: 4,
             shape: const CircleBorder(),
             color: Theme.of(context).colorScheme.primaryContainer,
-            child: SizedBox(
-              width: widget.size,
-              height: widget.size,
-              child: Icon(
-                Icons.edit_note_rounded,
-                size: widget.size * 0.55,
-                color: Theme.of(context).colorScheme.onPrimaryContainer,
+            child: Semantics(
+              label: '添加内容',
+              button: true,
+              child: SizedBox(
+                width: widget.size,
+                height: widget.size,
+                child: Icon(
+                  Icons.add_circle,
+                  size: widget.size * 0.6,
+                  color: Theme.of(context).colorScheme.onPrimaryContainer,
+                ),
               ),
             ),
           ),

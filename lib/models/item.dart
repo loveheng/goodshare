@@ -41,6 +41,7 @@ class InboxItem {
     this.deletedAt,
     List<TodoMark> todoState = const [],
     required this.createdAt,
+    this.version = 0,
   })  : tags = List.unmodifiable(tags),
         facets = facets == null ? null : Map.unmodifiable(facets),
         appendix = List.unmodifiable(appendix),
@@ -67,6 +68,10 @@ class InboxItem {
   final int? deletedAt; // 软删除时间戳；30 天保留期以此计算
   final List<TodoMark> todoState; // 待办勾选状态（V2 可勾）
   final int createdAt;
+
+  /// 乐观锁版本号：任何写操作 +1。发起方可携带自己"看到的"版本做 CAS，
+  /// 防止人类慢速编辑与 AI 瞬时写入互相静默覆盖（2026-09-28 v5）。
+  final int version;
 
   bool get isImage => itemType == typeImage;
   bool get hasAttachment => rawFilePath != null && rawFilePath!.isNotEmpty;
@@ -109,6 +114,7 @@ class InboxItem {
         'todo_state_json':
             todoState.isEmpty ? null : jsonEncode([for (final t in todoState) t.toJson()]),
         'created_at': createdAt,
+        'version': version,
       };
 
   static InboxItem fromMap(Map<String, Object?> map) {
@@ -169,6 +175,7 @@ class InboxItem {
       deletedAt: map['deleted_at'] as int?,
       todoState: listOf(map['todo_state_json'], TodoMark.fromJson),
       createdAt: (map['created_at'] as int?) ?? 0,
+      version: (map['version'] as int?) ?? 0,
     );
   }
 
@@ -194,6 +201,7 @@ class InboxItem {
     int? deletedAt,
     List<TodoMark>? todoState,
     int? createdAt,
+    int? version,
   }) =>
       InboxItem(
         id: id ?? this.id,
@@ -217,6 +225,7 @@ class InboxItem {
         deletedAt: deletedAt ?? this.deletedAt,
         todoState: todoState ?? this.todoState,
         createdAt: createdAt ?? this.createdAt,
+        version: version ?? this.version,
       );
 
   /// RFC 4122 v4 形状的 uuid。不引第三方依赖（项目规约：新依赖须显式确认）。

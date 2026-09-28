@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-09-27
+updated: 2026-09-28
 ---
 
 # docs/ 结构索引
@@ -15,6 +15,7 @@ updated: 2026-09-27
 ## architecture（架构）
 
 - [overview.md](architecture/overview.md) — 架构总览：分层、关键决策（传输/鉴权/保活/桥接）、测试与已知边界。⚠️ 该文档使用非标准 `> status:` 块引用 frontmatter，待归一为 docs-spec。
+- [human-ai-parity.md](architecture/human-ai-parity.md) — Human-AI 对称性（无头架构）：命令模式统一入参、防呆下沉、写后回状态、原子批量；主体×命令权限矩阵与试金石。
 
 ## guide（接入指南）
 
@@ -24,3 +25,4 @@ updated: 2026-09-27
 ## design（UI 设计规范）
 
 - [ui-spec.md](design/ui-spec.md) — UI 设计规范：Material You/M3 视觉系统、5 底 tab + FAB 导航、页面清单、设置树、组件库与双态呈现；配套约束见项目 skill `goodshare-ui`。
+- [asr-subtitle.md](design/asr-subtitle.md) — 音频转写与字幕生成设计：VAD 分段取时间戳的可选下载资源 `silero-vad-v5`、文本与 SRT/VTT 双产物、无 VAD 时降级为纯文本的门控。

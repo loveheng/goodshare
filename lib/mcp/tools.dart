@@ -1,16 +1,22 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../action/commands.dart';
 import '../action/item_action_handler.dart';
 import '../data/repository.dart';
 import '../models/item.dart';
 import 'jsonrpc.dart';
 
 /// MCP 工具集（PRD §7）：list/get/add/query_machine_data/get_timeline_context/
-/// update/delete/set_vault/reprocess/unlock_edit，共 10 个；execute_action 已裁决剔除。
+/// update/delete/set_vault/reprocess/unlock_edit/batch_items/append_segment，共 12 个；execute_action 已裁决剔除。
 /// 所有写/改动作经 ItemActionHandler（UI 与 MCP 同一套校验与实现）。
 /// 隐私硬约束由 Repository 默认查询保证：Vault 与已删条目物理不可见；
 /// 因此 MCP 对 Vault 条目仅可 set_vault(on=true) 移入，无法移出或读取。
+///
+/// 本层只做三件事，**不做任何业务判断**（防呆全在动作层）：
+/// ① 把大模型输出的 JSON 反序列化成 [ItemCommand]（与 UI 组装的同一类对象）；
+/// ② 以 [CommandActor.ai] 调用动作层；
+/// ③ 把 [CommandResult]（含最新条目快照）序列化回 JSON，让大模型上下文与数据库对齐。
 List<Map<String, Object?>> toolSchemas() => [
       {
         'name': 'list_items',
@@ -92,7 +98,8 @@ List<Map<String, Object?>> toolSchemas() => [
       {
         'name': 'update_item',
         'description': '编辑条目（与手机 UI 编辑同一实现）。合并锁定的条目会拒绝写入，须先 unlock_edit；'
-            'machine_json 必须通过领域 Schema 校验；item_type 仅允许截图条目 image→chatlog/document。',
+            'machine_json 必须通过领域 Schema 校验；item_type 仅允许截图条目 image→chatlog/document。'
+            '返回修改后的完整条目快照——后续推理请以该快照为准，不要用你记忆里的旧值。',
         'inputSchema': {
           'type': 'object',
           'properties': {
@@ -110,13 +117,19 @@ List<Map<String, Object?>> toolSchemas() => [
                 'item_type': {'type': 'string', 'enum': [InboxItem.typeChatlog, InboxItem.typeDocument]},
               },
             },
+            'expected_version': {
+              'type': 'integer',
+              'description': '可选乐观锁：你读取该条目时看到的 version。带上后，若期间条目已被用户或他人改动，'
+                  '本次写入会被拒绝并报 version_conflict（而非静默覆盖）',
+            },
           },
           'required': ['id', 'patch'],
         },
       },
       {
         'name': 'delete_item',
-        'description': '删除条目（软删除，30 天内用户可恢复；关联 AI 任务一并取消）。',
+        'description': '删除条目（软删除，30 天内用户可恢复；关联 AI 任务一并取消）。'
+            '返回条目删除后的快照；彻底删除（不可恢复）不支持，MCP 无此权限。',
         'inputSchema': {
           'type': 'object',
           'properties': {
@@ -127,7 +140,7 @@ List<Map<String, Object?>> toolSchemas() => [
       },
       {
         'name': 'set_vault',
-        'description': '把条目移入保险箱（用户私密区，之后对 MCP 物理不可见）。'
+        'description': '把条目移入保险箱（用户私密区，之后对 MCP 物理不可见，返回值不再含条目内容）。'
             '注意：MCP 只能移入；移出须用户在手机上生物识别后操作。',
         'inputSchema': {
           'type': 'object',
@@ -140,7 +153,7 @@ List<Map<String, Object?>> toolSchemas() => [
       },
       {
         'name': 'reprocess_item',
-        'description': '重新触发某条目的双态重构（重置处理态并重新入队）。',
+        'description': '重新触发某条目的双态重构（重置处理态并重新入队）。返回条目最新快照。',
         'inputSchema': {
           'type': 'object',
           'properties': {
@@ -151,13 +164,56 @@ List<Map<String, Object?>> toolSchemas() => [
       },
       {
         'name': 'unlock_edit',
-        'description': '解除合并收集条目的编辑锁（edit_locked→0），随后 update_item 方可写入。',
+        'description': '解除合并收集条目的编辑锁（edit_locked→0），随后 update_item 方可写入。'
+            '返回条目最新快照（edit_locked=false）。',
         'inputSchema': {
           'type': 'object',
           'properties': {
             'id': {'type': 'string', 'description': '条目 uuid'},
           },
           'required': ['id'],
+        },
+      },
+      {
+        'name': 'batch_items',
+        'description': '原子批量执行多条条目操作（复合操作专用）：全部成功才一次性提交，任一条失败则整体回滚，'
+            '不会出现「字改了但标签没打上」的半成品。适合一次完成解锁编辑 + 改标题 + 打标签这类组合改动。'
+            '每条命令形如 {"op":"update","id":"<uuid>","title":"..."}，'
+            '可用 op：update / delete / set_vault / reclassify / reprocess / unlock_edit / collect / restore；'
+            '不支持 delete_forever（不可逆）。返回每条命令的结果与最终条目快照。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'commands': {
+              'type': 'array',
+              'minItems': 1,
+              'maxItems': 20,
+              'items': {'type': 'object'},
+              'description': '命令数组，按数组顺序执行；每条可带可选的 expected_version 做乐观锁校验',
+            },
+          },
+          'required': ['commands'],
+        },
+      },
+      {
+        'name': 'append_segment',
+        'description': '往一条合并链（手机端连续速记自动并链产生的条目）末尾追加一段文本，'
+            '等价于人在手机上连续速记时内容自动并进同一条。'
+            '仅合并模式条目可追加，且末段须在合并窗口（5 分钟）内——超窗请改用 add_item 新建。'
+            '合并条目即使 edit_locked=1 也允许追加（追加是链的生长，不是改写已有内容）。'
+            '返回追加后的最新条目快照。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '合并链条目 uuid（list_items 返回）'},
+            'text': {'type': 'string', 'description': '要追加的正文段，不能为空'},
+            'source_app': {'type': 'string', 'description': '可选来源标识，记入该段的 appendix 记录'},
+            'expected_version': {
+              'type': 'integer',
+              'description': '可选乐观锁：你读取该条目时看到的 version，不一致则拒绝追加',
+            },
+          },
+          'required': ['id', 'text'],
         },
       },
     ];
@@ -170,12 +226,23 @@ int _clampInt(Object? v, int def, int min, int max) {
 
 String? _str(Object? v) => v is String ? v : null;
 
-/// 动作层拒绝（校验不过/不可见）→ MCP 参数错误。
-Future<Object?> _guarded(Future<Object?> Function() run) async {
+int? _int(Object? v) => switch (v) {
+      int i => i,
+      String s => int.tryParse(s),
+      _ => null,
+    };
+
+/// 动作层拒绝（校验不过/不可见/越权）→ MCP 参数错误。
+/// 原样透出 code + hint：大模型不只是「看到报错」，还能读懂原因并自我纠正
+/// （如收到 edit_locked 会先调 unlock_edit 再重试）。
+Future<T> _guarded<T>(Future<T> Function() run) async {
   try {
     return await run();
   } on ActionException catch (e) {
-    throw McpRpcError(errInvalidParams, e.message);
+    throw McpRpcError(errInvalidParams, e.message, {
+      'code': e.code,
+      if (e.hint != null) 'hint': e.hint,
+    });
   }
 }
 
@@ -221,20 +288,8 @@ Future<List<Map<String, Object?>>> callTool(
       if (id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
       final it = await repo.byId(id); // 默认排除 Vault 与已删条目
       if (it == null) throw McpRpcError(errInvalidParams, '条目不存在: id=$id');
-      final blocks = <Map<String, Object?>>[
-        _text(jsonEncode({
-          'id': it.id,
-          'type': it.itemType,
-          'title': it.humanTitle,
-          'tldr': it.humanTldr,
-          'text': it.bodyText,
-          'machine_json': it.machineJson == null ? null : jsonDecode(it.machineJson!),
-          'tags': it.tags,
-          'source': {'app': it.sourceApp, 'type': it.sourceType},
-          'createdAt': _iso(it.createdAt),
-          'file': it.rawFilePath,
-        })),
-      ];
+      // 与命令结果共用同一序列化口径：AI 上下文里只有一种 item 形状
+      final blocks = <Map<String, Object?>>[_text(jsonEncode(itemToJson(it)))];
       final f = it.rawFilePath;
       if (f != null && f.isNotEmpty) {
         final file = File(f);
@@ -257,18 +312,18 @@ Future<List<Map<String, Object?>>> callTool(
       }
       final tags = (args['tags'] as List?)?.whereType<String>().toList() ?? const [];
       final type = _detectType(content.trim());
-      final saved = await repo.add(InboxItem(
-        itemType: type,
-        sourceType: type,
-        humanTitle: _str(args['title']),
-        rawContent: content.trim(),
-        sourceApp: 'MCP (AI 写入)',
-        tags: tags,
-        createdAt: DateTime.now().millisecondsSinceEpoch,
-      ));
-      // 入库即入队（PRD 模块二）；add_item 不参与合并模式（F6 决策），永远独立成条
-      await repo.enqueueTask(saved.id!, Repository.taskActionFor(type));
-      return [_text('已收集：id=${saved.id}, type=$type')];
+      final r = await _guarded(() => handler.execute(
+            CollectCommand(
+              itemType: type,
+              sourceApp: 'MCP (AI 写入)',
+              rawContent: content.trim(),
+              humanTitle: _str(args['title']),
+              tags: tags,
+            ),
+            actor: CommandActor.ai,
+          ));
+      // add_item 不参与合并模式（F6 决策），永远独立成条
+      return [_text(jsonEncode(r.toJson()))];
 
     case 'query_machine_data':
       final query = args['query'] is String ? args['query'] as String : null;
@@ -329,45 +384,85 @@ Future<List<Map<String, Object?>>> callTool(
       final machineRaw = p['machine_json'] == null
           ? null
           : (p['machine_json'] is String ? p['machine_json'] as String : jsonEncode(p['machine_json']));
-      await _guarded(() => handler.edit(
-            id,
-            title: _str(p['title']),
-            tldr: _str(p['tldr']),
-            tags: (p['tags'] as List?)?.whereType<String>().toList(),
-            humanMd: _str(p['human_md']),
-            machineJson: machineRaw,
-            itemType: _str(p['item_type']),
+      final r = await _guarded(() => handler.execute(
+            UpdateItemCommand(
+              id: id,
+              title: _str(p['title']),
+              tldr: _str(p['tldr']),
+              tags: (p['tags'] as List?)?.whereType<String>().toList(),
+              humanMd: _str(p['human_md']),
+              machineJson: machineRaw,
+              itemType: _str(p['item_type']),
+              expectedVersion: _int(args['expected_version']),
+            ),
+            actor: CommandActor.ai,
           ));
-      return [_text('已更新：id=$id')];
+      return [_text(jsonEncode(r.toJson()))];
 
     case 'delete_item':
       final id = _str(args['id']);
       if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
-      await _guarded(() => handler.delete(id));
-      return [_text('已删除（30 天内可恢复）：id=$id')];
+      final r = await _guarded(() => handler.execute(DeleteItemCommand(id), actor: CommandActor.ai));
+      return [_text(jsonEncode(r.toJson()))];
 
     case 'set_vault':
       final id = _str(args['id']);
       final on = args['on'];
       if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
       if (on is! bool) throw McpRpcError(errInvalidParams, '参数 on 必须是布尔值');
-      if (!on) {
-        throw McpRpcError(errInvalidParams, 'MCP 仅可移入保险箱；移出须用户在手机上操作');
-      }
-      await _guarded(() => handler.setVault(id, true));
-      return [_text('已移入保险箱：id=$id（之后对 MCP 不可见）')];
+      // 移出校验不在本层：已下沉到动作层（AI 换个入口也绕不过）
+      final r = await _guarded(() => handler.execute(SetVaultCommand(id, on), actor: CommandActor.ai));
+      return [_text(jsonEncode(r.toJson()))];
 
     case 'reprocess_item':
       final id = _str(args['id']);
       if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
-      await _guarded(() => handler.reprocess(id));
-      return [_text('已重新入队：id=$id')];
+      final r = await _guarded(() => handler.execute(ReprocessCommand(id), actor: CommandActor.ai));
+      return [_text(jsonEncode(r.toJson()))];
 
     case 'unlock_edit':
       final id = _str(args['id']);
       if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
-      await _guarded(() => handler.unlockEdit(id));
-      return [_text('已解除编辑锁定：id=$id')];
+      final r = await _guarded(() => handler.execute(UnlockEditCommand(id), actor: CommandActor.ai));
+      return [_text(jsonEncode(r.toJson()))];
+
+    case 'batch_items':
+      final raw = args['commands'];
+      if (raw is! List || raw.isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 commands 必须是非空数组');
+      }
+      if (raw.length > 20) throw McpRpcError(errInvalidParams, '一次最多 20 条命令');
+      final cmds = await _guarded(() async => [
+            for (final e in raw)
+              if (e is Map)
+                ItemCommand.fromJson(e.cast<String, Object?>())
+              else
+                throw ActionException('命令必须是对象', code: ActionErrorCode.invalidRequest),
+          ]);
+      final results = await _guarded(() => handler.executeAll(cmds, actor: CommandActor.ai));
+      return [
+        _text(jsonEncode({
+          'ok': true,
+          'count': results.length,
+          'results': [for (final r in results) r.toJson()],
+        })),
+      ];
+
+    case 'append_segment':
+      final id = _str(args['id']);
+      final text = _str(args['text']);
+      if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      if (text == null || text.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 text 不能为空');
+      final r = await _guarded(() => handler.execute(
+            AppendSegmentCommand(
+              id,
+              text,
+              sourceApp: _str(args['source_app']),
+              expectedVersion: _int(args['expected_version']),
+            ),
+            actor: CommandActor.ai,
+          ));
+      return [_text(jsonEncode(r.toJson()))];
 
     default:
       throw McpRpcError(errInvalidParams, 'Unknown tool: $name');

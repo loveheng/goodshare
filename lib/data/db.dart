@@ -16,11 +16,22 @@ class Db {
     final dir = await getDatabasesPath();
     final db = await openDatabase(
       _pathOverride ?? p.join(dir, 'goodshare.db'),
-      version: 2,
+      version: 5,
       onCreate: (db, version) => _createAll(db),
       onUpgrade: (db, oldVersion, newVersion) async {
-        await db.execute('DROP TABLE IF EXISTS items');
-        await _createAll(db);
+        if (oldVersion < 2) {
+          // v1 单表 items 升级：弃旧数据整体重建（不迁移），PRD §5.3 决策
+          await db.execute('DROP TABLE IF EXISTS items');
+          await _createAll(db);
+        }
+        if (oldVersion < 4) {
+          // v2/v3 升级：补齐 drafts 表（_createAll 内 IF NOT EXISTS，已含则跳过）
+          await _createAll(db);
+        }
+        // 幂等补齐 ai_task_queue.updated_at（v2→v3 迁移；v1 经 _createAll 已含则跳过）
+        await _ensureQueueUpdatedAt(db);
+        // 幂等补齐 inbox_items.version（v4→v5 乐观锁；v1 经 _createAll 已含则跳过）
+        await _ensureItemVersion(db);
       },
       onOpen: (db) async {
         // ai_task_queue 的外键级联依赖此开关，sqflite 默认关闭
@@ -55,7 +66,8 @@ class Db {
         is_deleted INTEGER NOT NULL DEFAULT 0,      -- 0 正常 / 1 已删（软删除）
         deleted_at INTEGER,                         -- 软删除时间戳（毫秒），30 天保留期以此计算
         todo_state_json TEXT,                       -- 待办勾选状态 [{hash,done,ts}]（V2）
-        created_at INTEGER NOT NULL                 -- 毫秒时间戳
+        created_at INTEGER NOT NULL,                -- 毫秒时间戳
+        version INTEGER NOT NULL DEFAULT 0          -- 乐观锁版本号：任何写 +1，CAS 校验用（2026-09-28 v5）
       )
     ''');
     await db.execute('CREATE INDEX IF NOT EXISTS idx_inbox_created ON inbox_items(created_at DESC)');
@@ -73,9 +85,37 @@ class Db {
         task_id TEXT PRIMARY KEY,
         item_id TEXT NOT NULL REFERENCES inbox_items(id) ON DELETE CASCADE,
         task_action TEXT,                           -- 'parse_chatlog','ocr_and_extract','summarize_url','transcribe_audio'
-        status TEXT NOT NULL DEFAULT 'pending'      -- pending/processing/completed/failed/cancelled
+        status TEXT NOT NULL DEFAULT 'pending',     -- pending/processing/completed/failed/cancelled
+        updated_at INTEGER                          -- 心跳时间戳（毫秒）；回收僵尸任务用，见 reclaimStaleTasks
       )
     ''');
     await db.execute('CREATE INDEX IF NOT EXISTS idx_queue_status ON ai_task_queue(status)');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS drafts (
+        id TEXT PRIMARY KEY,                   -- 草稿主键（如 'quick_note' / 'edit:<itemId>:<field>'）
+        target_id TEXT,                        -- 关联对象（item id / 'quick_note'）
+        content TEXT,                          -- 草稿正文
+        updated_at INTEGER NOT NULL            -- 毫秒时间戳
+      )
+    ''');
+  }
+
+  /// 幂等补齐 ai_task_queue.updated_at 列（v2→v3 迁移；已存在则跳过，避免 ALTER 报错）。
+  static Future<void> _ensureQueueUpdatedAt(Database db) async {
+    final cols = await db.rawQuery('PRAGMA table_info(ai_task_queue)');
+    final has = cols.any((c) => (c['name'] as String?) == 'updated_at');
+    if (!has) {
+      await db.execute('ALTER TABLE ai_task_queue ADD COLUMN updated_at INTEGER');
+    }
+  }
+
+  /// 幂等补齐 inbox_items.version 列（v4→v5 乐观锁；已存在则跳过，避免 ALTER 报错）。
+  /// 存量行取 DEFAULT 0，与「未做并发控制的历史数据」语义一致。
+  static Future<void> _ensureItemVersion(Database db) async {
+    final cols = await db.rawQuery('PRAGMA table_info(inbox_items)');
+    final has = cols.any((c) => (c['name'] as String?) == 'version');
+    if (!has) {
+      await db.execute('ALTER TABLE inbox_items ADD COLUMN version INTEGER NOT NULL DEFAULT 0');
+    }
   }
 }

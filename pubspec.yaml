@@ -1,21 +1,25 @@
 name: goodshare
 description: "A new Flutter project."
 publish_to: 'none'
-version: 1.2.0+4
+version: 1.2.0+2005 # 真机已有 CI release 2004，本地 debug 构建保持高于它以便覆盖安装
 
 environment:
   sdk: ^3.13.4
 
 dependencies:
   crypto: ^3.0.7
+  dio: ^5.11.1
+  ffmpeg_kit_flutter_new_min: ^3.6.2
   file_picker: ^13.1.0
   flutter:
     sdk: flutter
   flutter_foreground_task: ^11.0.3
+  battery_plus: ^7.1.1
   flutter_markdown_plus: ^1.0.12
   google_api_availability: ^5.0.1
   google_mlkit_text_recognition: ^0.17.1
   image_picker: ^1.2.3
+  just_audio: ^0.10.6
   open_filex: ^4.7.0
   package_info_plus: ^10.2.1
   path: ^1.9.1
@@ -24,8 +28,9 @@ dependencies:
   record: ^7.1.1
   share_plus: ^13.3.0
   shared_preferences: ^2.5.5
-  speech_to_text: ^7.5.0
+  sherpa_onnx: ^1.13.8
   sqflite: ^2.4.4
+  video_player: ^2.14.0
 
 dev_dependencies:
   flutter_test:

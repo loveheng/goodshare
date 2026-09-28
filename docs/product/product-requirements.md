@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-09-27
+updated: 2026-09-28
 ---
 
 # 拾贝（goodshare）全局产品需求文档 (PRD)
@@ -199,7 +199,9 @@ flowchart LR
     SB[UI BottomSheet/侧边栏/FAB] --> H
 ```
 
-**UI 与 MCP 共用动作层（关键约束）**：所有写 / 改操作收敛到 `ItemActionHandler`（view / edit / delete / setVault / reprocess）。**UI 的 BottomSheet、侧边栏内联编辑、FAB 与 MCP 工具调用的是同一套实现**——大模型经 MCP 发指令，App 解析后执行的与用户在手机上点的动作完全一致，杜绝双份逻辑。
+**UI 与 MCP 共用动作层（关键约束）**：所有写 / 改操作收敛到 `ItemActionHandler`，且**统一以 `ItemCommand` 入参**——UI 组装命令对象、MCP 把大模型 JSON 反序列化成同一命令、端侧 AI 管线构造产出命令，三条链路调用同一个 `execute`。**UI 的 BottomSheet、侧边栏内联编辑、FAB 与 MCP 工具调用的是同一套实现**——大模型经 MCP 发指令，App 解析后执行的与用户在手机上点的动作完全一致，杜绝双份逻辑。
+
+四条对称性硬规则（详见 docs/architecture/human-ai-parity.md）：① 命令模式统一入参；② 领域校验**全部下沉**到动作层（UI 置灰只是快路径，不是安全边界，AI 看不到灰按钮）；③ 写操作一律返回落库后的**最新条目快照**，让大模型上下文与数据库对齐；④ 复合操作走 `executeAll` **事务**，全成功或全回滚。
 
 | Tool | 入参 | 行为 | 优先级 |
 |---|---|---|---|
@@ -213,12 +215,16 @@ flowchart LR
 | `set_vault` | `id, on:bool` | 移入保险箱（置 `is_vault`；真实加密 V3）；**MCP 仅可移入（on=true）——移出走 UI 生物识别后操作，防大模型自行解除 Vault 隔离（实现期明确，与隐私硬约束同源）** | MVP |
 | `reprocess_item` | `id` | 重新入 `ai_task_queue`（= UI「重新处理」；MVP 占位管线下为幂等重跑） | MVP |
 | `unlock_edit` | `id` | 解除合并项编辑锁（`edit_locked`→0），随后 `update_item` 方可写入 | MVP |
+| `batch_items` | `commands[]` | **原子批量**：一次提交多条命令（如解锁+改字+打标签），全成功或全回滚；不支持 `delete_forever`（附件删除不可回滚） | MVP |
+| `append_segment` | `id, text, source_app?` | 往合并链追加一段（= 手机端连续速记并链）；仅 `collect_mode=merge` 且末段在 5 分钟窗口内可追加；合并条目 `edit_locked=1` 仍允许追加（追加是链的生长，非改写） | MVP |
 
-（`execute_action` 统一入口已裁决 MVP 剔除（2026-09-27）：独立工具即结构化接口且各自带校验，避免冗余通用入口扩大校验面；将来确有复合动作需求再引入。）
+（`execute_action` 统一入口已裁决 MVP 剔除（2026-09-27）：独立工具即结构化接口且各自带校验，避免冗余通用入口扩大校验面。`batch_items` 不是它的复活——只解决「复合操作的原子性」，不提供新的动作语义，每条命令仍走同一套校验。）
 
 **隐私硬约束**：所有 Machine-Readable 工具默认 `WHERE is_vault=0 AND is_deleted=0`，Vault 与已删数据物理不可被 PC 大模型读取；`set_vault` 仅改标记，不暴露 Vault 内容。
 
-**编辑锁约束**：`update_item` / `ItemActionHandler.edit` 在 `edit_locked=1`（合并模式默认）时拒绝写入，须先 `unlock_edit`（`edit_locked`→0）；UI 与 MCP 共用同一校验，行为一致。
+**编辑锁约束**：`update_item` / `UpdateItemCommand` 在 `edit_locked=1`（合并模式默认）时拒绝写入，须先 `unlock_edit`（`edit_locked`→0）；UI 与 MCP 共用同一校验，行为一致。被拒时返回机器可读 `code=edit_locked` 与 `hint`，供大模型先解锁再重试。
+
+**主体门控约束**：`set_vault(on=false)` 移出保险箱、`delete_forever` 彻底删除仅允许手机 UI 主体；`apply_ai_result` 管线回写仅允许端侧 AI 主体。门控在动作层按 `CommandActor` 判定，主体由传输层注入、**不可由命令载荷伪造**。
 
 ## 8. 端到端流程
 

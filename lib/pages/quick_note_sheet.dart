@@ -1,31 +1,33 @@
+import 'dart:async';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:record/record.dart';
-import 'package:speech_to_text/speech_to_text.dart';
 
-import '../ai/capabilities.dart';
-import '../data/repository.dart';
+import '../action/commands.dart';
+import '../action/item_action_handler.dart';
+import '../app/lifecycle_manager.dart';
+import '../models/draft_store.dart';
 import '../models/item.dart';
 import '../share/attachments.dart';
 import '../share/text_collector.dart';
+import '../ui/draft_controller.dart';
 
 /// 速记 / 分类添加面板（设计 §4.6 + §4.7 分类添加）。
-/// initialType = null：速记默认（文本 + 录音 + 拍照）；
+/// initialType = null：速记默认（文本 + 拍照；2026-09-27 起便签不再内嵌录音）；
 /// 指定类型：该类型的专用添加入口（便签→文本、链接→地址、图片/聊天→截图、
 /// 视频/音频/文档→选取文件），全部走与分享相同的摄入路径（入库即入队）。
 class QuickNoteSheet extends StatefulWidget {
   const QuickNoteSheet({
     super.key,
-    required this.repo,
+    required this.handler,
     required this.collector,
-    required this.caps,
     this.initialType,
   });
 
-  final Repository repo;
+  final ItemActionHandler handler;
   final TextCollector collector;
-  final AiCapabilities caps;
   final String? initialType;
 
   @override
@@ -33,22 +35,41 @@ class QuickNoteSheet extends StatefulWidget {
 }
 
 class _QuickNoteSheetState extends State<QuickNoteSheet> {
-  final _textCtrl = TextEditingController();
+  DraftController? _draft;
+  final DraftStore _draftStore = DraftStore();
+  StreamSubscription<AppLifecycleState>? _lifecycleSub;
   final _recorder = AudioRecorder();
-  final _stt = SpeechToText();
   bool _recording = false;
   bool _busy = false;
-  bool _sttUnavailable = false;
-  String _transcript = '';
 
   String? get _mode => widget.initialType;
   String get _sourceApp => _mode == null ? '速记' : '手动添加';
+  bool get _hasTextInput =>
+      _mode == null || _mode == InboxItem.typeUrl || _mode == InboxItem.typeNote;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_hasTextInput) {
+      _draft = DraftController(
+        draftId: 'quick_note',
+        targetId: 'quick_note',
+        store: _draftStore,
+      );
+      // 重开面板时恢复上次未保存的草稿
+      _draftStore.load('quick_note').then((c) {
+        if (c != null && mounted) _draft!.text.text = c;
+      });
+      // 退后台立即强制落盘，避免最后字符因未达 800ms 防抖而丢失
+      _lifecycleSub = AppLifecycleManager.instance.onBackgrounded.listen((_) => _draft?.flush());
+    }
+  }
 
   @override
   void dispose() {
-    _textCtrl.dispose();
+    _lifecycleSub?.cancel();
+    _draft?.dispose();
     _recorder.dispose();
-    _stt.stop();
     super.dispose();
   }
 
@@ -75,23 +96,17 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
       return;
     }
     final isAudio = itemType == InboxItem.typeAudio;
-    final item = await widget.repo.add(InboxItem(
+    await widget.handler.execute(CollectCommand(
       itemType: itemType,
-      sourceType: itemType,
       sourceApp: _sourceApp,
-      humanTitle: isAudio
-          ? _titleFor('录音')
-          : (saved.split('/').last),
-      rawContent: isAudio && _transcript.isNotEmpty ? _transcript : null,
       rawFilePath: saved,
-      createdAt: DateTime.now().millisecondsSinceEpoch,
+      humanTitle: isAudio ? _titleFor('录音') : saved.split('/').last,
     ));
-    await widget.repo.enqueueTask(item.id!, Repository.taskActionFor(itemType));
   }
 
   Future<void> _saveText() async {
     if (_busy) return;
-    final text = _textCtrl.text.trim();
+    final text = _draft!.text.text.trim();
     if (text.isEmpty) {
       _snack('先写点什么吧');
       return;
@@ -101,6 +116,7 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
       _snack('保存失败');
       return;
     }
+    await _draft?.clear(); // 提交成功即清除草稿
     await _closeSnack(_mode == InboxItem.typeUrl ? '链接已收集，后台抓取正文中' : '已收集');
   }
 
@@ -119,15 +135,12 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
         _snack('图片保存失败');
         return;
       }
-      final item = await widget.repo.add(InboxItem(
+      await widget.handler.execute(CollectCommand(
         itemType: InboxItem.typeImage,
-        sourceType: InboxItem.typeImage,
         sourceApp: _sourceApp,
-        humanTitle: _titleFor(asChatlog ? '聊天截图' : '拍照'),
         rawFilePath: saved,
-        createdAt: DateTime.now().millisecondsSinceEpoch,
+        humanTitle: _titleFor(asChatlog ? '聊天截图' : '拍照'),
       ));
-      await widget.repo.enqueueTask(item.id!, Repository.taskActionFor(InboxItem.typeImage));
       await _closeSnack(asChatlog ? '截图已收集，待 AI 识别为聊天' : '图片已收集');
     } finally {
       _busy = false;
@@ -173,15 +186,12 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
       if (files.isEmpty) return;
       final path = files.single.path;
       if (path == null) return;
-      final item = await widget.repo.add(InboxItem(
+      await widget.handler.execute(CollectCommand(
         itemType: InboxItem.typeAudio,
-        sourceType: InboxItem.typeAudio,
         sourceApp: _sourceApp,
-        humanTitle: path.split('/').last,
         rawFilePath: (await copyToAppDir(path)) ?? path,
-        createdAt: DateTime.now().millisecondsSinceEpoch,
+        humanTitle: path.split('/').last,
       ));
-      await widget.repo.enqueueTask(item.id!, Repository.taskActionFor(InboxItem.typeAudio));
       await _closeSnack('音频已收集');
     } finally {
       _busy = false;
@@ -194,26 +204,19 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
       _busy = true;
       try {
         final path = await _recorder.stop();
-        await _stt.stop();
         setState(() => _recording = false);
         if (path == null) {
           _snack('录音未保存');
           return;
         }
-        final now = DateTime.now();
-        final item = await widget.repo.add(InboxItem(
+        // 录音仅存音频，AI 消费者按占位行为处理
+        await widget.handler.execute(CollectCommand(
           itemType: InboxItem.typeAudio,
-          sourceType: InboxItem.typeAudio,
           sourceApp: _sourceApp,
-          humanTitle: _titleFor('录音'),
-          rawContent: _transcript.isEmpty ? null : _transcript,
           rawFilePath: path,
-          createdAt: now.millisecondsSinceEpoch,
+          humanTitle: _titleFor('录音'),
         ));
-        // 转写文本在采集时已入 raw 层，消费者占位复制到 human_md
-        await widget.repo.enqueueTask(item.id!, Repository.taskActionFor(InboxItem.typeAudio));
-        await _closeSnack(
-            _transcript.isEmpty ? '录音已收集（未产生转写文本）' : '录音已收集（含转写文本）');
+        await _closeSnack('录音已收集');
       } finally {
         _busy = false;
       }
@@ -228,43 +231,7 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
       final dir = await appShareDir();
       final path = '${dir.path}/${DateTime.now().millisecondsSinceEpoch}.m4a';
       await _recorder.start(const RecordConfig(encoder: AudioEncoder.aacLc), path: path);
-      setState(() {
-        _recording = true;
-        _transcript = '';
-      });
-      // 端侧转写：受设置开关与本机检测门控（D7：仅请求 onDevice，不支持则明示仅存音频）。
-      // Android 系统语音识别只支持实时流，故转写与录音同步进行。
-      final sttAllowed =
-          widget.caps.sttEnabled && widget.caps.sttAvailable != false;
-      if (!sttAllowed) {
-        setState(() => _sttUnavailable = true);
-        _snack(widget.caps.sttEnabled
-            ? '本机不支持端侧语音转写，仅保存音频'
-            : '转写已在设置中关闭，仅保存音频');
-      } else {
-        try {
-          final ready = await _stt.initialize();
-          if (!ready) throw StateError('unavailable');
-          await _stt.listen(
-            onResult: (r) {
-              if (r.recognizedWords.isNotEmpty) {
-                setState(() => _transcript = r.recognizedWords);
-              }
-            },
-            listenOptions: SpeechListenOptions(
-              onDevice: true,
-              cancelOnError: true,
-              partialResults: true,
-              listenMode: ListenMode.dictation,
-            ),
-          );
-          setState(() => _sttUnavailable = false);
-        } catch (e) {
-          debugPrint('[QuickNote] STT on-device unavailable: $e');
-          setState(() => _sttUnavailable = true);
-          _snack('本机不支持端侧语音转写，仅保存音频');
-        }
-      }
+      setState(() => _recording = true);
     } catch (e) {
       _snack('录音启动失败：$e');
     } finally {
@@ -308,7 +275,7 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
       case InboxItem.typeUrl:
         return [
           TextField(
-            controller: _textCtrl,
+            controller: _draft!.text,
             autofocus: true,
             keyboardType: TextInputType.url,
             decoration: const InputDecoration(
@@ -356,24 +323,6 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
               ),
             ],
           ),
-          if (_recording) ...[
-            if (_transcript.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  _transcript,
-                  maxLines: 3,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-              ),
-            if (_sttUnavailable)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text('本机不支持端侧语音转写，仅保存音频',
-                    style: Theme.of(context).textTheme.bodySmall),
-              ),
-          ],
         ];
       case InboxItem.typeDocument:
         return _mediaButtons([
@@ -389,7 +338,7 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
   List<Widget> _noteBody() {
     return [
       TextField(
-        controller: _textCtrl,
+        controller: _draft!.text,
         maxLines: 4,
         autofocus: true,
         decoration: const InputDecoration(
@@ -399,16 +348,6 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
       const SizedBox(height: 12),
       Row(
         children: [
-          IconButton.filledTonal(
-            tooltip: _recording ? '停止并保存' : '录音',
-            onPressed: _toggleRecord,
-            icon: Icon(_recording ? Icons.stop : Icons.mic_none),
-          ),
-          if (_recording)
-            const Padding(
-              padding: EdgeInsets.only(left: 4),
-              child: Text('录音中…', style: TextStyle(color: Colors.redAccent)),
-            ),
           const Spacer(),
           IconButton.filledTonal(
             tooltip: '拍照收集',
