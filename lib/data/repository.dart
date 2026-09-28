@@ -342,6 +342,19 @@ class Repository extends ChangeNotifier {
     );
   }
 
+  /// 标记条目 AI 处理失败：将 is_processed 置 -1（与 [finishTask] / [claimTask] 一致的队列内部记账，非领域写）。
+  /// 真正写入重构产出走 [ItemActionHandler.execute]（applyAiResult）。按 [update] 口径同步
+  /// `version + 1` 并广播，使 UI 能刷新失败态。返回是否实际写入。
+  Future<bool> markItemFailed(String itemId) async {
+    final db = await _database();
+    final n = await db.rawUpdate(
+      'UPDATE inbox_items SET is_processed = -1, version = version + 1 WHERE id = ?',
+      [itemId],
+    );
+    if (n > 0) notifyListeners();
+    return n > 0;
+  }
+
   // ---- 草稿表（drafts）：大段输入防抖落盘，进程被杀可恢复（规则一）----
   /// 草稿落盘：插入或覆盖（主键冲突替换）。
   Future<void> upsertDraft(String id, String targetId, String content) async {

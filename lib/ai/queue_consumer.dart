@@ -97,7 +97,7 @@ class QueueConsumer {
       await _repo.finishTask(taskId, 'completed');
     } catch (e) {
       debugPrint('[QueueConsumer] task failed: $e');
-      await _repo.update(item.id!, {'is_processed': -1});
+      await _repo.markItemFailed(item.id!);
       await _repo.finishTask(taskId, 'failed');
     } finally {
       heartbeat.cancel();
