@@ -49,6 +49,11 @@ dependencies {
     // 离线可用，不依赖 GMS/Play 动态下载。注意：com.google.android.gms:play-services-mlkit-*
     // 是 unbundled 变体（模型经 Play 下载），国内不可用，勿用。
     implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
+    // 端侧 LLM 运行时（2026-09-28，设计见 docs/design/on-device-llm.md）：
+    // LiteRT-LM 纯 Kotlin 引擎（Maven Central，无 NDK/CMake），跑 .litertlm 模型包。
+    // 坐标经 AndroLLM 实际工程核实（2026-09-29）：artifact 为 litertlm-android，
+    // 非 litert-lm（后者在 Maven Central 不存在，构建期即解析失败）。
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.16.0")
 }
 
 kotlin {

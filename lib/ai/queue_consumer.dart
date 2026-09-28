@@ -91,18 +91,24 @@ class QueueConsumer {
         humanMd: item.humanMd,
         rawFilePath: item.rawFilePath,
         taskAction: task['task_action'] as String?,
+        humanTags: item.tags,
       );
       final impl = await _registry.resolve(input);
       // 超时兜底：任一实现挂起（如 Sherpa 转写在部分机型不返回）都会永久占住
       // _busy 与任务心跳，导致队列堵死、后续条目（含图片 OCR）永远不被消费。
       // 超时降级为「占位完成」，与项目「降级不卡死」口径一致。
+      // 端侧 LLM 任务单独放宽到 120s（设计 §5）：LLM 生成首 token + decode 数秒~数十秒，
+      // 60s 对 1.5B 模型长输入偏紧。
+      final isLlmTask = input.taskAction == Repository.taskLlmSummarize ||
+          input.taskAction == Repository.taskLlmTags;
+      final timeout = isLlmTask ? const Duration(seconds: 120) : const Duration(seconds: 60);
       final result = await impl.reconstruct(input).timeout(
-            const Duration(seconds: 60),
+            timeout,
             onTimeout: () => ReconstructResult(
               humanMd: input.rawContent ?? '',
               // 超时也是「静默成功」：任务记 completed 却零产出，用户/AI 会误判正常。
               // 按 R1/R3 必须明说——降级完成也要带原因（2026-09-28 决策）。
-              note: '处理超时（60s 未结束），已降级为占位完成，未执行 AI 重构'
+              note: '处理超时（${timeout.inSeconds}s 未结束），已降级为占位完成，未执行 AI 重构'
                   '（可手动重试，或在设置中触发对应 AI 动作）',
             ),
           );

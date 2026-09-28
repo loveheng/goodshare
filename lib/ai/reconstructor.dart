@@ -8,6 +8,7 @@ class ReconstructInput {
     this.humanMd,
     this.rawFilePath,
     this.taskAction,
+    this.humanTags = const [],
   });
 
   final String itemId;
@@ -23,6 +24,9 @@ class ReconstructInput {
   /// 「用户手动触发的专项处理」——音频转写仅手动（2026-09-28 用户拍板），
   /// 只有本值为 [Repository.taskTranscribeAudio] 时才走转写实现。
   final String? taskAction;
+
+  /// 条目既有标签（LLM 关键词提取需并入既有标签，不覆盖用户手动打的）。
+  final List<String> humanTags;
 }
 
 /// AI 双态重构产出：人类态 / 机器态 / 标签 / 重分类 / 多视角聚类。
@@ -36,6 +40,7 @@ class ReconstructResult {
     this.facets,
     this.translatedMd,
     this.translateLang,
+    this.summaryMd,
     this.note,
   });
 
@@ -48,6 +53,9 @@ class ReconstructResult {
 
   /// 译文语言码（BCP-47）；与 [translatedMd] 成对出现。
   final String? translateLang;
+
+  /// 端侧 LLM 摘要（与 humanMd 并列存储，不覆盖原文；2026-09-28 v8）。null = 无摘要。
+  final String? summaryMd;
 
   /// **原因说明**（2026-09-28）：降级 / 空产出 / 缺前置条件时写清"为什么"，
   /// 由消费者落进 `ai_task_queue.last_note`，最终出现在任务队列页、详情页状态条

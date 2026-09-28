@@ -240,6 +240,40 @@ List<Map<String, Object?>> toolSchemas() => [
           'required': ['id'],
         },
       },
+      {
+        'name': 'summarize_item',
+        'description': '用端侧大模型为条目正文生成摘要（与手机端「摘要」按钮同一入口）。'
+            '异步入队执行：本调用只返回入队结果，摘要稍后落库，随后用 get_item 读取 summary 字段。'
+            '条目无正文（如未 OCR 的图片、未转写的音频）会被拒绝。摘要与原文并列存储，不覆盖原文。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
+            'expected_version': {
+              'type': 'integer',
+              'description': '可选乐观锁：你读取该条目时看到的 version',
+            },
+          },
+          'required': ['id'],
+        },
+      },
+      {
+        'name': 'extract_tags',
+        'description': '用端侧大模型从条目正文提取关键词，并入条目既有标签（不覆盖已有标签）。'
+            '与手机端「提取关键词」按钮同一入口。异步入队执行：本调用只返回入队结果，'
+            '标签稍后落库，随后用 get_item 读取 tags 字段。条目无正文会被拒绝。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
+            'expected_version': {
+              'type': 'integer',
+              'description': '可选乐观锁：你读取该条目时看到的 version',
+            },
+          },
+          'required': ['id'],
+        },
+      },
     ];
 
 int _clampInt(Object? v, int def, int min, int max) {
@@ -508,6 +542,24 @@ Future<List<Map<String, Object?>>> callTool(
               targetLang: _str(args['target_lang']),
               expectedVersion: _int(args['expected_version']),
             ),
+            actor: CommandActor.ai,
+          ));
+      return [_text(jsonEncode(r.toJson()))];
+
+    case 'summarize_item':
+      final id = _str(args['id']);
+      if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      final r = await _guarded(() => handler.execute(
+            SummarizeCommand(id, expectedVersion: _int(args['expected_version'])),
+            actor: CommandActor.ai,
+          ));
+      return [_text(jsonEncode(r.toJson()))];
+
+    case 'extract_tags':
+      final id = _str(args['id']);
+      if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      final r = await _guarded(() => handler.execute(
+            ExtractTagsCommand(id, expectedVersion: _int(args['expected_version'])),
             actor: CommandActor.ai,
           ));
       return [_text(jsonEncode(r.toJson()))];

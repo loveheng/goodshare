@@ -7,6 +7,8 @@ import '../ai/ai_queue_service.dart';
 import '../ai/asr_model.dart';
 import '../ai/capabilities.dart';
 import '../ai/language_codes.dart';
+import '../ai/llm_model.dart';
+import '../ai/llm_model_manager.dart';
 import '../ai/model_manager.dart';
 import '../ai/subtitle.dart';
 import '../share/text_collector.dart';
@@ -28,6 +30,7 @@ class SettingsPage extends StatefulWidget {
     required this.collector,
     required this.mcp,
     required this.models,
+    required this.llmModels,
     required this.aiQueue,
     this.onOpenDrawer,
   });
@@ -38,6 +41,7 @@ class SettingsPage extends StatefulWidget {
   final TextCollector collector;
   final McpController mcp;
   final ModelManager models;
+  final LlmModelManager llmModels;
   final AiQueueService aiQueue;
   final VoidCallback? onOpenDrawer;
 
@@ -54,6 +58,7 @@ class _SettingsPageState extends State<SettingsPage> {
     super.initState();
     widget.caps.addListener(_onCapsChanged);
     widget.models.addListener(_onModelsChanged);
+    widget.llmModels.addListener(_onModelsChanged);
     widget.aiQueue.addListener(_onAiQueueChanged);
     widget.caps.ensureDetected(); // 首次检测后持久化；此后幂等
     _refreshTranslation(); // 翻译可用性与语言包状态是动态的，每次进入实时查
@@ -74,10 +79,41 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
+  /// 端侧大模型下载（1-2GB 级单文件）：失败原因必须明说，不让用户对着无反应的按钮猜。
+  Future<void> _onLlmDownload(LlmModel m) async {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(SnackBar(content: Text('开始下载 ${m.name}（${_humanSize(m.sizeBytes)}）…')));
+    try {
+      await widget.llmModels.download(m);
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(SnackBar(content: Text('${m.name} 已就绪')));
+    } catch (e) {
+      messenger.hideCurrentSnackBar();
+      messenger.showSnackBar(SnackBar(content: Text('下载失败：$e（可重试或换网络环境）')));
+    }
+  }
+
+  /// 清除已下载模型（腾空间；历史产物不撤销，重新下载即可再用）。
+  Future<void> _onLlmRemove(LlmModel m) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('删除 ${m.name}？'),
+        content: const Text('将释放模型占用的存储空间；已生成的摘要 / 关键词不受影响。'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
+        ],
+      ),
+    );
+    if (confirmed == true) await widget.llmModels.remove(m);
+  }
+
   @override
   void dispose() {
     widget.caps.removeListener(_onCapsChanged);
     widget.models.removeListener(_onModelsChanged);
+    widget.llmModels.removeListener(_onModelsChanged);
     widget.aiQueue.removeListener(_onAiQueueChanged);
     super.dispose();
   }
@@ -265,6 +301,32 @@ class _SettingsPageState extends State<SettingsPage> {
             selected: widget.models.selectedId == m.id,
             onSelected: _onModelSelected,
           )),
+          const _SectionHeader('端侧大模型'),
+          // SoC 感知目录：NPU 专包仅对应机型可见（设计 §3.1），通用包恒可见
+          FutureBuilder<List<LlmModel>>(
+            future: widget.llmModels.visibleModels(),
+            builder: (context, snap) => Column(
+              children: [
+                for (final m in (snap.data ?? const <LlmModel>[]))
+                  _LlmModelTile(
+                    model: m,
+                    manager: widget.llmModels,
+                    selected: widget.llmModels.selectedId == m.id,
+                    onSelected: (id) => widget.llmModels.select(id),
+                    onDownload: _onLlmDownload,
+                    onRemove: _onLlmRemove,
+                  ),
+              ],
+            ),
+          ),
+          ListTile(
+            enabled: false,
+            dense: true,
+            leading: const Icon(Icons.psychology_alt_outlined),
+            title: const Text('摘要 / 关键词提取'),
+            subtitle: const Text('下载模型后，详情页出现「摘要」「提取关键词」按钮；'
+                'iOS 走系统模型（iOS 26+，无需下载）'),
+          ),
           ListTile(
             enabled: false,
             dense: true,
@@ -474,6 +536,125 @@ class _AsrModelTile extends StatelessWidget {
                         icon: const Icon(Icons.download, size: 18),
                         label: Text(st.phase == DownloadPhase.error ? '重试' : '下载'),
                         onPressed: () => models.download(model),
+                      ),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 端侧大模型档位卡片（2026-09-28）：与 ASR 档位卡片同构——选中态 + 下载进度 + 清除。
+/// 与 ASR 的差异：单文件整下（无逐文件断点续传），删除需二次确认（1-2GB 级文件）。
+class _LlmModelTile extends StatelessWidget {
+  const _LlmModelTile({
+    required this.model,
+    required this.manager,
+    required this.selected,
+    required this.onSelected,
+    required this.onDownload,
+    required this.onRemove,
+  });
+
+  final LlmModel model;
+  final LlmModelManager manager;
+  final bool selected;
+  final void Function(String id) onSelected;
+  final void Function(LlmModel m) onDownload;
+  final void Function(LlmModel m) onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final ready = manager.isReady(model);
+    final progress = manager.progressOf(model);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      child: Material(
+        color: selected ? scheme.primaryContainer : scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => onSelected(model.id),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      selected ? Icons.radio_button_checked : Icons.radio_button_off,
+                      size: 20,
+                      color: selected ? scheme.primary : scheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(model.name, style: Theme.of(context).textTheme.titleSmall),
+                    ),
+                    Text(
+                      _humanSize(model.sizeBytes),
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodySmall
+                          ?.copyWith(color: scheme.onSurfaceVariant),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  model.desc,
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(color: scheme.onSurfaceVariant),
+                ),
+                const SizedBox(height: 8),
+                if (progress != null)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: LinearProgressIndicator(
+                          value: progress,
+                          minHeight: 4,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Text('${(progress * 100).round()}%'),
+                    ],
+                  )
+                else if (ready)
+                  Row(
+                    children: [
+                      Icon(Icons.check_circle, size: 16, color: scheme.primary),
+                      const SizedBox(width: 4),
+                      Text('已下载', style: Theme.of(context).textTheme.bodySmall),
+                      const Spacer(),
+                      TextButton(onPressed: () => onRemove(model), child: const Text('删除')),
+                    ],
+                  )
+                else
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          selected ? '选中后详情页即可用（摘要 / 关键词）' : '点卡片选中；下载后生效',
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(color: scheme.onSurfaceVariant),
+                        ),
+                      ),
+                      TextButton.icon(
+                        icon: const Icon(Icons.download, size: 18),
+                        label: const Text('下载'),
+                        onPressed: () => onDownload(model),
                       ),
                     ],
                   ),

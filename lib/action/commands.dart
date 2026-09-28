@@ -193,6 +193,10 @@ sealed class ItemCommand {
         return ReprocessCommand(id, expectedVersion: ev);
       case 'transcribe':
         return TranscribeCommand(id, expectedVersion: ev);
+      case 'summarize':
+        return SummarizeCommand(id, expectedVersion: ev);
+      case 'extract_tags':
+        return ExtractTagsCommand(id, expectedVersion: ev);
       case 'ocr':
         return OcrCommand(id, expectedVersion: ev);
       case 'translate':
@@ -263,6 +267,8 @@ sealed class ItemCommand {
     'reclassify',
     'reprocess',
     'transcribe',
+    'summarize',
+    'extract_tags',
     'ocr',
     'translate',
     'unlock_edit',
@@ -460,6 +466,52 @@ final class TranslateCommand extends ItemCommand {
         'op': op,
         'id': id,
         if (targetLang != null) 'target_lang': targetLang,
+        if (expectedVersion != null) 'expected_version': expectedVersion,
+      };
+}
+
+/// 端侧 LLM 摘要（= UI「摘要」/ MCP summarize_item）：入队 task_action=llm_summarize。
+///
+/// 与 [ReprocessCommand] 的区别：reprocess 走按类型的通用重构，本命令显式指定
+/// 「端侧摘要」动作，是**唯一**会真正跑端侧 LLM 摘要的入口（与 OCR / 转写 / 翻译
+/// 同构：端侧重资源动作一律手动 / 显式触发，摄入不自动跑）。
+/// 「文本类条目且正文非空」校验下沉在动作层，AI 换入口也绕不过。
+final class SummarizeCommand extends ItemCommand {
+  const SummarizeCommand(this.id, {super.expectedVersion});
+
+  final String id;
+
+  @override
+  String get op => 'summarize';
+
+  @override
+  String? get targetId => id;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'id': id,
+        if (expectedVersion != null) 'expected_version': expectedVersion,
+      };
+}
+
+/// 端侧 LLM 关键词提取（= UI「提取关键词」/ MCP extract_tags）：
+/// 入队 task_action=llm_tags，产出并入既有标签体系（tags 列）。
+final class ExtractTagsCommand extends ItemCommand {
+  const ExtractTagsCommand(this.id, {super.expectedVersion});
+
+  final String id;
+
+  @override
+  String get op => 'extract_tags';
+
+  @override
+  String? get targetId => id;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'id': id,
         if (expectedVersion != null) 'expected_version': expectedVersion,
       };
 }

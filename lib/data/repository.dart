@@ -59,6 +59,10 @@ class Repository extends ChangeNotifier {
   static const taskSummarizeUrl = 'summarize_url';
   static const taskTranscribeAudio = 'transcribe_audio';
   static const taskTranslate = 'translate';
+  // 端侧 LLM 任务动作（2026-09-28，设计见 docs/design/on-device-llm.md §5）：
+  // 摘要 / 关键词均由专门命令显式入队（手动触发，绝不自动入队）。
+  static const taskLlmSummarize = 'llm_summarize';
+  static const taskLlmTags = 'llm_tags';
 
   /// translate 任务动作串：可带目标语言后缀（`translate` / `translate:ja`）。
   /// 队列表无参数列，故把「单次指定的目标语言」编码进动作串，避免为一次覆盖加列。
@@ -402,7 +406,7 @@ class Repository extends ChangeNotifier {
       'ai_task_queue',
       {
         'status': status,
-        if (note != null) 'last_note': note,
+        'last_note': ?note,
       },
       where: 'task_id = ?',
       whereArgs: [taskId],

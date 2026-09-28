@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../action/item_action_handler.dart';
 import '../ai/ai_queue_service.dart';
 import '../ai/capabilities.dart';
+import '../ai/llm_model_manager.dart';
 import '../ai/model_manager.dart';
 import '../data/repository.dart';
 import '../share/text_collector.dart';
@@ -29,6 +30,7 @@ class HomeShell extends StatefulWidget {
     required this.mcp,
     required this.caps,
     required this.models,
+    required this.llmModels,
     required this.aiQueue,
   });
 
@@ -38,6 +40,7 @@ class HomeShell extends StatefulWidget {
   final McpController mcp;
   final AiCapabilities caps;
   final ModelManager models;
+  final LlmModelManager llmModels;
   final AiQueueService aiQueue;
 
   @override
@@ -79,6 +82,7 @@ class _HomeShellState extends State<HomeShell> {
       collector: widget.collector,
       mcp: widget.mcp,
       models: widget.models,
+      llmModels: widget.llmModels,
       aiQueue: widget.aiQueue,
       onOpenDrawer: () => _scaffoldKey.currentState?.openDrawer(),
     ),

@@ -24,5 +24,11 @@ class MainActivity : FlutterActivity() {
                     result.notImplemented()
                 }
             }
+        // 端侧 LLM 桥（docs/design/on-device-llm.md）：isAvailable/unavailableReason/
+        // generate/socModel 四方法协议，实现见 LlmBridge。
+        LlmBridge.register(
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "goodshare/llm"),
+            this,
+        )
     }
 }

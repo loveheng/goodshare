@@ -8,6 +8,9 @@ import 'ui/privacy_blur_overlay.dart';
 import 'ai/asr_reconstructor.dart';
 import 'ai/ai_queue_service.dart';
 import 'ai/capabilities.dart';
+import 'ai/llm.dart';
+import 'ai/llm_model_manager.dart';
+import 'ai/llm_reconstructor.dart';
 import 'ai/model_manager.dart';
 import 'ai/ocr_reconstructor.dart';
 import 'ai/queue_consumer.dart';
@@ -61,6 +64,8 @@ Future<void> main() async {
   await RemoteConfigStore.instance.load();
   final models = ModelManager();
   await models.load();
+  final llmModels = LlmModelManager();
+  await llmModels.load();
   await ShareIntake(handler, collector).init();
   // AI 队列消费者：v1 = 图片 ML Kit OCR + 音频 Sherpa 离线转写（均受设置开关门控）
   // + 链接离线抓取 + 其余占位复制
@@ -78,6 +83,8 @@ Future<void> main() async {
         subtitleMode: () => caps.subtitleMode,
       ),
       TranslationReconstructor(service: translationService),
+      // 端侧 LLM（2026-09-28）：摘要（summary_md）与关键词提取，均由显式命令入队
+      LlmReconstructor(engine: ChannelLlmEngine()),
       const PlaceholderReconstructor(),
     ]),
     handler,
@@ -95,6 +102,7 @@ Future<void> main() async {
     mcp: mcp,
     caps: caps,
     models: models,
+    llmModels: llmModels,
     aiQueue: aiQueue,
   ));
 }
@@ -108,6 +116,7 @@ class GoodShareApp extends StatelessWidget {
     required this.mcp,
     required this.caps,
     required this.models,
+    required this.llmModels,
     required this.aiQueue,
   });
 
@@ -117,6 +126,7 @@ class GoodShareApp extends StatelessWidget {
   final McpController mcp;
   final AiCapabilities caps;
   final ModelManager models;
+  final LlmModelManager llmModels;
   final AiQueueService aiQueue;
 
   @override
@@ -153,6 +163,7 @@ class GoodShareApp extends StatelessWidget {
         mcp: mcp,
         caps: caps,
         models: models,
+        llmModels: llmModels,
         aiQueue: aiQueue,
       ),
     );

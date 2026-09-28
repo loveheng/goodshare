@@ -80,6 +80,8 @@ class ItemActionHandler {
       final ReclassifyCommand c => _reclassify(c, actor, seeVault, txn),
       final ReprocessCommand c => _reprocess(c, seeVault, txn),
       final TranscribeCommand c => _transcribe(c, seeVault, txn),
+      final SummarizeCommand c => _summarize(c, seeVault, txn),
+      final ExtractTagsCommand c => _extractTags(c, seeVault, txn),
       final OcrCommand c => _ocr(c, seeVault, txn),
       final TranslateCommand c => _translate(c, seeVault, txn),
       final UnlockEditCommand c => _unlockEdit(c, seeVault, txn),
@@ -353,6 +355,63 @@ class ItemActionHandler {
         note: await _queuedNote('已开始翻译'));
   }
 
+  /// 端侧 LLM 摘要：显式入队 llm_summarize（2026-09-28，设计见 docs/design/on-device-llm.md）。
+  ///
+  /// 与 OCR / 转写 / 翻译同构——端侧重资源动作一律手动 / 显式触发。
+  /// 「文本类条目且正文非空」校验下沉在动作层：AI / MCP 换个入口也绕不过。
+  Future<CommandResult> _summarize(
+    SummarizeCommand cmd,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    if (item.bodyText.trim().isEmpty) {
+      throw ActionException(
+        '该条目没有可摘要的正文',
+        code: ActionErrorCode.invalidRequest,
+        hint: '图片 / 音视频请先「识别文字」或「转写」出文本，再摘要',
+      );
+    }
+    await _write(
+      'summarize',
+      cmd.id,
+      {'is_processed': 0},
+      expectedVersion: cmd.expectedVersion,
+      txn: txn,
+    );
+    await _repo.enqueueTask(cmd.id, Repository.taskLlmSummarize, txn: txn);
+    onEnqueued?.call();
+    return _result('summarize', cmd.id, seeVault: seeVault, txn: txn,
+        note: await _queuedNote('已开始生成摘要'));
+  }
+
+  /// 端侧 LLM 关键词提取：显式入队 llm_tags，产出并入既有标签体系。
+  Future<CommandResult> _extractTags(
+    ExtractTagsCommand cmd,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    if (item.bodyText.trim().isEmpty) {
+      throw ActionException(
+        '该条目没有可提取关键词的正文',
+        code: ActionErrorCode.invalidRequest,
+        hint: '图片 / 音视频请先「识别文字」或「转写」出文本，再提取关键词',
+      );
+    }
+    await _write(
+      'extract_tags',
+      cmd.id,
+      {'is_processed': 0},
+      expectedVersion: cmd.expectedVersion,
+      txn: txn,
+    );
+    await _repo.enqueueTask(cmd.id, Repository.taskLlmTags, txn: txn);
+    onEnqueued?.call();
+    return _result('extract_tags', cmd.id, seeVault: seeVault, txn: txn,
+        note: await _queuedNote('已开始提取关键词'));
+  }
+
   /// 入队后的提示文案：本任务之前仍有排队任务时，明确告知「已放入任务列表」及条数，
   /// 避免用户以为点击没生效（前面排队时需要等待）。[immediate] 为无需排队时的文案。
   Future<String> _queuedNote(String immediate) async {
@@ -516,6 +575,10 @@ class ItemActionHandler {
     if (r.translatedMd != null) {
       values['translated_md'] = r.translatedMd;
       values['translate_lang'] = r.translateLang ?? '';
+    }
+    // 端侧 LLM 摘要与原文并列存储（2026-09-28 v8）：只追加，不覆盖 human_md
+    if (r.summaryMd != null) {
+      values['summary_md'] = r.summaryMd;
     }
     await _write('apply_ai_result', cmd.id, values, expectedVersion: cmd.expectedVersion, txn: txn);
     return _result('apply_ai_result', cmd.id, seeVault: seeVault, txn: txn, note: '已回写 AI 产出');

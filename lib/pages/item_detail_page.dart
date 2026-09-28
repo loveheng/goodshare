@@ -338,6 +338,49 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   }
 
   /// 译文卡片：标注目标语言 + 一键复制。译文缺失时不占位（避免空卡片）。
+  /// 端侧 LLM 摘要卡片（与译文卡片同构：独立产物，不覆盖原文，可一键复制）。
+  Widget _summaryCard() {
+    final scheme = Theme.of(context).colorScheme;
+    final text = _item.summaryMd!.trim();
+    return Card(
+      margin: const EdgeInsets.only(top: Insets.md),
+      child: Padding(
+        padding: const EdgeInsets.all(Insets.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.summarize, size: 18, color: scheme.primary),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    '摘要 · 端侧大模型',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleSmall
+                        ?.copyWith(color: scheme.primary),
+                  ),
+                ),
+                IconButton(
+                  tooltip: '复制摘要',
+                  icon: const Icon(Icons.copy_outlined, size: 18),
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: text));
+                    ScaffoldMessenger.of(context)
+                        .showSnackBar(const SnackBar(content: Text('摘要已复制')));
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            SelectableText(text, style: Theme.of(context).textTheme.bodyMedium),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _translationCard() {
     final scheme = Theme.of(context).colorScheme;
     final text = _item.translatedMd!.trim();
@@ -397,6 +440,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
         padding: const EdgeInsets.fromLTRB(Insets.xl, Insets.md, Insets.xl, Insets.xxl),
         children: [
           ItemViewTemplate(item: _item),
+          // 端侧 LLM 摘要与正文并列展示（不覆盖原文，翻译层同口径）
+          if (_item.summaryMd != null && _item.summaryMd!.trim().isNotEmpty) _summaryCard(),
           // 译文与正文并列展示：译文是独立产物，不覆盖原文（翻译层硬口径）
           if (_item.hasTranslation) _translationCard(),
           _AiTaskStatusLine(repo: widget.repo, item: _item),
@@ -462,6 +507,32 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                   onPressed: _translate,
                   icon: const Icon(Icons.translate_outlined),
                   label: Text(_item.hasTranslation ? '重新翻译' : '翻译'),
+                ),
+              // 端侧 LLM 摘要 / 关键词（2026-09-28）：正文非空才可用，
+              // 与翻译同构——显式手动触发，产物并列不覆盖原文。
+              if (_item.bodyText.trim().isNotEmpty)
+                OutlinedButton.icon(
+                  onPressed: () => _run(
+                    () => widget.handler.execute(
+                      SummarizeCommand(_item.id!),
+                      vaultContext: widget.vaultContext,
+                    ),
+                    '已开始生成摘要',
+                  ),
+                  icon: const Icon(Icons.summarize_outlined),
+                  label: Text((_item.summaryMd ?? '').trim().isNotEmpty ? '重新摘要' : '摘要'),
+                ),
+              if (_item.bodyText.trim().isNotEmpty)
+                OutlinedButton.icon(
+                  onPressed: () => _run(
+                    () => widget.handler.execute(
+                      ExtractTagsCommand(_item.id!),
+                      vaultContext: widget.vaultContext,
+                    ),
+                    '已开始提取关键词',
+                  ),
+                  icon: const Icon(Icons.sell_outlined),
+                  label: const Text('提取关键词'),
                 ),
               if (!vault)
                 OutlinedButton.icon(

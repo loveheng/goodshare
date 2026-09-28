@@ -32,6 +32,7 @@ class InboxItem {
     this.machineJson,
     this.translatedMd,
     this.translateLang,
+    this.summaryMd,
     List<String> tags = const [],
     Map<String, List<String>>? facets,
     this.isVault = false,
@@ -61,6 +62,7 @@ class InboxItem {
   final String? machineJson; // 强类型结构化 JSON
   final String? translatedMd; // 译文（翻译层产出；与 humanMd 并列，不覆盖原文）
   final String? translateLang; // 译文语言码（BCP-47），与 translatedMd 成对
+  final String? summaryMd; // 端侧 LLM 摘要（与 humanMd 并列，不覆盖原文；2026-09-28 v8）
   final List<String> tags;
   final Map<String, List<String>>? facets; // 多视角聚类：视角 → 标签（AI 分类页消费，V2）
   final bool isVault;
@@ -110,6 +112,7 @@ class InboxItem {
         'machine_json': machineJson,
         'translated_md': translatedMd,
         'translate_lang': translateLang,
+        'summary_md': summaryMd,
         'tags': jsonEncode(tags),
         'facets_json': facets == null ? null : jsonEncode(facets),
         'is_vault': isVault ? 1 : 0,
@@ -175,6 +178,7 @@ class InboxItem {
       machineJson: map['machine_json'] as String?,
       translatedMd: map['translated_md'] as String?,
       translateLang: map['translate_lang'] as String?,
+      summaryMd: map['summary_md'] as String?,
       tags: tagsOf(map['tags']),
       facets: facetsOf(map['facets_json']),
       isVault: (map['is_vault'] as int? ?? 0) == 1,
@@ -203,6 +207,7 @@ class InboxItem {
     String? machineJson,
     String? translatedMd,
     String? translateLang,
+    String? summaryMd,
     List<String>? tags,
     Map<String, List<String>>? facets,
     bool? isVault,
@@ -229,6 +234,7 @@ class InboxItem {
         machineJson: machineJson ?? this.machineJson,
         translatedMd: translatedMd ?? this.translatedMd,
         translateLang: translateLang ?? this.translateLang,
+        summaryMd: summaryMd ?? this.summaryMd,
         tags: tags ?? this.tags,
         facets: facets ?? this.facets,
         isVault: isVault ?? this.isVault,
