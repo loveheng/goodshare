@@ -25,29 +25,26 @@ updated: 2026-09-28
 
 ## 3. 必须做的适配：bundled 中文库
 
-`android/app/build.gradle`：用 bundled 中文 artifact 替换默认 unbundled 通用 artifact。
+`android/app/build.gradle.kts`：用 bundled 中文 artifact 替换默认 unbundled 通用 artifact。
 
-```gradle
+```kotlin
 dependencies {
-  // 默认 google_mlkit_text_recognition 引的是 unbundled 通用库（依赖 Play 下载模型）。
-  // 国内改为 bundled 中文库：模型打进 APK，离线可用。
-  implementation 'com.google.android.gms:play-services-mlkit-text-recognition-chinese:19.0.0'
-}
-
-// 若与插件传递的 unbundled 通用 artifact 冲突，需一并排除（按插件 0.17.1 依赖图实测）：
-configurations.all {
-  resolutionStrategy {
-    exclude group: 'com.google.android.gms', module: 'play-services-mlkit-text-recognition'
-  }
+  // 默认 google_mlkit_text_recognition 插件传递的是 bundled 通用库
+  // com.google.mlkit:text-recognition:16.0.1（仅 latin，中文模型缺失）。
+  // 国内改为 bundled 中文库：模型打进 APK，离线可用，不依赖 GMS/Play。
+  // 注意：bundled 坐标是 com.google.mlkit:*；com.google.android.gms:play-services-mlkit-*
+  // 是 unbundled 变体（模型经 Play 动态下载），国内不可用，勿用。
+  implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 }
 ```
 
 - Dart 侧 `TextRecognizer(script: TextRecognitionScript.chinese)` **不变**；bundled/unbundled 仅底层 Gradle 依赖差异；
-- 排除写法是否必要取决于插件 0.17.1 实际传递依赖，需构建实测确认（冲突表现为重复类 `com.google.mlkit...`）。
+- 现有 `build.gradle.kts` 中的 GMS unbundled 中文行（`play-services-mlkit-text-recognition-chinese`，2026-09-27「标准设备优先」决策）直接**替换**为上一行 bundled 坐标；
+- 插件 0.17.1 传递依赖为 `com.google.mlkit:text-recognition:16.0.1`（bundled 通用版，仅 latin 脚本模型）——与中文 bundled 库**同组同体系，无重复类冲突，无需 exclusion**（若构建报重复类再按实际依赖图处理）。
 
 ## 4. 真机验证清单
 
-- 机型矩阵：MIUI / HyperOS / ColorOS / HarmonyOS / 海外版国内使用 各至少 1 台；
+- 机型矩阵：MIUI / HyperOS / ColorOS / HarmonyOS / 海外版国内使用 各至少 1 台；**建议加一台无 GMS 设备**——bundled 变体（`com.google.mlkit:*`）为纯静态库，理论上无 GMS 也可用，实测可扩大适配覆盖面（若通过，§7 备选方案可整体废弃）；
 - 步骤：**断网 + 关闭 Play 商店** → 收集一张含中文的图 → 确认 OCR 文本产出（证明模型已打包、未走下载）；
 - 监控 `OcrReconstructor._ocr` 的 catch 是否触发，确认降级路径。
 
@@ -61,9 +58,9 @@ configurations.all {
 
 ML Kit 在 iOS 模型随 SDK 打包，无 Play 下载环节，国内 iPhone 直接可用，**无此适配问题**。
 
-## 7. 备选（仅当 GMS 基础组件仍不完整）
+## 7. 备选（仅当 bundled 变体仍不可用）
 
-若个别 ROM 连 GMS 基础组件都缺，bundled 中文库也可能初始化失败。此时上**完全离线方案**：`flutter_onnxruntime` + PaddleOCR-nano（自管 ONNX 检测+识别模型，需自实现后处理 pipeline），即 `ocr_reconstructor.dart` 注释预留的「无 GMS 设备 bundled OCR 变体」。用户已确认有 GMS，**优先 §3 bundled 方案，不必换引擎**。
+若个别设备 bundled 中文库也无法初始化（纯静态库理论上不依赖 GMS，概率低），再上**完全离线方案**：`flutter_onnxruntime` + PaddleOCR-nano（自管 ONNX 检测+识别模型，需自实现后处理 pipeline），即 `ocr_reconstructor.dart` 注释预留的「无 GMS 设备 bundled OCR 变体」。**优先 §3 bundled 方案，真机验证通过前不换引擎**。
 
 ## 8. 体积影响
 
@@ -71,6 +68,6 @@ bundled 中文模型会把约数 MB~十余 MB 打进 APK（精确值构建后实
 
 ## 9. 待定 / 需实测
 
-- 插件 0.17.1 依赖图：确认排除 unbundled 通用 artifact 是否必要及确切写法；
+- ~~插件 0.17.1 依赖图：确认排除 unbundled 通用 artifact 是否必要及确切写法~~（已核实：插件传递 bundled 通用版 `com.google.mlkit:text-recognition:16.0.1`，与中文 bundled 库同组，无需排除）；
 - bundled 中文库确切版本号与 APK 体积增量（实测）；
-- 真机矩阵是否全部离线通过（§4）。
+- 真机矩阵是否全部离线通过（§4，含无 GMS 设备验证 bundled 是否摆脱 GMS 依赖）。

@@ -43,10 +43,12 @@ android {
 }
 
 dependencies {
-    // ML Kit 中文脚本识别器：google_mlkit_text_recognition 插件仅自带 latin 脚本依赖，
-    // 其余脚本需 app 侧手动引入（否则 R8 minify 报 missing class）。
-    // 走 GMS unbundled 变体：模型由 Play 服务按需下载（标准设备优先，2026-09-27 决策）。
-    implementation("com.google.android.gms:play-services-mlkit-text-recognition-chinese:16.0.0")
+    // ML Kit 中文脚本识别器：google_mlkit_text_recognition 插件仅自带 latin 脚本依赖（bundled
+    // 通用库 com.google.mlkit:text-recognition:16.0.1），其余脚本需 app 侧手动引入。
+    // 国内适配（2026-09-28 决策）：切 bundled 中文库 com.google.mlkit:*——模型打进 APK，
+    // 离线可用，不依赖 GMS/Play 动态下载。注意：com.google.android.gms:play-services-mlkit-*
+    // 是 unbundled 变体（模型经 Play 下载），国内不可用，勿用。
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 }
 
 kotlin {

@@ -143,14 +143,16 @@ abstract class TranslationEngine {
 }
 ```
 
-**实现与平台映射**
+**平台映射与国内可用性**
 
 | 实现 | 平台 | 端侧能力 | 入口 |
 |---|---|---|---|
-| `MlKitTranslationEngine` | Android（需 GMS） | ML Kit Translate，约 58 语种，语言包可预下载 | `google_mlkit_translation_no_ios` |
+| `MlKitTranslationEngine` | Android（需 GMS + **语言包已下载**） | ML Kit Translate，约 58 语种，语言包可预下载 | `google_mlkit_translation_no_ios` |
 | `AppleTranslationEngine` | iOS 18+ | Apple Translation framework（`TranslationSession`），系统托管 | Swift channel，或 `apple_native_translate` |
 | `OpusMtTranslationEngine` | 跨平台兜底 | OPUS-MT int8 自管模型 | `flutter_onnxruntime` |
 | `NoopTranslationEngine` | 全平台兜底 | 返回原文，**保证翻译永不卡死队列** | 内建 |
+
+> ⚠️ **国内可用性风险（2026-09-28 评估补充，字幕批次开工前须拍板）**：ML Kit Translation 属动态下载模型 API（语言包经 Google Play 服务下发），与 OCR 中文模型同一个墙——**国内设备即便有 GMS，语言包大概率下载失败**，`MlKitTranslationEngine.isAvailable` 应把「语言包就绪」纳入门禁，国内默认路径实际退化为 Noop。可选对策：① 接受国内 `source-only` 为长期默认（设置项明示）；② 自托管小模型补位；③ 云 API 兜底。未拍板前字幕默认形态按 `source-only` 处理。
 
 **必处理项**
 
@@ -180,16 +182,19 @@ OPUS-MT 退居兜底：实测 `onnx-community/opus-mt-en-zh` 的 encoder int8 �
 - MCP 工具是否需要暴露字幕内容（`lib/mcp/tools.dart` 摘要态是否附带字幕字段）；
 - [已确认] 翻译失败**不重入队**：单句失败保留原文、整篇失败退化为原文产物，不回投 `ai_task_queue` 重试，避免阻塞队列（见 §8 降级条）。
 
-## 11. 视频字幕（复用现有转码通道，零新增）
+## 11. 视频字幕（引擎复用现有转码通道，少量新增）
 
 现状已落地：`pubspec.yaml` 依赖 `ffmpeg_kit_flutter_new_min`（轻量 min 变体），`lib/ai/asr.dart._toWav16k` 已实现 `ffmpeg -i $in -ar 16000 -ac 1 -c:a pcm_s16le $out`。该命令对**视频输入同样成立**：ffmpeg 自动 demux 视频容器、取首条音频流、以 pcm_s16le 写入 WAV，视频流因 WAV 容器不支持而被丢弃。
 
-因此视频字幕**不新增 ffmpeg 调用、不新增依赖、不新增平台分流**：
+因此视频字幕**不新增 ffmpeg 调用、不新增依赖、不新增平台分流**（引擎层零新增）；但**路由与 UI 有少量新增**：
 
-- 入口按扩展名 / MIME 判定输入为视频时，仍调用既有 `_toWav16k(videoPath, wavPath)` 得到 16kHz 单声道 WAV；
-- 后续 VAD 分段 / cue 组装 / SRT·VTT 序列化（`lib/ai/subtitle.dart`）与音频字幕**完全一致**，公共模块零改动；
-- 仅在 `asr.dart` 入口与详情页「导出字幕」可见性上做输入类型识别（视频条目同样展示字幕产出）。
+- `AsrReconstructor.handles` 现仅认 `itemType == 'audio'`——视频条目目前走 PlaceholderReconstructor 占位，须改路由（`handles` 接受 `video`，或独立注册视频实现）；
+- 视频详情页「导出字幕」可见性识别（视频条目同样展示字幕产出）属新增 UI 工作。
+
+后续 VAD 分段 / cue 组装 / SRT·VTT 序列化（`lib/ai/subtitle.dart`）与音频字幕**完全一致**，公共模块零改动。
 
 平台结论与 §9 一致：ffmpeg min 二进制按平台分发但 Dart 调用统一，字幕引擎不分流。
 
 注意：min 变体含常见 demux（mp4 / mkv / mov / flv / webm）与音频解码（aac / mp3 / opus / pcm），非常见封装（如 AV1+Opus 的 webm、FLAC-in-video）需在真机实测；此类边界失败按 §2「占位不卡死」降级为纯文本，不阻断。
+
+**长视频资源风险（2026-09-28 评估补充）**：16k 单声道 pcm_s16le WAV 约 1.9MB/分钟（1 小时 ≈ 115MB）落 systemTemp；长视频转写耗时显著超出现有音频场景的 10 分钟超时策略。落地时评估：分段转写（按 VAD/时长切片）、临时文件即时清理、超时上限按视频单独设定。
