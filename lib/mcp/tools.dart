@@ -3,12 +3,14 @@ import 'dart:io';
 
 import '../action/commands.dart';
 import '../action/item_action_handler.dart';
+import '../ai/language_codes.dart';
 import '../data/repository.dart';
 import '../models/item.dart';
 import 'jsonrpc.dart';
 
 /// MCP 工具集（PRD §7）：list/get/add/query_machine_data/get_timeline_context/
-/// update/delete/set_vault/reprocess/unlock_edit/batch_items/append_segment，共 12 个；execute_action 已裁决剔除。
+/// update/delete/set_vault/reprocess/unlock_edit/batch_items/append_segment/translate_item，
+/// 共 13 个；execute_action 已裁决剔除。
 /// 所有写/改动作经 ItemActionHandler（UI 与 MCP 同一套校验与实现）。
 /// 隐私硬约束由 Repository 默认查询保证：Vault 与已删条目物理不可见；
 /// 因此 MCP 对 Vault 条目仅可 set_vault(on=true) 移入，无法移出或读取。
@@ -216,6 +218,28 @@ List<Map<String, Object?>> toolSchemas() => [
           'required': ['id', 'text'],
         },
       },
+      {
+        'name': 'translate_item',
+        'description': '把条目的正文译成指定语言（端侧离线翻译，与手机端「翻译」按钮同一入口）。'
+            '异步入队执行：本调用只返回入队结果，译文稍后落库，随后用 get_item 读取 translation 字段。'
+            '目标语言受白名单约束；条目无正文（如未 OCR 的图片、未转写的音频）会被拒绝。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
+            'target_lang': {
+              'type': 'string',
+              'enum': kTargetLanguages,
+              'description': '目标语言（BCP-47）；省略则用 App 设置项里的目标语言',
+            },
+            'expected_version': {
+              'type': 'integer',
+              'description': '可选乐观锁：你读取该条目时看到的 version',
+            },
+          },
+          'required': ['id'],
+        },
+      },
     ];
 
 int _clampInt(Object? v, int def, int min, int max) {
@@ -289,7 +313,18 @@ Future<List<Map<String, Object?>>> callTool(
       final it = await repo.byId(id); // 默认排除 Vault 与已删条目
       if (it == null) throw McpRpcError(errInvalidParams, '条目不存在: id=$id');
       // 与命令结果共用同一序列化口径：AI 上下文里只有一种 item 形状
-      final blocks = <Map<String, Object?>>[_text(jsonEncode(itemToJson(it)))];
+      final itemJson = itemToJson(it);
+      // 最近一次 AI 任务的原因（失败原因 / 「完成但无产出」说明）一并回传：
+      // 同一份文字既给人看（任务队列页）也给 AI 读，避免 AI 只能猜「为什么没译文」
+      final task = await repo.lastTaskOf(it.id ?? '');
+      if (task != null) {
+        itemJson['last_task'] = {
+          'action': task['task_action'] ?? '',
+          'status': task['status'] ?? '',
+          if (task['last_note'] != null) 'note': task['last_note'],
+        };
+      }
+      final blocks = <Map<String, Object?>>[_text(jsonEncode(itemJson))];
       final f = it.rawFilePath;
       if (f != null && f.isNotEmpty) {
         final file = File(f);
@@ -458,6 +493,19 @@ Future<List<Map<String, Object?>>> callTool(
               id,
               text,
               sourceApp: _str(args['source_app']),
+              expectedVersion: _int(args['expected_version']),
+            ),
+            actor: CommandActor.ai,
+          ));
+      return [_text(jsonEncode(r.toJson()))];
+
+    case 'translate_item':
+      final id = _str(args['id']);
+      if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      final r = await _guarded(() => handler.execute(
+            TranslateCommand(
+              id,
+              targetLang: _str(args['target_lang']),
               expectedVersion: _int(args['expected_version']),
             ),
             actor: CommandActor.ai,

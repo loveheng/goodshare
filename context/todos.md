@@ -9,6 +9,10 @@ format: v2
 
 - [ ] [2026-09-28] (风险) 视频字幕转写：长视频 16k 单声道 WAV 临时文件约 115MB/小时落 systemTemp，且既有 10 分钟超时策略未覆盖视频场景，落地时评估分段/清理与超时上限 (src: ai, design-docs-review)
 - [ ] [2026-09-28] (优化) 图片列表「有标注」角标按 annotations JSON 存在性判定属文件 stat IO，列表滚动路径需异步缓存避免主线程阻塞 (src: ai, design-docs-review)
+- [ ] [2026-09-28] (功能) 真离线翻译引擎（OPUS-MT / 自托管小模型）：翻译层骨架已就位，实现 `TranslationEngine` 并注册进 `TranslationRouter` 即可接棒——国内 ML Kit 语言包不可达时才有译文产出 (src: ai, translation-skeleton)
+- [ ] [2026-09-28] (功能) iOS Apple Translation framework 引擎实现（骨架期 Android 独享，iOS 恒落 Noop） (src: ai, translation-skeleton)
+- [ ] [2026-09-28] (优化) 源语识别替换启发式：当前 `detectSourceLanguage` 为字符分布启发式（已标 DEGRADE），接入语言识别能力后替换，接口不变 (src: ai, translation-skeleton)
+
 
 ## misc
 - (功能)[long] iOS 端适配：需 macOS 构建；验证 receive_sharing_intent iOS 行为与前台服务限制（预期「app 前台时 MCP 可用」）

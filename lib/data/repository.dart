@@ -58,6 +58,23 @@ class Repository extends ChangeNotifier {
   static const taskOcrAndExtract = 'ocr_and_extract';
   static const taskSummarizeUrl = 'summarize_url';
   static const taskTranscribeAudio = 'transcribe_audio';
+  static const taskTranslate = 'translate';
+
+  /// translate 任务动作串：可带目标语言后缀（`translate` / `translate:ja`）。
+  /// 队列表无参数列，故把「单次指定的目标语言」编码进动作串，避免为一次覆盖加列。
+  static String translateTaskAction([String? lang]) =>
+      (lang == null || lang.isEmpty) ? taskTranslate : '$taskTranslate:$lang';
+
+  /// 是否为翻译类任务动作。
+  static bool isTranslateAction(String? action) =>
+      action == taskTranslate || (action?.startsWith('$taskTranslate:') ?? false);
+
+  /// 取任务动作串里携带的目标语言；无则 null（表示沿用设置项）。
+  static String? translateTargetOf(String? action) {
+    if (action == null || !action.startsWith('$taskTranslate:')) return null;
+    final lang = action.substring(taskTranslate.length + 1).trim();
+    return lang.isEmpty ? null : lang;
+  }
 
   /// item_type → 默认队列动作；note/document 无专属动作返回 null（消费者按类型通用重构）。
   static String? taskActionFor(String itemType) => switch (itemType) {
@@ -294,7 +311,7 @@ class Repository extends ChangeNotifier {
     final db = await _database();
     return db.rawQuery(
       '''
-      SELECT q.task_id, q.item_id, q.task_action, q.status, q.updated_at,
+      SELECT q.task_id, q.item_id, q.task_action, q.status, q.updated_at, q.last_note,
              i.human_title, i.item_type, i.is_processed
       FROM ai_task_queue AS q
       LEFT JOIN inbox_items AS i ON i.id = q.item_id
@@ -303,6 +320,18 @@ class Repository extends ChangeNotifier {
       ''',
       [limit],
     );
+  }
+
+  /// 该条目最近一次任务（按 rowid 倒序首条），供任务队列原因展示与 MCP `get_item`
+  /// 回传——**同一份失败原因既给人看也给 AI 读**（2026-09-28 决策）。
+  Future<Map<String, Object?>?> lastTaskOf(String itemId) async {
+    final db = await _database();
+    final rows = await db.rawQuery(
+      'SELECT task_action, status, last_note FROM ai_task_queue '
+      'WHERE item_id = ? ORDER BY rowid DESC LIMIT 1',
+      [itemId],
+    );
+    return rows.isEmpty ? null : rows.first;
   }
 
   /// 暂停任务：pending → paused（**不被消费者认领**，但保留在队列中可手动恢复）。
@@ -362,9 +391,22 @@ class Repository extends ChangeNotifier {
   }
 
   /// 结束任务：completed / failed / cancelled。
-  Future<void> finishTask(String taskId, String status) async {
+  ///
+  /// [note] 为**原因说明**（失败时写错误原因，「完成但无产出」时写提示）——
+  /// 错误必须被用户感知（2026-09-28 决策），且这份信息对 AI 同样可读：
+  /// 队列任务本身不进 MCP 返回体，但任务队列页与详情页状态条共用同一份文本，
+  /// 避免"人看到一句、AI 猜另一句"。
+  Future<void> finishTask(String taskId, String status, {String? note}) async {
     final db = await _database();
-    await db.update('ai_task_queue', {'status': status}, where: 'task_id = ?', whereArgs: [taskId]);
+    await db.update(
+      'ai_task_queue',
+      {
+        'status': status,
+        if (note != null) 'last_note': note,
+      },
+      where: 'task_id = ?',
+      whereArgs: [taskId],
+    );
   }
 
   /// 心跳：刷新任务 updated_at，标记其仍在活跃处理（防止被误判为僵尸任务回收）。

@@ -32,6 +32,23 @@ void main() {
     });
   });
 
+  group('translationLangOf（译文文件识别）', () {
+    test('主文件不是译文文件', () {
+      expect(translationLangOf('id1', 'id1.srt'), isNull);
+      expect(translationLangOf('id1', 'id1.vtt'), isNull);
+    });
+
+    test('译文文件解析出目标语言', () {
+      expect(translationLangOf('id1', 'id1.zh.srt'), 'zh');
+      expect(translationLangOf('id1', 'id1.ja.vtt'), 'ja');
+    });
+
+    test('别的条目 / 别的扩展名不算', () {
+      expect(translationLangOf('id1', 'id2.zh.srt'), isNull);
+      expect(translationLangOf('id1', 'id1.zh.txt'), isNull);
+    });
+  });
+
   group('usableCues', () {
     test('过滤 trim 后为空的 cue', () {
       final r = usableCues(cues);

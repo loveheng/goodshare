@@ -6,7 +6,9 @@ import '../ui/drawer_menu_button.dart';
 import '../ai/ai_queue_service.dart';
 import '../ai/asr_model.dart';
 import '../ai/capabilities.dart';
+import '../ai/language_codes.dart';
 import '../ai/model_manager.dart';
+import '../ai/subtitle.dart';
 import '../share/text_collector.dart';
 import '../service/mcp_controller.dart';
 import 'mcp_page.dart';
@@ -45,6 +47,7 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   late String _mode = widget.collector.mode;
+  String _translationReason = '';
 
   @override
   void initState() {
@@ -53,6 +56,22 @@ class _SettingsPageState extends State<SettingsPage> {
     widget.models.addListener(_onModelsChanged);
     widget.aiQueue.addListener(_onAiQueueChanged);
     widget.caps.ensureDetected(); // 首次检测后持久化；此后幂等
+    _refreshTranslation(); // 翻译可用性与语言包状态是动态的，每次进入实时查
+  }
+
+  Future<void> _refreshTranslation() async {
+    await widget.caps.checkTranslationAvailable();
+    final reason = await widget.caps.translationUnavailableReason();
+    if (!mounted) return;
+    setState(() => _translationReason = reason ?? '');
+  }
+
+  Future<void> _onDownloadLanguagePack() async {
+    final ok = await widget.caps.downloadLanguagePack();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(ok ? '语言包已下载' : '下载失败（国内网络通常不可用）')),
+    );
   }
 
   @override
@@ -91,6 +110,16 @@ class _SettingsPageState extends State<SettingsPage> {
     if (st.isReady) return '使用 ${sel.name}（离线识别，无隐私上传）';
     if (st.phase == DownloadPhase.error) return '上次下载失败：${st.error}';
     return '需先下载模型（${_humanSize(sel.totalBytes)}）';
+  }
+
+  String _translationSubtitle() {
+    final caps = widget.caps;
+    if (caps.translationAvailable == null) return '检测中…';
+    if (caps.translationAvailable == false) {
+      return _translationReason.isNotEmpty ? _translationReason : '无可用引擎，产物保留原文';
+    }
+    if (!caps.translationEnabled) return '已关闭';
+    return '已就绪 · 目标 ${languageLabel(caps.targetLang)}';
   }
 
   String _bgProcessSubtitle() {
@@ -174,6 +203,61 @@ class _SettingsPageState extends State<SettingsPage> {
             value: widget.aiQueue.backgroundProcessingEnabled,
             onChanged: (v) => widget.aiQueue.setBackgroundProcessingEnabled(v),
           ),
+          const _SectionHeader('翻译'),
+          SwitchListTile(
+            secondary: const Icon(Icons.translate),
+            title: const Text('端侧翻译'),
+            subtitle: Text(_translationSubtitle()),
+            value: caps.translationEnabled && (caps.translationAvailable ?? false),
+            onChanged: caps.translationAvailable == false
+                ? null // 语言包未就绪：置灰 + 小字说明原因，不静默降级
+                : (v) => caps.setTranslationEnabled(v),
+          ),
+          ListTile(
+            leading: const Icon(Icons.language_outlined),
+            title: const Text('目标语言'),
+            subtitle: const Text('文本条目翻译与字幕译文的目标语种'),
+            trailing: DropdownButton<String>(
+              value: caps.targetLang,
+              items: [
+                for (final code in kTargetLanguages)
+                  DropdownMenuItem(value: code, child: Text(languageLabel(code))),
+              ],
+              onChanged: (v) {
+                if (v == null) return;
+                caps.setTargetLang(v);
+                _refreshTranslation();
+              },
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.subtitles_outlined),
+            title: const Text('字幕译文'),
+            subtitle: const Text('转写出的字幕是否带译文（翻译不可用时自动只出原文）'),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: SegmentedButton<SubtitleMode>(
+              segments: const [
+                ButtonSegment(value: SubtitleMode.sourceOnly, label: Text('仅原文')),
+                ButtonSegment(value: SubtitleMode.bilingual, label: Text('双语')),
+                ButtonSegment(value: SubtitleMode.separate, label: Text('分文件')),
+              ],
+              selected: {caps.subtitleMode},
+              onSelectionChanged: (s) => caps.setSubtitleMode(s.first),
+            ),
+          ),
+          if (caps.translationAvailable == false && caps.engine != null)
+            ListTile(
+              leading: const Icon(Icons.download_outlined),
+              title: Text('下载${languageLabel(caps.targetLang)}语言包'),
+              subtitle: const Text('ML Kit 语言包经 Google Play 下发，国内网络通常不可用；'
+                  '失败时字幕与译文保留原文，不影响其它功能'),
+              trailing: TextButton(
+                onPressed: _onDownloadLanguagePack,
+                child: const Text('下载'),
+              ),
+            ),
           const _SectionHeader('语音转写模型'),
           ...asrModels.map((m) => _AsrModelTile(
             model: m,

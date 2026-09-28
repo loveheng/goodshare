@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:sqflite/sqflite.dart';
 
+import '../ai/language_codes.dart';
 import '../data/repository.dart';
 import '../models/item.dart';
 import 'commands.dart';
@@ -80,6 +81,7 @@ class ItemActionHandler {
       final ReprocessCommand c => _reprocess(c, seeVault, txn),
       final TranscribeCommand c => _transcribe(c, seeVault, txn),
       final OcrCommand c => _ocr(c, seeVault, txn),
+      final TranslateCommand c => _translate(c, seeVault, txn),
       final UnlockEditCommand c => _unlockEdit(c, seeVault, txn),
       final RestoreCommand c => _restore(c, seeVault, txn),
       final DeleteForeverCommand c => _deleteForever(c, txn),
@@ -313,6 +315,44 @@ class ItemActionHandler {
         note: await _queuedNote('已开始识别文字'));
   }
 
+  /// 翻译条目正文：显式入队 translate（与 OCR / 转写同构——端侧重资源动作
+  /// 一律手动 / 显式触发，摄入不自动跑）。
+  ///
+  /// 校验下沉在动作层：正文非空 + 目标语言合法，AI / MCP 换个入口也绕不过。
+  Future<CommandResult> _translate(
+    TranslateCommand cmd,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    if (item.bodyText.trim().isEmpty) {
+      throw ActionException(
+        '该条目没有可翻译的正文',
+        code: ActionErrorCode.invalidRequest,
+        hint: '图片 / 音视频请先「识别文字」或「转写」出文本，再翻译',
+      );
+    }
+    final lang = cmd.targetLang;
+    if (lang != null && !isSupportedTarget(lang)) {
+      throw ActionException(
+        '不支持的目标语言：$lang',
+        code: ActionErrorCode.invalidRequest,
+        hint: '可选：${kTargetLanguages.join(', ')}',
+      );
+    }
+    await _write(
+      'translate',
+      cmd.id,
+      {'is_processed': 0},
+      expectedVersion: cmd.expectedVersion,
+      txn: txn,
+    );
+    await _repo.enqueueTask(cmd.id, Repository.translateTaskAction(lang), txn: txn);
+    onEnqueued?.call();
+    return _result('translate', cmd.id, seeVault: seeVault, txn: txn,
+        note: await _queuedNote('已开始翻译'));
+  }
+
   /// 入队后的提示文案：本任务之前仍有排队任务时，明确告知「已放入任务列表」及条数，
   /// 避免用户以为点击没生效（前面排队时需要等待）。[immediate] 为无需排队时的文案。
   Future<String> _queuedNote(String immediate) async {
@@ -472,6 +512,11 @@ class ItemActionHandler {
       values['item_type'] = r.itemType;
     }
     if (r.facets != null) values['facets_json'] = jsonEncode(r.facets);
+    // 译文与原文并列存储：翻译层只追加译文，绝不覆盖 human_md
+    if (r.translatedMd != null) {
+      values['translated_md'] = r.translatedMd;
+      values['translate_lang'] = r.translateLang ?? '';
+    }
     await _write('apply_ai_result', cmd.id, values, expectedVersion: cmd.expectedVersion, txn: txn);
     return _result('apply_ai_result', cmd.id, seeVault: seeVault, txn: txn, note: '已回写 AI 产出');
   }

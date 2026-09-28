@@ -17,7 +17,7 @@ updated: 2026-09-28
 | 音频字幕（SRT/VTT） | 设计中，未落代码 | audio | + silero VAD 分段 | 纯 Dart 跨平台 | 中 |
 | 视频转写 / 字幕 | 设计中，零新增 | video | 复用音频 `_toWav16k` + VAD | 纯 Dart 跨平台 | 极小 |
 | 图片标注（overlay） | **原型已落地**（最简画布，UI 待正式化） | image | CustomPainter + GestureDetector | 纯 Dart 跨平台 | 中 |
-| 翻译（文本层） | 设计中 | 文本 / 任意 | ML Kit / Apple / OPUS-MT / Noop 分流 | **按系统 API 分流** | 中–大 |
+| 翻译（文本层） | **骨架已落地**（2026-09-28） | 文本 / 任意 | ML Kit + Noop；OPUS-MT / Apple 待插拔 | **按系统 API 分流** | 骨架中已完；真离线引擎中–大 |
 
 ## 2. 公共基建复用
 
@@ -47,7 +47,7 @@ updated: 2026-09-28
 | VAD 分段字幕准确性 | 低–中 | 对齐官方 `generate-subtitles.py` 参数 |
 | 图片标注手势 / 缩放对齐 | 低 | 归一化坐标 + InteractiveViewer |
 | 翻译 OPUS-MT 体积（单语对 ~246MB） | 已排除 | 退居兜底，默认走系统引擎 |
-| 翻译 ML Kit 语言包国内不可达（Play 动态下载） | 已拍板 | 国内接受 `source-only` 默认（设置项明示），不自托管/不云 API；海外仍走 ML Kit（见 `asr-subtitle.md` §8） |
+| 翻译 ML Kit 语言包国内不可达（Play 动态下载） | 已拍板 | 国内接受 `source-only` 默认（设置项明示），不自托管/不云 API；海外仍走 ML Kit。骨架已落地：`MlKitTranslationEngine.isAvailable` 把语言包就绪纳入门禁，未就绪即落 Noop，产物保留原文（见 `asr-subtitle.md` §8） |
 | 长视频转写临时 WAV 体积与超时（~115MB/小时） | 中 | 分段转写 + 临时文件清理 + 视频单独超时（见 `asr-subtitle.md` §11） |
 
 ## 5. 优先级与建议落地顺序
@@ -57,7 +57,7 @@ updated: 2026-09-28
 | 1 | **OCR 国内适配（bundled）** | 现有 OCR 在国内可能已失效；成本极低，解锁核心用户群（bundled 理论不依赖 GMS，或可同时覆盖无 GMS 设备） | 小 |
 | 2 | **字幕批次（音频 + 视频一起交付）** | 二者共享同一批新增基建（VAD assets 入库 → subtitle.dart → cue 通道 → reconstructor 路由收 video → 详情页导出入口），拆开无意义；开工前先拍板翻译层国内策略（见 §4 风险表） | 中 |
 | 3 | **图片标注正式化** | 原型已落地验证逻辑，剩余工具栏/手势命中/角标 | 中 |
-| 4 | **翻译层** | 最大块（三实现 + 路由 + 语言码映射 + 句子切分），可分期；路径取决于国内策略拍板结果 | 中–大 |
+| 4 | **翻译层** | 骨架已落地（2026-09-28 用户拍板「骨架先行 + ML Kit」）；剩余真离线引擎与 iOS Apple 实现按既有接口插拔 | 骨架已完 / 引擎中–大 |
 | 5 | **R2 模型源迁移** | 现状 hf-mirror 可用，非阻塞（见 `context/todos.md` low） | 中 |
 
 > 排序原则：**低成本高价值优先**；已落地但国内失效的 OCR 置顶；音/视频字幕共享基建合并为一个批次；依赖下载/模型的排在后。

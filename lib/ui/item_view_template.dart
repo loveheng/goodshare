@@ -8,6 +8,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 
+import '../ai/audio_extract.dart';
 import '../ai/subtitle.dart';
 import '../models/item.dart';
 import 'image_annotator.dart';
@@ -217,6 +218,7 @@ Widget _audioView(BuildContext context, InboxItem item) {
           child: SelectableText(item.bodyText),
         ),
       _AudioPlayer(path: item.rawFilePath!),
+      _AudioExportRow(item: item),
       if (item.id != null) _SubtitleExportRow(itemId: item.id!),
     ],
   );
@@ -234,13 +236,17 @@ Widget _videoView(BuildContext context, InboxItem item) {
           child: SelectableText(item.bodyText),
         ),
       _VideoPlayer(path: item.rawFilePath!),
+      _AudioExportRow(item: item),
       if (item.id != null) _SubtitleExportRow(itemId: item.id!),
     ],
   );
 }
 
-/// 「导出字幕」入口：字幕文件存在才显示（按存在性判定，不新增 schema，
-/// 见 asr-subtitle.md §6）。SRT 与 VTT 双份各自分享。
+/// 「字幕产物」清单：该条目的每个字幕文件都列出来并各自可分享——主文件
+/// （仅原文 / 双语）+ `separate` 模式产出的各语言译文文件（`{itemId}.{lang}.srt|.vtt`）。
+///
+/// 此前译文文件只落盘、UI 不展示，等于翻译产出用户拿不到；翻译产物必须可见才有用。
+/// 按文件存在性判定显隐，不新增 schema（见 asr-subtitle.md §6）。
 class _SubtitleExportRow extends StatelessWidget {
   const _SubtitleExportRow({required this.itemId});
 
@@ -248,37 +254,108 @@ class _SubtitleExportRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<bool>(
-      future: SubtitleStore.exists(itemId),
+    return FutureBuilder<List<SubtitleFile>>(
+      future: SubtitleStore.listFiles(itemId),
       builder: (context, snap) {
-        if (snap.data != true) return const SizedBox.shrink();
+        final files = snap.data;
+        if (files == null || files.isEmpty) return const SizedBox.shrink();
         return Padding(
           padding: const EdgeInsets.only(top: Insets.sm),
-          child: Row(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              OutlinedButton.icon(
-                onPressed: () async {
-                  final f = await SubtitleStore.fileFor(itemId, 'srt');
-                  await SharePlus.instance.share(
-                      ShareParams(files: [XFile(f.path)]));
-                },
-                icon: const Icon(Icons.subtitles_outlined, size: 18),
-                label: const Text('导出 SRT'),
+              Text(
+                '字幕产物${files.length > 2 ? '（含译文）' : ''}',
+                style: Theme.of(context)
+                    .textTheme
+                    .labelMedium
+                    ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
-              const SizedBox(width: Insets.sm),
-              OutlinedButton.icon(
-                onPressed: () async {
-                  final f = await SubtitleStore.fileFor(itemId, 'vtt');
-                  await SharePlus.instance.share(
-                      ShareParams(files: [XFile(f.path)]));
-                },
-                icon: const Icon(Icons.subtitles, size: 18),
-                label: const Text('导出 VTT'),
+              const SizedBox(height: Insets.sm),
+              Wrap(
+                spacing: Insets.sm,
+                runSpacing: Insets.sm,
+                children: [
+                  for (final f in files)
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        await SharePlus.instance.share(ShareParams(files: [XFile(f.path)]));
+                      },
+                      icon: Icon(
+                        f.lang == null ? Icons.subtitles_outlined : Icons.translate,
+                        size: 18,
+                      ),
+                      label: Text('导出 ${f.label}'),
+                    ),
+                ],
               ),
             ],
           ),
         );
       },
+    );
+  }
+}
+
+/// 「提取音轨」入口（音频 / 视频条目）：把音轨导出成独立音频文件并分享。
+///
+/// 默认**跟随原格式无损复制**（`-c:a copy`，不需要编码器，所以 min 版 ffmpeg
+/// 也能直接导出 mp3 / ogg / flac），也可重编码为 m4a / flac / wav（内置编码器）。
+/// 详见 `lib/ai/audio_extract.dart` 顶部的依赖约束说明。
+class _AudioExportRow extends StatelessWidget {
+  const _AudioExportRow({required this.item});
+
+  final InboxItem item;
+
+  Future<void> _pick(BuildContext context, String path) async {
+    final fmt = await showModalBottomSheet<AudioExportFormat>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.all(Insets.md),
+              child: Text('导出为（默认无损复制，不重编码）'),
+            ),
+            for (final f in AudioExportFormat.values)
+              ListTile(
+                leading: const Icon(Icons.audio_file_outlined),
+                title: Text(f.label),
+                onTap: () => Navigator.pop(ctx, f),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (fmt == null || !context.mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    // ffmpeg 是原生进程，长音频要几秒——先给反馈，避免「点了没反应」
+    messenger.showSnackBar(const SnackBar(content: Text('正在提取音轨…')));
+    final res = await AudioExtractor.extract(path, format: fmt, itemId: item.id);
+    messenger.hideCurrentSnackBar();
+    if (!res.ok) {
+      // 失败原因直接来自 AudioExtractor，原样告知（错误要被用户感知，不自己猜一句）
+      messenger.showSnackBar(
+        SnackBar(content: Text('提取失败：${res.error ?? '未知原因'}')),
+      );
+      return;
+    }
+    await SharePlus.instance.share(ShareParams(files: [XFile(res.path!)]));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final path = item.rawFilePath;
+    if (path == null || path.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: Insets.sm),
+      child: OutlinedButton.icon(
+        onPressed: () => _pick(context, path),
+        icon: const Icon(Icons.audiotrack_outlined, size: 18),
+        label: const Text('提取音轨'),
+      ),
     );
   }
 }

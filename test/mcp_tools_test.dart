@@ -153,11 +153,11 @@ void main() {
     );
   });
 
-  test('工具清单共 12 个且不含 execute_action', () {
+  test('工具清单共 13 个且不含 execute_action', () {
     final names = toolSchemas().map((s) => s['name']).toList();
-    expect(names.length, 12);
+    expect(names.length, 13);
     expect(names, isNot(contains('execute_action')));
-    expect(names, containsAll(['update_item', 'unlock_edit', 'set_vault', 'reprocess_item', 'query_machine_data', 'get_timeline_context', 'batch_items', 'append_segment']));
+    expect(names, containsAll(['update_item', 'unlock_edit', 'set_vault', 'reprocess_item', 'query_machine_data', 'get_timeline_context', 'batch_items', 'append_segment', 'translate_item']));
   });
 
   test('expected_version 乐观锁：版本过期 → version_conflict，不静默覆盖', () async {
@@ -278,5 +278,18 @@ void main() {
       expect(data['code'], ActionErrorCode.editLocked);
       expect(data['hint'], contains('unlock_edit'));
     }
+  });
+
+  test('get_item 回传最近任务原因（错误可感知，人与 AI 同读一份文字）', () async {
+    final it = await repo.add(InboxItem(itemType: InboxItem.typeNote, rawContent: '内容', createdAt: 1));
+    await repo.enqueueTask(it.id!, Repository.taskTranslate);
+    final taskId = (await repo.pendingTasks()).first['task_id'] as String;
+    await repo.finishTask(taskId, 'failed', note: '无可用翻译引擎（语言包未就绪）');
+    final blocks = await callTool('get_item', {'id': it.id}, repo);
+    final json = jsonDecode(textOf(blocks)) as Map<String, Object?>;
+    final task = json['last_task'] as Map<String, Object?>?;
+    expect(task, isNotNull, reason: '失败原因必须随条目回传，否则 AI 只能猜「为什么没译文」');
+    expect(task!['status'], 'failed');
+    expect(task['note'], '无可用翻译引擎（语言包未就绪）');
   });
 }

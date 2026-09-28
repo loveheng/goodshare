@@ -156,12 +156,18 @@ class _TaskTile extends StatelessWidget {
     final itemId = task['item_id'] as String? ?? '';
     final ts = task['updated_at'] as int?;
     final time = ts == null ? null : DateTime.fromMillisecondsSinceEpoch(ts);
+    final note = task['last_note'] as String?;
 
     final parts = <String>[
       ...[itemType, action].whereType<String>(),
       if (time != null)
         '${time.month}-${time.day.toString().padLeft(2, '0')} '
             '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}',
+    ];
+    final subtitleLines = <String>[
+      parts.join(' · '),
+      if (note != null && note.isNotEmpty) '原因：$note',
+      if (itemId.isNotEmpty) '条目 ${itemId.substring(0, 8)}',
     ];
 
     return ListTile(
@@ -181,8 +187,12 @@ class _TaskTile extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
       ),
       subtitle: Text(
-          '${parts.join(' · ')}\n${itemId.isEmpty ? '' : '条目 ${itemId.substring(0, 8)}'}'),
-      isThreeLine: itemId.isNotEmpty,
+        subtitleLines.join('\n'),
+        style: note != null && note.isNotEmpty && status == 'failed'
+            ? Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.error)
+            : null,
+      ),
+      isThreeLine: true,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [

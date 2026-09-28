@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../action/item_action_handler.dart';
+import '../ai/capabilities.dart';
 import '../data/repository.dart';
 import '../ui/drawer_menu_button.dart';
 import '../models/item.dart';
@@ -11,10 +12,17 @@ import 'item_detail_page.dart';
 /// 时光机（首页）：按「天」分组的内容时间线（设计 §4.1）。
 /// MVP/V2 阶段 daily_metrics 无数据（健康/日历 V3 接入），即纯内容分组线。
 class TimelinePage extends StatefulWidget {
-  const TimelinePage({super.key, required this.repo, required this.handler, this.onOpenDrawer});
+  const TimelinePage({
+    super.key,
+    required this.repo,
+    required this.handler,
+    required this.caps,
+    this.onOpenDrawer,
+  });
 
   final Repository repo;
   final ItemActionHandler handler;
+  final AiCapabilities caps; // 详情页翻译预检用
   final VoidCallback? onOpenDrawer;
 
   @override
@@ -123,6 +131,7 @@ class _TimelinePageState extends State<TimelinePage> with RepoAutoReload {
                           repo: widget.repo,
                           handler: widget.handler,
                           item: it,
+                          caps: widget.caps,
                         ),
                       ),
                     ),

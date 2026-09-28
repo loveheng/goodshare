@@ -16,7 +16,7 @@ class Db {
     final dir = await getDatabasesPath();
     final db = await openDatabase(
       _pathOverride ?? p.join(dir, 'goodshare.db'),
-      version: 5,
+      version: 7,
       onCreate: (db, version) => _createAll(db),
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -32,6 +32,10 @@ class Db {
         await _ensureQueueUpdatedAt(db);
         // 幂等补齐 inbox_items.version（v4→v5 乐观锁；v1 经 _createAll 已含则跳过）
         await _ensureItemVersion(db);
+        // 幂等补齐译文两列（v5→v6 翻译层；v1 经 _createAll 已含则跳过）
+        await _ensureTranslationColumns(db);
+        // 幂等补齐 ai_task_queue.last_note（v6→v7 失败原因可感知）
+        await _ensureTaskNoteColumn(db);
       },
       onOpen: (db) async {
         // ai_task_queue 的外键级联依赖此开关，sqflite 默认关闭
@@ -56,6 +60,8 @@ class Db {
         human_tldr TEXT,                            -- AI 3 句摘要
         human_md TEXT,                              -- AI 重构 Markdown（含 [ ] 待办）
         machine_json TEXT,                          -- 强类型结构化数据
+        translated_md TEXT,                         -- 译文（翻译层产出，与 human_md 并列不覆盖）
+        translate_lang TEXT,                        -- 译文语言码（BCP-47），与 translated_md 成对
         tags TEXT,                                  -- JSON Array: ["前端","团建"]
         facets_json TEXT,                           -- JSON: 视角→标签数组，AI 分类页消费（V2）
         is_vault INTEGER NOT NULL DEFAULT 0,        -- 0 公开 / 1 私密保险箱
@@ -86,7 +92,10 @@ class Db {
         item_id TEXT NOT NULL REFERENCES inbox_items(id) ON DELETE CASCADE,
         task_action TEXT,                           -- 'parse_chatlog','ocr_and_extract','summarize_url','transcribe_audio'
         status TEXT NOT NULL DEFAULT 'pending',     -- pending/processing/completed/failed/cancelled
-        updated_at INTEGER                          -- 心跳时间戳（毫秒）；回收僵尸任务用，见 reclaimStaleTasks
+        updated_at INTEGER,                         -- 心跳时间戳（毫秒）；回收僵尸任务用，见 reclaimStaleTasks
+        last_note TEXT                              -- 最近一次执行的原因说明：失败时为错误原因，
+                                                    -- 「完成但无产出」时为提示（2026-09-28 v7：
+                                                    -- 错误必须被用户感知，且同一份信息对 AI 同样可读）
       )
     ''');
     await db.execute('CREATE INDEX IF NOT EXISTS idx_queue_status ON ai_task_queue(status)');
@@ -116,6 +125,27 @@ class Db {
     final has = cols.any((c) => (c['name'] as String?) == 'version');
     if (!has) {
       await db.execute('ALTER TABLE inbox_items ADD COLUMN version INTEGER NOT NULL DEFAULT 0');
+    }
+  }
+
+  /// 幂等补齐 inbox_items 译文两列（v5→v6 翻译层）。
+  static Future<void> _ensureTranslationColumns(Database db) async {
+    final cols = await db.rawQuery('PRAGMA table_info(inbox_items)');
+    final names = {for (final c in cols) (c['name'] as String?)};
+    if (!names.contains('translated_md')) {
+      await db.execute('ALTER TABLE inbox_items ADD COLUMN translated_md TEXT');
+    }
+    if (!names.contains('translate_lang')) {
+      await db.execute('ALTER TABLE inbox_items ADD COLUMN translate_lang TEXT');
+    }
+  }
+
+  /// 幂等补齐 ai_task_queue.last_note（v6→v7）。
+  static Future<void> _ensureTaskNoteColumn(Database db) async {
+    final cols = await db.rawQuery('PRAGMA table_info(ai_task_queue)');
+    final has = cols.any((c) => (c['name'] as String?) == 'last_note');
+    if (!has) {
+      await db.execute('ALTER TABLE ai_task_queue ADD COLUMN last_note TEXT');
     }
   }
 }

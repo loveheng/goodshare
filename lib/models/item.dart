@@ -30,6 +30,8 @@ class InboxItem {
     this.humanTldr,
     this.humanMd,
     this.machineJson,
+    this.translatedMd,
+    this.translateLang,
     List<String> tags = const [],
     Map<String, List<String>>? facets,
     this.isVault = false,
@@ -57,6 +59,8 @@ class InboxItem {
   final String? humanTldr; // AI 3 句摘要
   final String? humanMd; // AI 重构 Markdown（含 [ ] 待办）
   final String? machineJson; // 强类型结构化 JSON
+  final String? translatedMd; // 译文（翻译层产出；与 humanMd 并列，不覆盖原文）
+  final String? translateLang; // 译文语言码（BCP-47），与 translatedMd 成对
   final List<String> tags;
   final Map<String, List<String>>? facets; // 多视角聚类：视角 → 标签（AI 分类页消费，V2）
   final bool isVault;
@@ -90,6 +94,9 @@ class InboxItem {
   /// 详情正文：人类态优先，缺省回退原文。
   String get bodyText => (humanMd?.isNotEmpty ?? false) ? humanMd! : (rawContent ?? '');
 
+  /// 是否已有译文（详情页「译文」区与 MCP 回传的显隐依据）。
+  bool get hasTranslation => translatedMd != null && translatedMd!.trim().isNotEmpty;
+
   Map<String, Object?> toMap() => {
         if (id != null) 'id': id,
         'item_type': itemType,
@@ -101,6 +108,8 @@ class InboxItem {
         'human_tldr': humanTldr,
         'human_md': humanMd,
         'machine_json': machineJson,
+        'translated_md': translatedMd,
+        'translate_lang': translateLang,
         'tags': jsonEncode(tags),
         'facets_json': facets == null ? null : jsonEncode(facets),
         'is_vault': isVault ? 1 : 0,
@@ -164,6 +173,8 @@ class InboxItem {
       humanTldr: map['human_tldr'] as String?,
       humanMd: map['human_md'] as String?,
       machineJson: map['machine_json'] as String?,
+      translatedMd: map['translated_md'] as String?,
+      translateLang: map['translate_lang'] as String?,
       tags: tagsOf(map['tags']),
       facets: facetsOf(map['facets_json']),
       isVault: (map['is_vault'] as int? ?? 0) == 1,
@@ -190,6 +201,8 @@ class InboxItem {
     String? humanTldr,
     String? humanMd,
     String? machineJson,
+    String? translatedMd,
+    String? translateLang,
     List<String>? tags,
     Map<String, List<String>>? facets,
     bool? isVault,
@@ -214,6 +227,8 @@ class InboxItem {
         humanTldr: humanTldr ?? this.humanTldr,
         humanMd: humanMd ?? this.humanMd,
         machineJson: machineJson ?? this.machineJson,
+        translatedMd: translatedMd ?? this.translatedMd,
+        translateLang: translateLang ?? this.translateLang,
         tags: tags ?? this.tags,
         facets: facets ?? this.facets,
         isVault: isVault ?? this.isVault,

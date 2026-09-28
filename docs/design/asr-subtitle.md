@@ -161,6 +161,29 @@ abstract class TranslationEngine {
 - **离线前置**：ML Kit 语言包须预下载、Apple 须系统已安装语言，设置页明示状态并给出下载指引；
 - **降级**：单次翻译失败保留该句原文，整篇失败则退化为原文产物，复用 §2 的「占位不卡死」策略；**不重入队**：失败不回投 `ai_task_queue` 重试，避免阻塞队列与延迟整体产出，与「占位不卡死」一致（已确认，见 §10）。
 
+**落地状态（2026-09-28，骨架期）**
+
+用户拍板「骨架先行 + ML Kit」：先落翻译层全部骨架（接口 / 路由 / 句子切分 / 语言码映射 / 设置项 / 双语字幕产物），引擎只接 **ML Kit + Noop**，真离线自托管模型按同一接口后续插拔。
+
+| 落点 | 内容 |
+|---|---|
+| `lib/ai/language_codes.dart` | 目标语言白名单（BCP-47）SSOT：设置页下拉、命令校验、MCP schema 共用 |
+| `lib/ai/translation.dart` | `TranslationEngine` 接口 + `TranslationRouter`（按可用性路由，全不可用落 Noop）+ 句子切分 + 源语判定 + `TranslationService`（文本 / cue 翻译） |
+| `lib/ai/translation_mlkit.dart` | `MlKitTranslationEngine`：语言包就绪才 `isAvailable`，提供 `downloadLanguage` |
+| `lib/ai/translate_reconstructor.dart` | 文本条目翻译重构器：只认 `task_action=translate`，译文另列存储 |
+| `lib/ai/subtitle.dart` | `AsrCue.translation` + `SubtitleMode`（sourceOnly / bilingual / separate）序列化与落盘 |
+| 存储 | `inbox_items.translated_md` + `translate_lang`（schema v6 幂等迁移），**与 human_md 并列、不覆盖原文** |
+| 命令 / MCP | `TranslateCommand`（op=translate）+ 队列动作串 `translate` / `translate:<lang>`；MCP 新增 `translate_item`（第 13 工具），`get_item` 回传 `translation` |
+| 设置页 | 翻译开关（引擎不可用时置灰并明示原因）+ 目标语言 + 字幕译文三模式 + 语言包下载入口 |
+
+口径：**翻译永不卡死**——引擎不可用 / 单句失败 / 整篇失败一律保留原文，不置死信、不重入队；源语判定当前为字符分布启发式（DEGRADE，语言识别能力接入后替换，接口不变）。
+
+**未做（骨架之外）**
+
+- iOS Apple Translation framework；
+- OPUS-MT 自托管真离线引擎（国内接棒方案，接口已就位）；
+- 源语言自动识别（现为启发式）。
+
 **排除项**
 
 OPUS-MT 退居兜底：实测 `onnx-community/opus-mt-en-zh` 的 encoder int8 为 52,875,078 B、decoder_merged int8 为 193,290,224 B，**单个语言对约 246MB**，与本项目按需轻量下载取向不符；且需自实现自回归解码与 tokenizer，第二个 ONNX Runtime 与 sherpa-onnx 自带 ORT 的重复打包风险尚未验证。

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../action/item_action_handler.dart';
+import '../ai/capabilities.dart';
 import '../data/repository.dart';
 import '../models/item.dart';
 import '../service/secure_window.dart';
@@ -14,10 +15,17 @@ import 'item_detail_page.dart';
 /// 保险箱页：is_vault=1 列表，动作走 vaultContext=true（可移出）。
 /// 生物识别门随 V3 加密一并上线（D1 决策）；当前内容仅存在于本机。
 class VaultPage extends StatefulWidget {
-  const VaultPage({super.key, required this.repo, required this.handler, this.onOpenDrawer});
+  const VaultPage({
+    super.key,
+    required this.repo,
+    required this.handler,
+    required this.caps,
+    this.onOpenDrawer,
+  });
 
   final Repository repo;
   final ItemActionHandler handler;
+  final AiCapabilities caps; // 详情页翻译预检用
   final VoidCallback? onOpenDrawer;
 
   @override
@@ -108,6 +116,7 @@ class _VaultPageState extends State<VaultPage> with RepoAutoReload {
                               repo: widget.repo,
                               handler: widget.handler,
                               item: it,
+                              caps: widget.caps,
                               vaultContext: true,
                             ),
                           ),

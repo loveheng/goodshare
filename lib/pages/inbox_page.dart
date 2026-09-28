@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../action/item_action_handler.dart';
+import '../ai/capabilities.dart';
 import '../data/repository.dart';
 import '../ui/drawer_menu_button.dart';
 import '../models/item.dart';
@@ -18,11 +19,13 @@ class InboxPage extends StatefulWidget {
     super.key,
     required this.repo,
     required this.handler,
+    required this.caps,
     this.onOpenDrawer,
   });
 
   final Repository repo;
   final ItemActionHandler handler;
+  final AiCapabilities caps; // 详情页翻译预检用（引擎/开关可用性）
   final VoidCallback? onOpenDrawer;
 
   @override
@@ -130,7 +133,12 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
     Navigator.push(
       context,
       MaterialPageRoute<void>(
-        builder: (_) => ItemDetailPage(repo: widget.repo, handler: widget.handler, item: it),
+        builder: (_) => ItemDetailPage(
+              repo: widget.repo,
+              handler: widget.handler,
+              item: it,
+              caps: widget.caps,
+            ),
       ),
     );
   }

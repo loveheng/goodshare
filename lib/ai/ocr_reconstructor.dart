@@ -43,16 +43,33 @@ class OcrReconstructor implements AiReconstructor {
     final ocrOn = isOcrEnabled?.call() ?? true;
     if (ocrOn && input.itemType == 'image' && (input.rawFilePath?.isNotEmpty ?? false)) {
       final text = await _ocr(input.rawFilePath!);
-      return ReconstructResult(humanMd: text ?? input.rawContent ?? '');
+      // OCR 无产出（识别失败 / 图片无文字）也须明说，否则用户以为图片被正常解析
+      return ReconstructResult(
+        humanMd: text ?? input.rawContent ?? '',
+        note: text == null
+            ? '图片 OCR 未产出文字（识别失败或无文字内容），已保留图片'
+            : null,
+      );
     }
-    // 链接离线成内容（2026-09-27 决策）：抓取网页正文写入人类态；失败回退占位
+    // 链接离线成内容（2026-09-27 决策）：抓取网页正文写入人类态；失败回退占位。
+    // 无论「关闭」还是「抓取失败」都要带原因，否则原始链接被默默保留、用户无感（R1）。
     final fetchOn = isUrlFetchEnabled?.call() ?? true;
-    if (fetchOn && input.itemType == 'url') {
+    if (input.itemType == 'url') {
+      if (!fetchOn) {
+        return ReconstructResult(
+          humanMd: input.rawContent ?? '',
+          note: '链接抓取已关闭（设置 → AI 模式），已保留原始链接',
+        );
+      }
       final url = firstUrl(input.rawContent ?? '');
       if (url != null) {
         final content = await fetchReadable(url);
         if (content != null) return ReconstructResult(humanMd: content);
       }
+      return ReconstructResult(
+        humanMd: input.rawContent ?? '',
+        note: '链接正文抓取未产出（网络不可达或页面无正文），已保留原始链接',
+      );
     }
     return ReconstructResult(humanMd: input.rawContent ?? '');
   }

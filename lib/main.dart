@@ -12,6 +12,9 @@ import 'ai/model_manager.dart';
 import 'ai/ocr_reconstructor.dart';
 import 'ai/queue_consumer.dart';
 import 'ai/reconstructor.dart';
+import 'ai/translate_reconstructor.dart';
+import 'ai/translation.dart';
+import 'ai/translation_mlkit.dart';
 import 'data/db.dart';
 import 'data/repository.dart';
 import 'pages/home_shell.dart';
@@ -43,6 +46,16 @@ Future<void> main() async {
   await caps.load();
   // 本机能力检测：首次执行后持久化，此后不再检测
   await caps.ensureDetected();
+  // 翻译层装配（骨架期：ML Kit 引擎 + Noop 兜底，真离线模型后续按接口插拔）
+  final translationEngine = MlKitTranslationEngine(targetLang: () => caps.targetLang);
+  final translationRouter = TranslationRouter([translationEngine]);
+  caps.router = translationRouter;
+  caps.engine = translationEngine;
+  final translationService = TranslationService(
+    router: translationRouter,
+    isEnabled: () => caps.translationEnabled,
+    targetLang: () => caps.targetLang,
+  );
   final mcp = McpController(repo: repo);
   await mcp.load();
   await RemoteConfigStore.instance.load();
@@ -61,7 +74,10 @@ Future<void> main() async {
       AsrReconstructor(
         isAsrEnabled: () => caps.asrEnabled,
         models: models,
+        translation: translationService,
+        subtitleMode: () => caps.subtitleMode,
       ),
+      TranslationReconstructor(service: translationService),
       const PlaceholderReconstructor(),
     ]),
     handler,

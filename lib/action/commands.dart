@@ -122,6 +122,9 @@ Map<String, Object?> itemToJson(InboxItem it) => {
       'is_deleted': it.isDeleted,
       'version': it.version,
       'machine_json': _tryDecode(it.machineJson),
+      // 译文与原文并列回传：AI 读到什么，人在详情页看到的就是什么（状态可见性对称）
+      if (it.hasTranslation)
+        'translation': {'lang': it.translateLang, 'text': it.translatedMd},
       'source': {'app': it.sourceApp, 'type': it.sourceType},
       'created_at': DateTime.fromMillisecondsSinceEpoch(it.createdAt).toIso8601String(),
       'file': it.rawFilePath,
@@ -192,6 +195,12 @@ sealed class ItemCommand {
         return TranscribeCommand(id, expectedVersion: ev);
       case 'ocr':
         return OcrCommand(id, expectedVersion: ev);
+      case 'translate':
+        return TranslateCommand(
+          id,
+          targetLang: _str(json['target_lang']) ?? _str(json['lang']),
+          expectedVersion: ev,
+        );
       case 'unlock_edit':
         return UnlockEditCommand(id, expectedVersion: ev);
       case 'restore':
@@ -233,6 +242,8 @@ sealed class ItemCommand {
             tags: _strList(json['tags']) ?? const [],
             itemType: _str(json['item_type']),
             facets: _facets(json['facets']),
+            translatedMd: _str(json['translated_md']),
+            translateLang: _str(json['translate_lang']),
           ),
         );
       default:
@@ -251,6 +262,9 @@ sealed class ItemCommand {
     'set_vault',
     'reclassify',
     'reprocess',
+    'transcribe',
+    'ocr',
+    'translate',
     'unlock_edit',
     'restore',
     'delete_forever',
@@ -417,6 +431,35 @@ final class OcrCommand extends ItemCommand {
   Map<String, Object?> toJson() => {
         'op': op,
         'id': id,
+        if (expectedVersion != null) 'expected_version': expectedVersion,
+      };
+}
+
+/// 翻译条目正文（= UI「翻译」/ MCP translate_item）：入队 task_action=translate。
+///
+/// 与 [ReprocessCommand] 的区别：reprocess 走按类型的通用重构，本命令显式指定
+/// 「翻译」这一动作，是**唯一**会真正跑翻译引擎的入口（与 OCR / 转写同构：
+/// 端侧重资源动作一律手动 / 显式触发，摄入不自动跑）。
+///
+/// [targetLang] 为 BCP-47 目标语言（如 'zh'）；null = 沿用设置项所选目标语言。
+/// 语言合法性由动作层校验（防呆下沉），AI 换个入口也绕不过。
+final class TranslateCommand extends ItemCommand {
+  const TranslateCommand(this.id, {this.targetLang, super.expectedVersion});
+
+  final String id;
+  final String? targetLang;
+
+  @override
+  String get op => 'translate';
+
+  @override
+  String? get targetId => id;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'id': id,
+        if (targetLang != null) 'target_lang': targetLang,
         if (expectedVersion != null) 'expected_version': expectedVersion,
       };
 }
@@ -607,6 +650,8 @@ final class ApplyAiResultCommand extends ItemCommand {
         if (result.tags.isNotEmpty) 'tags': result.tags,
         if (result.itemType != null) 'item_type': result.itemType,
         if (result.facets != null) 'facets': result.facets,
+        if (result.translatedMd != null) 'translated_md': result.translatedMd,
+        if (result.translateLang != null) 'translate_lang': result.translateLang,
       };
 }
 

@@ -1,9 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../action/commands.dart';
 import '../action/item_action_handler.dart';
+import '../ai/capabilities.dart';
+import '../ai/translation.dart';
 import '../app/lifecycle_manager.dart';
 import '../data/repository.dart';
 import '../models/draft_store.dart';
@@ -18,18 +22,112 @@ import '../ui/tokens.dart';
 /// 详情页：ItemViewTemplate 双态外壳 + 动作区。
 /// 全部写操作经 ItemActionHandler（与 MCP 同一实现）；vaultContext=true 表示
 /// 从保险箱页进入（可移出等 MCP 不可用的动作）。
+/// 该任务是否「跑完了但什么都没产出」——转写/OCR 看正文，翻译看译文。
+bool aiTaskEmptyOutput(String action, InboxItem item) =>
+    Repository.isTranslateAction(action) ? !item.hasTranslation : item.bodyText.trim().isEmpty;
+
+/// 反馈文案（纯函数，便于单测）：空串表示「无需提示」。
+///
+/// **管线给的原因优先**：`note` 是管线写下的真实原因（如「模型未下载」「语言与模型不匹配」），
+/// 比按状态猜的兜底文案准确得多——错误描述必须具体到可行动，而不是「失败了」。
+String aiTaskStatusText(String status, String action, bool empty, {String? note}) {
+  if (status == 'pending' || status == 'processing') {
+    return '处理中… 完成后结果会自动出现在这里';
+  }
+  final reason = note?.trim() ?? '';
+  if (reason.isNotEmpty) {
+    return status == 'failed' ? '$reason（可在「AI 任务队列」重启该任务）' : reason;
+  }
+  if (status == 'failed') return '处理失败，可在「AI 任务队列」重启该任务';
+  if (status == 'paused') return '任务已暂停，可在「AI 任务队列」继续';
+  if (status == 'cancelled') return '任务已取消，可重新触发';
+  if (!empty) return ''; // 已产出：不再提示
+  return switch (action) {
+    // 中文模型跑英文音频是最常见的「静默无产出」，必须给出换档指引
+    Repository.taskTranscribeAudio =>
+      '转写已结束，但没有识别出任何文本。常见原因：音频不是中文（请在「设置 → 语音转写模型」'
+          '换到「全能 · 多语种」或「全球 · Whisper」）、模型未下载、音频无语音',
+    Repository.taskOcrAndExtract => '识别已结束，但没有识别出文字：图片可能不含文字或过于模糊',
+    _ => '处理已结束但未产出内容，可在「AI 任务队列」查看',
+  };
+}
+
+/// AI 任务反馈条（2026-09-28）：转写 / OCR / 翻译都是**异步队列任务**，
+/// 「已入队」之后页面不会有任何变化，用户无从判断是在跑、失败了、还是跑完没产出。
+///
+/// 尤其要处理「**完成但产出为空**」这一档——例如用中文模型转写英文音频：
+/// Sherpa 返回空文本，管线按「占位不卡死」记为 `is_processed=1`（成功），
+/// 详情页一片空白，看起来和失败一模一样。这里按任务动作给出**可执行的下一步**
+/// （换多语种模型 / 图片太糊 / 引擎未就绪），把静默降级变成明示。
+///
+/// 有产出或没有相关任务时整行不占位（避免噪音）。
+class _AiTaskStatusLine extends StatelessWidget {
+  const _AiTaskStatusLine({required this.repo, required this.item});
+
+  final Repository repo;
+  final InboxItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    final id = item.id;
+    if (id == null) return const SizedBox.shrink();
+    return FutureBuilder<List<Map<String, Object?>>>(
+      future: repo.listTasks(), // 已按最新在前排好序
+      builder: (context, snap) {
+        final mine = (snap.data ?? const []).where((t) => t['item_id'] == id).toList();
+        if (mine.isEmpty) return const SizedBox.shrink();
+        final status = mine.first['status'] as String? ?? '';
+        final action = mine.first['task_action'] as String? ?? '';
+        final note = mine.first['last_note'] as String?;
+        final text = aiTaskStatusText(status, action, aiTaskEmptyOutput(action, item), note: note);
+        if (text.isEmpty) return const SizedBox.shrink();
+        final running = status == 'pending' || status == 'processing';
+        final failed = status == 'failed';
+        final scheme = Theme.of(context).colorScheme;
+        return Padding(
+          padding: const EdgeInsets.only(top: Insets.md),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                running ? Icons.hourglass_top : (failed ? Icons.error_outline : Icons.info_outline),
+                size: 16,
+                color: failed ? scheme.error : scheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  text,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: failed ? scheme.error : scheme.onSurfaceVariant,
+                      ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
 class ItemDetailPage extends StatefulWidget {
   const ItemDetailPage({
     super.key,
     required this.repo,
     required this.handler,
     required this.item,
+    required this.caps,
     this.vaultContext = false,
   });
 
   final Repository repo;
   final ItemActionHandler handler;
   final InboxItem item;
+
+  /// 翻译设置与引擎可用性（点「翻译」前的预检来源：不可用就明确告知，
+  /// 不让用户对着一个必然无结果的任务干等）。
+  final AiCapabilities caps;
   final bool vaultContext;
 
   @override
@@ -215,6 +313,81 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     );
   }
 
+  /// 翻译入口：**入队前先预检**——翻译是异步队列任务，若开关关闭或语言包未就绪
+  /// 仍照常入队，用户只会看到「点了一下、什么都没发生」。这种情况直接告知原因
+  /// 与去处（设置 → 翻译），不让用户干等一个必然无译文的任务。
+  Future<void> _translate() async {
+    final caps = widget.caps;
+    if (!caps.translationEnabled) {
+      _snack('翻译已关闭：设置 → 翻译 可开启');
+      return;
+    }
+    caps.router?.reset(); // 语言包可能刚下载完，缓存结果作废后重判
+    if (!await caps.checkTranslationAvailable()) {
+      final reason = await caps.translationUnavailableReason();
+      _snack('无法翻译：${reason ?? '无可用翻译引擎'}（设置 → 翻译 可下载语言包）');
+      return;
+    }
+    await _run(
+      () => widget.handler.execute(
+        TranslateCommand(_item.id!),
+        vaultContext: widget.vaultContext,
+      ),
+      '已入队翻译',
+    );
+  }
+
+  /// 译文卡片：标注目标语言 + 一键复制。译文缺失时不占位（避免空卡片）。
+  Widget _translationCard() {
+    final scheme = Theme.of(context).colorScheme;
+    final text = _item.translatedMd!.trim();
+    return Card(
+      margin: const EdgeInsets.only(top: Insets.md),
+      child: Padding(
+        padding: const EdgeInsets.all(Insets.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.translate, size: 18, color: scheme.primary),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    '译文 · ${languageLabel(_item.translateLang ?? '')}',
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleSmall
+                        ?.copyWith(color: scheme.primary),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.copy_all_outlined, size: 18),
+                  tooltip: '复制译文',
+                  onPressed: () async {
+                    await Clipboard.setData(ClipboardData(text: text));
+                    _snack('译文已复制');
+                  },
+                ),
+                IconButton(
+                  icon: const Icon(Icons.share_outlined, size: 18),
+                  tooltip: '导出译文文件',
+                  onPressed: () async {
+                    final lang = _item.translateLang ?? 'translation';
+                    final path = await TranslationStore.save(_item.id!, lang, text);
+                    await SharePlus.instance.share(ShareParams(files: [XFile(path)]));
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: Insets.sm),
+            SelectableText(text),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final vault = _item.isVault;
@@ -224,6 +397,9 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
         padding: const EdgeInsets.fromLTRB(Insets.xl, Insets.md, Insets.xl, Insets.xxl),
         children: [
           ItemViewTemplate(item: _item),
+          // 译文与正文并列展示：译文是独立产物，不覆盖原文（翻译层硬口径）
+          if (_item.hasTranslation) _translationCard(),
+          _AiTaskStatusLine(repo: widget.repo, item: _item),
           const Divider(height: 32),
           Wrap(
             spacing: 8,
@@ -278,6 +454,14 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                   ),
                   icon: const Icon(Icons.document_scanner_outlined),
                   label: const Text('识别文字'),
+                ),
+              // 翻译：正文非空才可翻译（图片 / 音视频需先 OCR / 转写出文本）。
+              // 与 OCR / 转写同构——端侧动作一律手动 / 显式触发，摄入不自动跑。
+              if (_item.bodyText.trim().isNotEmpty)
+                OutlinedButton.icon(
+                  onPressed: _translate,
+                  icon: const Icon(Icons.translate_outlined),
+                  label: Text(_item.hasTranslation ? '重新翻译' : '翻译'),
                 ),
               if (!vault)
                 OutlinedButton.icon(

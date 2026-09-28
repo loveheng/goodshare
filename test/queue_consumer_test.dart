@@ -106,6 +106,28 @@ void main() {
 
     expect((await repo.byId(it.id!))!.isProcessed, -1);
     expect(await repo.pendingTasks(), isEmpty);
+    // 错误原因必须落库（2026-09-28 决策：错误要被用户/AI 感知，不能只剩 debugPrint）
+    final task = await repo.lastTaskOf(it.id!);
+    expect(task?['status'], 'failed');
+    expect(task?['last_note'], isNotEmpty);
+  });
+
+  test('完成但无产出：result.note 落库，状态仍 completed（非静默成功）', () async {
+    final it = await repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      rawContent: 'x',
+      createdAt: 1,
+    ));
+    await repo.enqueueTask(it.id!, null);
+    // 模拟转写重构器：返回空产出但带原因说明（而非静默成功）
+    await QueueConsumer(
+      repo,
+      ReconstructorRegistry([fake(result: ReconstructResult(humanMd: '', note: '未识别出语音内容'))]),
+      handler,
+    ).pollOnce();
+    final task = await repo.lastTaskOf(it.id!);
+    expect(task?['status'], 'completed');
+    expect(task?['last_note'], contains('未识别出'));
   });
 
   test('reprocess 链路：Handler 重置处理态并入队，消费者再处理', () async {

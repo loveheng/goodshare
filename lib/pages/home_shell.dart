@@ -56,17 +56,20 @@ class _HomeShellState extends State<HomeShell> {
     InboxPage(
       repo: widget.repo,
       handler: widget.handler,
+      caps: widget.caps,
       onOpenDrawer: () => _scaffoldKey.currentState?.openDrawer(),
     ),
     TimelinePage(
       repo: widget.repo,
       handler: widget.handler,
+      caps: widget.caps,
       onOpenDrawer: () => _scaffoldKey.currentState?.openDrawer(),
     ),
     AiTagsPage(onOpenDrawer: () => _scaffoldKey.currentState?.openDrawer()),
     VaultPage(
       repo: widget.repo,
       handler: widget.handler,
+      caps: widget.caps,
       onOpenDrawer: () => _scaffoldKey.currentState?.openDrawer(),
     ),
     SettingsPage(

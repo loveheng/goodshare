@@ -72,8 +72,9 @@ curl -s http://127.0.0.1:8765/mcp \
 | `set_vault` | `id` `on:true` | 移入保险箱（之后对 MCP 不可见）；移出仅限手机端操作 |
 | `reprocess_item` | `id` | 重新触发双态重构（重置处理态并重新入队） |
 | `unlock_edit` | `id` | 解除合并条目编辑锁，随后 `update_item` 方可写入 |
-| `batch_items` | `commands[]`（1–20 条，形如 `{"op":"update","id":"...","title":"..."}`） | **原子批量**：全部成功才提交，任一条失败整批回滚；可用 op：update/delete/set_vault/reclassify/reprocess/unlock_edit/collect/append_segment/restore；不支持 delete_forever |
+| `batch_items` | `commands[]`（1–20 条，形如 `{"op":"update","id":"...","title":"..."}`） | **原子批量**：全部成功才提交，任一条失败整批回滚；可用 op：update/delete/set_vault/reclassify/reprocess/transcribe/ocr/translate/unlock_edit/collect/append_segment/restore；不支持 delete_forever |
 | `append_segment` | `id` `text` `source_app?` `expected_version?` | 往合并链末尾追加一段（等价于手机端连续速记自动并链）；仅合并模式条目、末段在 5 分钟窗口内可追加，超窗改用 `add_item` |
+| `translate_item` | `id` `target_lang?` `expected_version?` | 端侧离线翻译条目正文（与手机端「翻译」按钮同一入口）。**异步入队**：调用只返回入队结果，译文稍后落库，随后 `get_item` 的 `translation` 字段读取；目标语言受白名单约束，条目无正文（未 OCR 的图片 / 未转写的音频）会被拒绝 |
 
 **乐观锁（`expected_version`）**：`get_item` / 写工具返回值里的 `version` 即当前版本号。多步规划时把读到的 `version` 原样带回，若期间条目已被用户或他人改动，写入会被拒绝并返回 `version_conflict`（而不是静默覆盖）——此时重新 `get_item` 取最新状态再决策即可。不传则不校验。
 

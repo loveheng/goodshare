@@ -5,6 +5,7 @@ class ReconstructInput {
     required this.itemType,
     this.sourceType,
     this.rawContent,
+    this.humanMd,
     this.rawFilePath,
     this.taskAction,
   });
@@ -13,6 +14,9 @@ class ReconstructInput {
   final String itemType;
   final String? sourceType;
   final String? rawContent;
+
+  /// 已有人类态（翻译层需要：译文基于人类态产出，且不得回写覆盖它）。
+  final String? humanMd;
   final String? rawFilePath; // 附件路径（图片 OCR / 音频处理用）
 
   /// 队列任务动作（`ai_task_queue.task_action`）。用于区分「摄入后的通用重构」与
@@ -30,11 +34,27 @@ class ReconstructResult {
     this.masked = false,
     this.itemType,
     this.facets,
+    this.translatedMd,
+    this.translateLang,
+    this.note,
   });
 
   final String humanMd;
   final Map<String, Object?>? machineJson;
   final List<String> tags;
+
+  /// 译文（翻译层产出；与 humanMd 并列存储，不覆盖原文）。null = 无译文。
+  final String? translatedMd;
+
+  /// 译文语言码（BCP-47）；与 [translatedMd] 成对出现。
+  final String? translateLang;
+
+  /// **原因说明**（2026-09-28）：降级 / 空产出 / 缺前置条件时写清"为什么"，
+  /// 由消费者落进 `ai_task_queue.last_note`，最终出现在任务队列页、详情页状态条
+  /// 与 MCP `get_item` 里——**人和 AI 读到的是同一句**。
+  ///
+  /// 非空不代表失败（降级仍可能产出结果），只是把"静默成功"变成"明说"。
+  final String? note;
   final bool masked; // 是否已执行隐私打码（V2 §3.4；占位实现恒 false）
   final String? itemType; // AI 重分类（如 image→chatlog）；null = 不改
   final Map<String, List<String>>? facets; // 多视角聚类：视角→标签（V2 AI 分类页消费）
@@ -66,7 +86,12 @@ class PlaceholderReconstructor implements AiReconstructor {
 
   @override
   Future<ReconstructResult> reconstruct(ReconstructInput input) async {
-    return ReconstructResult(humanMd: input.rawContent ?? '');
+    // 兜底占位：无具体实现处理该类型时落此。按 R3「降级须可观测」明说原因，
+    // 否则用户/AI 看到内容原样、分不清「没跑 AI」还是「跑完零产出」。
+    return ReconstructResult(
+      humanMd: input.rawContent ?? '',
+      note: '未执行 AI 重构（占位实现兜底：当前无对应处理模块），内容保留原始态',
+    );
   }
 }
 
