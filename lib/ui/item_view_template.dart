@@ -4,8 +4,10 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 
+import '../ai/subtitle.dart';
 import '../models/item.dart';
 import 'image_annotator.dart';
 import 'tokens.dart';
@@ -214,6 +216,7 @@ Widget _audioView(BuildContext context, InboxItem item) {
           child: SelectableText(item.bodyText),
         ),
       _AudioPlayer(path: item.rawFilePath!),
+      if (item.id != null) _SubtitleExportRow(itemId: item.id!),
     ],
   );
 }
@@ -230,8 +233,53 @@ Widget _videoView(BuildContext context, InboxItem item) {
           child: SelectableText(item.bodyText),
         ),
       _VideoPlayer(path: item.rawFilePath!),
+      if (item.id != null) _SubtitleExportRow(itemId: item.id!),
     ],
   );
+}
+
+/// 「导出字幕」入口：字幕文件存在才显示（按存在性判定，不新增 schema，
+/// 见 asr-subtitle.md §6）。SRT 与 VTT 双份各自分享。
+class _SubtitleExportRow extends StatelessWidget {
+  const _SubtitleExportRow({required this.itemId});
+
+  final String itemId;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<bool>(
+      future: SubtitleStore.exists(itemId),
+      builder: (context, snap) {
+        if (snap.data != true) return const SizedBox.shrink();
+        return Padding(
+          padding: const EdgeInsets.only(top: Insets.sm),
+          child: Row(
+            children: [
+              OutlinedButton.icon(
+                onPressed: () async {
+                  final f = await SubtitleStore.fileFor(itemId, 'srt');
+                  await SharePlus.instance.share(
+                      ShareParams(files: [XFile(f.path)]));
+                },
+                icon: const Icon(Icons.subtitles_outlined, size: 18),
+                label: const Text('导出 SRT'),
+              ),
+              const SizedBox(width: Insets.sm),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  final f = await SubtitleStore.fileFor(itemId, 'vtt');
+                  await SharePlus.instance.share(
+                      ShareParams(files: [XFile(f.path)]));
+                },
+                icon: const Icon(Icons.subtitles, size: 18),
+                label: const Text('导出 VTT'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
 }
 
 String _fmtTime(Duration d) =>

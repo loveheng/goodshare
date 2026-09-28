@@ -183,6 +183,13 @@ class _SettingsPageState extends State<SettingsPage> {
           )),
           ListTile(
             enabled: false,
+            dense: true,
+            leading: const Icon(Icons.graphic_eq),
+            title: const Text('VAD 已内置'),
+            subtitle: const Text('语音分段随 App 打包，字幕开箱即用（无需下载）'),
+          ),
+          ListTile(
+            enabled: false,
             leading: const Icon(Icons.auto_awesome_outlined),
             title: const Text('离线 AI 双态重构（自动 / 强制 V1 / 尝试 V2）'),
             subtitle: const Text('V2 生效，当前为基础模式'),

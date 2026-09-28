@@ -54,4 +54,4 @@ last-merge: 2026-09-27
 - [2026-09-28] 并发防护拍板（用户提出「人类串行 vs 大模型并发」的物理差异，选「两项都做 + version 整型」）：评估修正两点关键认知——①**原方案的 `Mutex` 放在 `ItemActionHandler` 内在本仓库会失效**（MCP 每次 `new ItemActionHandler(repo)`，实例锁各锁各的），锁必须挂在所有客户端共享的 `Repository` 上；②**风险不是 `database is locked`**（单 isolate + sqflite 内部锁已规避），而是 **Dart 层 read-modify-write 的 TOCTOU 交错**。落地：`Repository.synchronized` 零依赖 FIFO（不引第三方包）；`inbox_items.version`（schema v5 幂等迁移）任何写 +1，命令带可选 `expectedVersion` 做 CAS，冲突抛 `version_conflict` + hint。**串行锁管毫秒级并发交错、乐观锁管秒~分钟级长窗口静默覆盖，两者不能互相替代**。实证：摘锁后并发追加用例由 2 段掉到 1 段，证明竞态真实。analyze 0 / 测试 71 绿 / 构建 ✓ / bridge E2E PASS。规范 skill 的 Human-AI 对称性小节由四条硬规则扩为六条（+串行化 +乐观锁），自查清单补 2 条。
 
 ## 断点
-- [断点] 下一步：字幕批次开工（按 overview 优先级：VAD assets 入库 → subtitle.dart → cue 通道 → 路由收 video → 详情页导出入口；国内字幕默认形态=source-only 已定）
+- [断点] 下一步：字幕批次真机验证（收一段音频/视频→确认 human_md 文本+documents/subtitles 产出→详情页导出 SRT/VTT）；之后：长视频超时/临时 WAV 策略与角标 IO 优化（todos 剩 2 条）
