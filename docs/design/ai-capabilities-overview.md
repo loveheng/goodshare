@@ -47,7 +47,7 @@ updated: 2026-09-28
 | VAD 分段字幕准确性 | 低–中 | 对齐官方 `generate-subtitles.py` 参数 |
 | 图片标注手势 / 缩放对齐 | 低 | 归一化坐标 + InteractiveViewer |
 | 翻译 OPUS-MT 体积（单语对 ~246MB） | 已排除 | 退居兜底，默认走系统引擎 |
-| 翻译 ML Kit 语言包国内不可达（Play 动态下载） | **高** | 国内默认退化为 Noop/source-only；开工前拍板对策（见 `asr-subtitle.md` §8） |
+| 翻译 ML Kit 语言包国内不可达（Play 动态下载） | 已拍板 | 国内接受 `source-only` 默认（设置项明示），不自托管/不云 API；海外仍走 ML Kit（见 `asr-subtitle.md` §8） |
 | 长视频转写临时 WAV 体积与超时（~115MB/小时） | 中 | 分段转写 + 临时文件清理 + 视频单独超时（见 `asr-subtitle.md` §11） |
 
 ## 5. 优先级与建议落地顺序
@@ -73,7 +73,7 @@ updated: 2026-09-28
 
 - [已确认] 字幕输出 SRT + VTT **双份**（零成本，覆盖最多播放器与编辑工具）；
 - [已确认] VAD 随 App 内置 assets（~2.3MB），字幕默认开启，不再作为下载项；
-- **翻译层国内可用性对策**（ML Kit 语言包 Play 下载不可达：接受 source-only 默认 / 自托管小模型 / 云 API 兜底）——字幕批次开工前拍板；
+- ~~翻译层国内可用性对策~~（[已拍板 2026-09-28] 接受国内 `source-only` 默认，不自托管/不云 API；见 `asr-subtitle.md` §8）；
 - 图片标注类型集（矩形/箭头/笔迹/文字/序号是否够；模糊明确不做）；
 - 翻译失败重试是否走 `ai_task_queue` 重入队（倾向不重入队）；
 - OCR 真机矩阵是否全部离线通过（§4 of `ocr-cn-adaptation.md`，含无 GMS 设备）。

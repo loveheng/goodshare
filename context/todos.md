@@ -7,7 +7,6 @@ format: v2
 
 ## goodshare
 
-- [ ] [2026-09-28] (风险) 翻译层国内可用性未拍板：ML Kit Translation 语言包经 Play 动态下载（与 OCR 同一堵墙），国内有 GMS 也大概率失败，字幕双语默认路径可能长期退化为 Noop——字幕批次开工前拍板（接受 source-only 默认 / 自托管小模型 / 云 API 兜底） (src: ai, design-docs-review)
 - [ ] [2026-09-28] (风险) 视频字幕转写：长视频 16k 单声道 WAV 临时文件约 115MB/小时落 systemTemp，且既有 10 分钟超时策略未覆盖视频场景，落地时评估分段/清理与超时上限 (src: ai, design-docs-review)
 - [ ] [2026-09-28] (优化) 图片列表「有标注」角标按 annotations JSON 存在性判定属文件 stat IO，列表滚动路径需异步缓存避免主线程阻塞 (src: ai, design-docs-review)
 

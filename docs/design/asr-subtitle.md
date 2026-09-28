@@ -152,7 +152,7 @@ abstract class TranslationEngine {
 | `OpusMtTranslationEngine` | 跨平台兜底 | OPUS-MT int8 自管模型 | `flutter_onnxruntime` |
 | `NoopTranslationEngine` | 全平台兜底 | 返回原文，**保证翻译永不卡死队列** | 内建 |
 
-> ⚠️ **国内可用性风险（2026-09-28 评估补充，字幕批次开工前须拍板）**：ML Kit Translation 属动态下载模型 API（语言包经 Google Play 服务下发），与 OCR 中文模型同一个墙——**国内设备即便有 GMS，语言包大概率下载失败**，`MlKitTranslationEngine.isAvailable` 应把「语言包就绪」纳入门禁，国内默认路径实际退化为 Noop。可选对策：① 接受国内 `source-only` 为长期默认（设置项明示）；② 自托管小模型补位；③ 云 API 兜底。未拍板前字幕默认形态按 `source-only` 处理。
+> ⚠️ **国内可用性——已拍板（2026-09-28）：接受 `source-only` 为国内长期默认**：ML Kit Translation 属动态下载模型 API（语言包经 Google Play 服务下发），与 OCR 中文模型同一个墙——国内设备即便有 GMS，语言包大概率下载失败，`MlKitTranslationEngine.isAvailable` 必须把「语言包就绪」纳入门禁，国内默认路径实际退化为 Noop。**决策：不为此引入自托管小模型或云 API 兜底**，国内场景接受原文-only 字幕（设置项明示原因，不静默降级）；海外 GMS 可达场景仍走 ML Kit 双语。OPUS-MT 兜底档维持 §8 既有排除结论（体积不符）。
 
 **必处理项**
 
