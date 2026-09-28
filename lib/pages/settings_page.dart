@@ -571,6 +571,7 @@ class _LlmModelTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final ready = manager.isReady(model);
+    final stale = manager.isStale(model);
     final progress = manager.progressOf(model);
 
     return Padding(
@@ -626,6 +627,28 @@ class _LlmModelTile extends StatelessWidget {
                       ),
                       const SizedBox(width: 10),
                       Text('${(progress * 100).round()}%'),
+                    ],
+                  )
+                else if (ready && stale)
+                  // 云端 manifest 同 id 换了文件：旧文件照常可用（2026-09-29 拍板：
+                  // 旧模型用得好好的不能不让用），更新与否用户自选——只提示不标红。
+                  Row(
+                    children: [
+                      Icon(Icons.check_circle, size: 16, color: scheme.primary),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          '已下载 · 云端有新版本可更新',
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                      TextButton.icon(
+                        icon: const Icon(Icons.update, size: 18),
+                        label: const Text('更新'),
+                        onPressed: () => onDownload(model),
+                      ),
+                      TextButton(onPressed: () => onRemove(model), child: const Text('删除')),
                     ],
                   )
                 else if (ready)

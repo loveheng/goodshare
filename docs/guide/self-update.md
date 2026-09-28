@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-09-27
+updated: 2026-09-29
 ---
 
 # 自更新与热更指南
@@ -45,6 +45,40 @@ updated: 2026-09-27
 - `sha256` 生成：`sha256sum app-release.apk`
 - `config.mcpInstructions` 非空时会覆盖 MCP `initialize` 返回的服务说明（下次客户端连接生效）
 - 公告随「检查更新」刷新并缓存，更新页展示
+
+### flags.llmManifestUrl（端侧大模型目录热更）
+
+`config.flags` 加一键即可把 LLM 模型目录云端化（`lib/ai/llm_model_manager.dart` 消费）：
+
+```json
+"flags": {
+  "llmManifestUrl": "https://<host>/llm-manifest.json"
+}
+```
+
+manifest 格式（仓库内默认样例见 `updates/llm-manifest.json`）：
+
+```json
+{
+  "models": [
+    {
+      "id": "qwen25-1.5b-q8",
+      "name": "通用 · Qwen2.5-1.5B",
+      "desc": "展示描述",
+      "file": "xxx.litertlm",
+      "size": 1597931520,
+      "repo": "owner/repo",
+      "url": "https://...（绝对地址，与 repo 二选一，优先于 repo）",
+      "socModel": "SM8750（可选：仅该机型可见/可选更新）"
+    }
+  ]
+}
+```
+
+- `id/name/file/size` 必填；`repo`（HF 仓库拼接 `{base}/resolve/main/{file}`，默认 hf-mirror）与 `url`（绝对地址，R2 自托管 / gated 中转用）**至少一个**
+- `socModel` 填了则仅该机型可见（`ro.soc.model` 精确匹配）；不填为通用包
+- 坏条目自动跳过；**空目录视为无效 manifest，绝不覆盖本地可用目录**；拉取失败静默保留 last-good（`documents/llm_manifest.json`），离线/首次安装回退内置兜底目录
+- **本地可用性只由文件本身决定**（云端目录是建议不是许可）：旧文件永不禁用，同 id 换文件仅提示「云端有新版本可更新」，manifest 移除的条目以「本机保留」叠加展示照常可用
 
 ### 发布流程
 

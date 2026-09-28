@@ -1,0 +1,30 @@
+{
+  "models": [
+    {
+      "id": "qwen25-1.5b-q8",
+      "name": "通用 · Qwen2.5-1.5B",
+      "desc": "中文原生，摘要/关键词质量优先（约 1.5GB，4096 上下文）。Apache-2.0，直连可下",
+      "file": "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm",
+      "size": 1597931520,
+      "repo": "litert-community/Qwen2.5-1.5B-Instruct"
+    },
+    {
+      "id": "gemma3-1b-npu-sm8750",
+      "name": "NPU · 骁龙8至尊版",
+      "desc": "Gemma3-1B 4bit NPU 专包（约 658MB，仅骁龙 8 Elite 设备可见）。gated 仓库，此条目启用前需将文件中转到 R2 并把 repo 换成 url",
+      "file": "Gemma3-1B-IT_q4_ekv1280_sm8750.litertlm",
+      "size": 690000000,
+      "repo": "litert-community/Gemma3-1B-IT",
+      "socModel": "SM8750"
+    },
+    {
+      "id": "gemma3-1b-npu-mt6991",
+      "name": "NPU · 天玑9400",
+      "desc": "Gemma3-1B 4bit NPU 专包（约 986MB，仅天玑 9400 设备可见）。gated 仓库，此条目启用前需将文件中转到 R2 并把 repo 换成 url",
+      "file": "Gemma3-1B-IT_q4_ekv1280_mt6991.litertlm",
+      "size": 1034000000,
+      "repo": "litert-community/Gemma3-1B-IT",
+      "socModel": "MT6991"
+    }
+  ]
+}
