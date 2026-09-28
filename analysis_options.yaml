@@ -7,5 +7,6 @@ analyzer:
     - ios/**
   errors:
     # 2026-09-28 UI 规范：强制 const 构造器，编译期固化不变 UI 树，减轻 GC、保滑动满帧。
+    # 注：prefer_const_constructor_duplicates 在新版 Dart 已并入 prefer_const_constructors，
+    # 单独列出会触发 unrecognized_error_code 告警，故不再单列。
     prefer_const_constructors: error
-    prefer_const_constructor_duplicates: error
