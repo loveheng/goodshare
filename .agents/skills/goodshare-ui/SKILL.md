@@ -54,7 +54,7 @@ description: 拾贝 goodshare（Flutter 分享收集器+MCP）UI 层规范事实
 ## 交互反馈（UI 必须有响应）
 
 - 可点击卡片 / 按钮用 `InkWell` 或 M3 原生按钮（ListTile / FilledButton / OutlinedButton），保证水波纹反馈。
-- **长按 / 重要分支操作（删除确认、重分类）须 `HapticFeedback.lightImpact()`**（前瞻规则：当前无长按交互，新增长按菜单时强制执行）。
+- **长按 / 重要分支操作（删除确认、重分类）须 `HapticFeedback.lightImpact()`**（[V3] 前瞻规则：当前无长按交互，新增长按菜单时强制执行）。
 
 ## Local-first 交互拉齐（放弃乐观更新）
 

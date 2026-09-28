@@ -1,7 +1,9 @@
-# 自更新与热更指南
+---
+status: active
+updated: 2026-09-27
+---
 
-> status: stable
-> updated: 2026-09-27
+# 自更新与热更指南
 
 拾贝的更新体系分三层，按需启用：
 

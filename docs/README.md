@@ -26,3 +26,10 @@ updated: 2026-09-28
 
 - [ui-spec.md](design/ui-spec.md) — UI 设计规范：Material You/M3 视觉系统、5 底 tab + FAB 导航、页面清单、设置树、组件库与双态呈现；配套约束见项目 skill `goodshare-ui`。
 - [asr-subtitle.md](design/asr-subtitle.md) — 音频转写与字幕生成设计：VAD 分段取时间戳的可选下载资源 `silero-vad-v5`、文本与 SRT/VTT 双产物、无 VAD 时降级为纯文本的门控。
+- [ocr-cn-adaptation.md](design/ocr-cn-adaptation.md) — 中文 OCR 适配设计。
+- [ai-capabilities-overview.md](design/ai-capabilities-overview.md) — AI 能力总览。
+- [image-annotation.md](design/image-annotation.md) — 图片标注设计。
+
+## engineering（工程规范）
+
+- [ai-dev-spec.md](engineering/ai-dev-spec.md) — AI 协作开发规范：人+AI 双操作者的可判定约束——架构/编码/跨平台规约、AI 操作者专章（身份权限/写路径/错误/并发）、反模式与「明确不做」清单、规范自身维护协议。

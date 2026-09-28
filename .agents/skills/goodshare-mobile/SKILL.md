@@ -22,7 +22,7 @@ description: 拾贝 goodshare（Flutter 分享收集器+MCP）移动端健壮性
 ## 一、状态恢复与后台保活
 
 - 草稿 / 大段输入**禁止只存内存 `State`**：进程被杀即丢。须防抖写本地草稿表（`lib/models/draft_store.dart` + `lib/ui/draft_controller.dart`，800ms 防抖落盘），退后台经 `onBackgrounded` 强制 `flush()` 绕过防抖；重开面板自动恢复半成品（`quick_note_sheet` / `item_detail_page` 已接）。`RestorationMixin` 依赖 Android restoration service，对底部 Sheet 作用域未必传递，DB 草稿更稳。
-- AI 管线是**端侧**模型，断点续传 = 冷启动排空 + resumed 排空；`workmanager` 真后台仅当需要「用户永不打开也跑」时再上（**V3 评估**，注意系统模型多不允许后台调用）。
+- AI 管线是**端侧**模型，断点续传 = 冷启动排空 + resumed 排空；`workmanager` 真后台仅当需要「用户永不打开也跑」时再上（**[V3] 评估**，注意系统模型多不允许后台调用）。
 - **退后台继续 AI 处理（已落地）**：由 `lib/ai/ai_queue_service.dart` 的 `AiQueueService` 统一收口——消费者启动 / 僵尸回收 / resumed 排空全部搬进来，**禁止在 `main` 内联堆消费**。退后台且 `pendingCount>0` 且设备状态允许时拉起前台服务保活主 isolate；回前台且 MCP 未运行时停服。设置页「退后台继续 AI 处理」开关（默认开）+ 通知栏显示剩余条数。
 - **前台服务单实例约束（硬规则）**：`flutter_foreground_task` 只支持**一个**前台服务，MCP 与 AI 队列必须共用——两边都只能 `startService`，`init` 由 `lib/service/foreground_task_init.dart` 的 `ensureForegroundTaskInit()` 幂等统一执行，**禁止各处各自 `init` 互相覆盖**。判定是否已被 MCP 持服用 `mcp.running`，`stopService` 前必查，否则会把 MCP 服务打掉。
 - **设备状态感知调度**：推理受 `canProcess` 门控（`QueueConsumer.canProcess`，注入自 `AiQueueService.inferenceAllowed`）——充电 / 满电 / 电量 ≥40% 且非内存压力才认领任务，否则**停留 `pending` 等待时机**（不是 failed，不入死信）；电量跌破阈值时退后台会主动停服省电。`battery_plus` 取值失败须 try/catch 并回落到「允许」（桌面 / 模拟器取不到电量）。
@@ -40,13 +40,13 @@ description: 拾贝 goodshare（Flutter 分享收集器+MCP）移动端健壮性
 - 当前仅 `is_vault=0` 过滤 + `local_auth` 视图隐藏（应用层），**非物理加密**，真机 root / 文件管理器可读 SQLite。
 - **退出即遮罩**：订阅 `onBackgrounded` 盖高斯模糊（`lib/ui/privacy_blur_overlay.dart` 挂 `MaterialApp.builder` 最外层，`ImageFilter.blur(20)` + 锁图标）+ 清理内存中 Vault 明文 / 密钥；重入重认证（见下）。
 - Android 动态 `FLAG_SECURE` 防截屏（已落地：`lib/service/secure_window.dart` 平台通道 + `MainActivity.kt` addFlags/clearFlags；进入 VaultPage / vaultContext 详情 `setSecure(true)`，离开置 false，普通页保持可截图分享）。
-- **加密落盘（V3）**：整库 `SQLCipher`（`sqflite_sqlcipher`，迁移成本高）或字段级 AES（Vault 的 `human_md` / `machine_json`）+ 密钥存 `flutter_secure_storage`（KeyStore/Keychain）；非 Vault 数据保持明文以保性能。
+- **加密落盘（[V3]）**：整库 `SQLCipher`（`sqflite_sqlcipher`，迁移成本高）或字段级 AES（Vault 的 `human_md` / `machine_json`）+ 密钥存 `flutter_secure_storage`（KeyStore/Keychain）；非 Vault 数据保持明文以保性能。
 
 ## 四、离线优先与队列重放
 
 - **写操作队列化底座**：`ai_task_queue` 表（DB 持久）+ `QueueConsumer` 轮询消费；所有 AI 重构经队列，进程被杀任务不丢。
 - **僵尸任务回收（硬规则）**：`claimTask` 置 `processing` 后若进程被杀会永久卡死；`ai_task_queue` 加 `updated_at` 列，处理中每 5s `touchTask` 心跳，`reclaimStaleTasks` 将 `processing` 且 `updated_at` 超 30s 重置 `pending`；冷启动 + resumed 各调一次。**新增耗时任务须维持心跳**，否则会被误杀。
-- **乐观 UI / 网络门控（待评估）**：local-first 已靠落盘 + 仓库通知（见 `goodshare-ui`「Local-first 交互拉齐」），无远端依赖时不必乐观占位；若将来加云端同步 / 远端写，须 Intent 入队 + 连通重放。
+- **乐观 UI / 网络门控（[V3] 待评估）**：local-first 已靠落盘 + 仓库通知（见 `goodshare-ui`「Local-first 交互拉齐」），无远端依赖时不必乐观占位；若将来加云端同步 / 远端写，须 Intent 入队 + 连通重放。
 
 ## 五、动态排版与无障碍
 

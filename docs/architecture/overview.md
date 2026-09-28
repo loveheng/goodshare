@@ -1,7 +1,9 @@
-# 架构总览
+---
+status: active
+updated: 2026-09-27
+---
 
-> status: stable
-> updated: 2026-09-27
+# 架构总览
 
 拾贝是一个 Flutter 单模块应用：**系统分享 → 私有存储 → 浏览检索 → MCP 对外**。Android 首发；iOS/鸿蒙迁移时本层结构可整体保留，仅平台插件层需按端适配。
 

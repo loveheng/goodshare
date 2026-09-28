@@ -7,6 +7,8 @@ description: 拾贝 goodshare（Flutter 分享收集器+MCP）分层架构与无
 
 **设计 SSOT = `docs/architecture/human-ai-parity.md`**（试金石、命令矩阵、并发机制的完整论证在那儿）。本 skill 只装三样文档里没有的东西：**落地锚点、踩坑口径、自查 / 反模式清单**。
 
+> **层级**：本 skill 是写路径/分层的**操作性事实源**（怎么改代码看这里）；`docs/engineering/ai-dev-spec.md` 是**约束清单与立法原则**（为什么这样定、判定标准，含反模式与「明确不做」全集）。冲突时按规范 §8 裁决链（显式决策 > 项目 skill > 规范 > 通用惯例）。两边同步改，禁止单边新增硬规则。
+
 ## 用法
 
 1. 动 `lib/action/`（命令 / 校验）、`lib/mcp/tools.dart`、摄入链路 `lib/share/`、或给页面加写操作前，先读 `docs/architecture/human-ai-parity.md`。
@@ -74,7 +76,7 @@ description: 拾贝 goodshare（Flutter 分享收集器+MCP）分层架构与无
 
 ### 主体 × 命令（`CommandActor`）
 
-`actor` **由传输层注入，不由命令载荷携带**——否则大模型可在 JSON 里自称 `"actor":"ui"` 越权。
+`actor` 由传输层注入，不由命令载荷携带。矩阵速查（展开理由见 docs §2）：
 
 | 命令 | ui | ai | pipeline |
 |---|---|---|---|
@@ -82,8 +84,6 @@ description: 拾贝 goodshare（Flutter 分享收集器+MCP）分层架构与无
 | set_vault(off) 移出保险箱 | ✓ | ✗ 需生物识别 | — |
 | delete_forever 彻底删除 | ✓ | ✗ 不可逆 | — |
 | apply_ai_result 管线回写 | ✗ | ✗ | ✓ 独享重分类特权 |
-
-传输层映射：Flutter UI → `ui`；MCP / 大模型 / 聊天机器人外壳 → `ai`；`QueueConsumer` → `pipeline`。完整矩阵与「pipeline 能看见 Vault 条目」的理由见 docs §2。
 
 ### 错误契约
 

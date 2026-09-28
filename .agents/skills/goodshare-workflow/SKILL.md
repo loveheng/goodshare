@@ -50,6 +50,8 @@ adb reverse tcp:8765 tcp:8765   # USB 场景让桌面访问手机端 /mcp
 
 ## 插件 API 口径（改前先读 pub 缓存源码，勿凭旧版记忆）
 
+> **保鲜提醒**：本节内容按当前版本号锁定，升级任一插件时必须同步核实并更新对应行（含硬约束是否仍成立），否则本节即失真。
+
 - `receive_sharing_intent` 1.9.0：`SharedMediaFile{path, thumbnail, duration, type, mimeType, message}`（无 source 字段），类型枚举 `SharedMediaType.{image,video,text,file,url}`
 - `flutter_foreground_task` 11.0.3：先 `init()` 再 `startService(serviceTypes: [ForegroundServiceTypes.dataSync], ...)`；manifest service 名不可改
 - `share_plus` 13.3.0：`SharePlus.instance.share(ShareParams(text:, title:, files:))`
