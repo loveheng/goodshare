@@ -275,6 +275,9 @@ void _asrWorkerEntry(_AsrWorkerArgs args) {
             } finally {
               stream.free();
             }
+            // 必须弹出队首：front() 只取不移除，缺少 pop() 会让 isEmpty() 恒为 false，
+            // 变成对同一段反复 decode 的死循环（曾表现为「转写挂死、永不返回」）。
+            vad.pop();
           }
           cues = list;
           sampleRate = wave.sampleRate;

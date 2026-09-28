@@ -78,9 +78,9 @@ class _SettingsPageState extends State<SettingsPage> {
   String _ocrSubtitle() {
     final caps = widget.caps;
     if (!caps.detected) return '能力检测中…';
-    if (caps.ocrAvailable == false) return '本机未检测到 Google 服务，图片 OCR 不可用';
+    if (caps.ocrAvailable == false) return '本机 OCR 不可用';
     if (!caps.ocrEnabled) return '已关闭';
-    return '本机支持（GMS 端侧识别）';
+    return '本机支持（内置离线识别库）';
   }
 
   String _asrSubtitle() {

@@ -13,6 +13,7 @@ import 'ai_tags_page.dart';
 import 'inbox_page.dart';
 import 'recent_deleted_page.dart';
 import 'settings_page.dart';
+import 'task_queue_page.dart';
 import 'timeline_page.dart';
 import 'vault_page.dart';
 
@@ -45,6 +46,11 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  @override
+  void initState() {
+    super.initState();
+  }
   int _index = 0; // 首页落点：全部
   late final List<Widget> _pages = [
     InboxPage(
@@ -198,6 +204,20 @@ class _HomeShellState extends State<HomeShell> {
             onTap: () {
               Navigator.of(context).pop();
               setState(() => _index = 4);
+            },
+          ),
+          const Divider(),
+          // AI 处理「看起来没反应」时的排查入口：看清任务是没入队 / 卡处理中 / 已完成
+          ListTile(
+            leading: const Icon(Icons.list_alt_outlined),
+            title: const Text('AI 任务队列'),
+            subtitle: const Text('查看 OCR / 转写任务状态'),
+            onTap: () {
+              final nav = Navigator.of(context);
+              nav.pop();
+              nav.push(MaterialPageRoute(
+                builder: (_) => TaskQueuePage(repo: widget.repo),
+              ));
             },
           ),
         ],

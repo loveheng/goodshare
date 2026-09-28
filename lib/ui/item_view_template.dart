@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -297,6 +298,7 @@ class _AudioPlayer extends StatefulWidget {
 
 class _AudioPlayerState extends State<_AudioPlayer> {
   late final AudioPlayer _player = AudioPlayer();
+  final List<StreamSubscription<dynamic>> _subs = [];
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
   bool _playing = false;
@@ -305,13 +307,16 @@ class _AudioPlayerState extends State<_AudioPlayer> {
   @override
   void initState() {
     super.initState();
-    _player.positionStream.listen((p) => setState(() => _position = p));
-    _player.durationStream.listen((d) {
-      if (d != null) setState(() => _duration = d);
-    });
-    _player.playerStateStream.listen((s) {
+    // 流订阅必须存引用并在 dispose 取消：页面退出后流仍会回调，
+    // 无 mounted 防护会抛 setState() called after dispose()。
+    _subs.add(_player.positionStream
+        .listen((p) => mounted ? setState(() => _position = p) : null));
+    _subs.add(_player.durationStream.listen((d) {
+      if (d != null && mounted) setState(() => _duration = d);
+    }));
+    _subs.add(_player.playerStateStream.listen((s) {
       if (mounted) setState(() => _playing = s.playing);
-    });
+    }));
     _player.setFilePath(widget.path).catchError((Object e) {
       debugPrint('[AudioPlayer] load failed: $e');
       if (mounted) setState(() => _error = '音频文件加载失败');
@@ -321,6 +326,10 @@ class _AudioPlayerState extends State<_AudioPlayer> {
 
   @override
   void dispose() {
+    for (final s in _subs) {
+      s.cancel();
+    }
+    _subs.clear();
     _player.dispose();
     super.dispose();
   }

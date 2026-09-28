@@ -14,3 +14,4 @@ last-merge: none
 - [构建] release 构建 R8 报 missing class（ML Kit 脚本识别器） ➔ google_mlkit_text_recognition 仅自带 latin 脚本依赖 ➔ 所需脚本（中文）在 app 级 build.gradle.kts 引入 GMS 依赖，未用脚本在 proguard-rules.pro dontwarn (Ref: goodshare)
 - [Flutter] 父级 setState 不触发缓存子页重建（设置页 SegmentedButton 选中态不更新） ➔ HomeShell _pages 为 late final 缓存的同一批 widget 实例，Element update 恒等短路 ➔ 需要实时响应的状态由子页自身持有（本地状态/监听），勿依赖父级重建下传 (Ref: goodshare)
 - [测试] CI 上清理类测试随机挂（本地恒绿，45过2挂） ➔ purgeDeleted 用 deleted_at < cutoff，retention=0 时 cutoff 与同毫秒删除值相等漏删残留污染下个测试 ➔ 时间戳范围清理用 <= 而非 <（或保证 cutoff 严格晚于删除时刻） (Ref: goodshare)
+- [ui/播放器] 详情页退出后报 setState() called after dispose(): _AudioPlayerState ➔ just_audio 流订阅（position/duration/playerState）listen 后未存引用、dispose 未取消，Widget 移除后流仍回调 setState（部分回调连 mounted 都没判）➔ 流式回调一律三件套：订阅存引用 + 回调判 mounted + dispose 里 cancel；video_player 的 addListener 需对称 removeListener（现有 _VideoPlayerState 是正确范本） (Ref: goodshare)

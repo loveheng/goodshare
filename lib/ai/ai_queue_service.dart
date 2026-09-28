@@ -50,8 +50,16 @@ class AiQueueService extends ChangeNotifier {
 
   bool get isMemoryPressure => _memoryPressure;
 
-  /// 设备状态是否允许推理（V2 §3.x：充电 / 满电 / 电量 ≥ 40%）。
-  bool get inferenceAllowed => _deviceOk && !_memoryPressure;
+  /// 设备状态是否允许推理。前台（用户正在使用 APP）时始终允许——用户主动操作
+  /// 不应被省电门控静默丢弃；仅退后台的自动处理受电量 / 内存约束（V2 §3.x）。
+  bool get inferenceAllowed => !_isBackgrounded || (_deviceOk && !_memoryPressure);
+
+  /// 用户在前台主动触发（重新处理等）：绕过省电 / 内存门控，立即认领一次任务。
+  /// 即便 consumer 因内存压力被 stop，也先重启再强制 poll，确保用户操作有响应。
+  Future<void> kick() async {
+    if (!consumer.isRunning) consumer.start();
+    await consumer.pollOnce(force: true);
+  }
 
   bool get _deviceOk =>
       _batteryState == BatteryState.charging ||

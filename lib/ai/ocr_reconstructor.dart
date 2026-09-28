@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
+import '../data/repository.dart';
 import 'reconstructor.dart';
 import 'url_extract.dart';
 
@@ -24,18 +26,24 @@ class OcrReconstructor implements AiReconstructor {
   @override
   Future<bool> get isAvailable async => true;
 
-  /// 仅处理图片（OCR）与链接（离线抓取）；音频/文本由其他实现或占位兜底。
+  /// 处理图片（OCR）与链接（离线抓取）；音频/文本由其他实现或占位兜底。
   @override
-  Future<bool> handles(ReconstructInput input) async =>
-      input.itemType == 'image' || input.itemType == 'url';
+  Future<bool> handles(ReconstructInput input) async {
+    // 链接离线抓取保持自动（用户未要求手动化）。
+    if (input.itemType == 'url') return true;
+    if (input.itemType != 'image') return false;
+    // 图片 OCR **仅手动触发**（2026-09-28 用户拍板：与音频一致，分享摄入不自动 OCR，
+    // 只存文件）。仅 task_action=ocr_and_extract 的任务走 OCR；摄入后的通用重构
+    // 落占位实现，不跑模型。
+    return input.taskAction == Repository.taskOcrAndExtract;
+  }
 
   @override
   Future<ReconstructResult> reconstruct(ReconstructInput input) async {
     final ocrOn = isOcrEnabled?.call() ?? true;
     if (ocrOn && input.itemType == 'image' && (input.rawFilePath?.isNotEmpty ?? false)) {
       final text = await _ocr(input.rawFilePath!);
-      // OCR 不可用（无 GMS/模型未就绪）时优雅降级为占位行为，不置死信
-      return ReconstructResult(humanMd: text ?? (input.rawContent ?? ''));
+      return ReconstructResult(humanMd: text ?? input.rawContent ?? '');
     }
     // 链接离线成内容（2026-09-27 决策）：抓取网页正文写入人类态；失败回退占位
     final fetchOn = isUrlFetchEnabled?.call() ?? true;
@@ -50,18 +58,26 @@ class OcrReconstructor implements AiReconstructor {
   }
 
   Future<String?> _ocr(String path) async {
-    if (!File(path).existsSync()) return null;
+    if (!File(path).existsSync()) {
+      debugPrint('[OcrReconstructor] file missing: $path');
+      return null;
+    }
     final recognizer = TextRecognizer(script: TextRecognitionScript.chinese);
     try {
       final inputImage = InputImage.fromFilePath(path);
-      final result = await recognizer.processImage(inputImage);
+      // 超时兜底：ML Kit 在部分机型 / release 构建下可能挂起，若无超时将永久
+      // 占住 _busy 与任务心跳，导致整个队列堵死、后续重新处理全部静默失效。
+      final result = await recognizer.processImage(inputImage).timeout(
+            const Duration(seconds: 20),
+            onTimeout: () => throw TimeoutException('processImage timeout 20s'),
+          );
       final text = result.text.trim();
       return text.isEmpty ? null : text;
     } catch (e) {
       debugPrint('[OcrReconstructor] OCR failed, fallback to placeholder: $e');
       return null;
     } finally {
-      recognizer.close();
+      await recognizer.close();
     }
   }
 }

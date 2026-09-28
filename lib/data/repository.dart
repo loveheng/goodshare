@@ -62,9 +62,10 @@ class Repository extends ChangeNotifier {
   /// item_type → 默认队列动作；note/document 无专属动作返回 null（消费者按类型通用重构）。
   static String? taskActionFor(String itemType) => switch (itemType) {
         InboxItem.typeUrl => taskSummarizeUrl,
-        InboxItem.typeImage => taskOcrAndExtract,
         InboxItem.typeChatlog => taskParseChatlog,
-        InboxItem.typeAudio => taskTranscribeAudio,
+        // 音频与图片**都不自动跑模型**（2026-09-28 用户拍板：分享摄入只存文件，
+        // 不默认转写 / OCR，一律手动触发）——录音转写由 TranscribeCommand 入队
+        // taskTranscribeAudio，图片 OCR 由 OcrCommand 入队 taskOcrAndExtract。
         _ => null,
       };
 
@@ -285,6 +286,55 @@ class Repository extends ChangeNotifier {
       "SELECT COUNT(*) c FROM ai_task_queue WHERE status = 'pending'",
     );
     return rows.first['c'] as int? ?? 0;
+  }
+
+  /// AI 任务队列快照（含关联条目信息，供任务列表页展示；条目已删也能查到）。
+  /// 按 rowid 倒序（最新在前），与消费顺序（正序）相反，便于看最近动态。
+  Future<List<Map<String, Object?>>> listTasks({int limit = 50}) async {
+    final db = await _database();
+    return db.rawQuery(
+      '''
+      SELECT q.task_id, q.item_id, q.task_action, q.status, q.updated_at,
+             i.human_title, i.item_type, i.is_processed
+      FROM ai_task_queue AS q
+      LEFT JOIN inbox_items AS i ON i.id = q.item_id
+      ORDER BY q.rowid DESC
+      LIMIT ?
+      ''',
+      [limit],
+    );
+  }
+
+  /// 暂停任务：pending → paused（**不被消费者认领**，但保留在队列中可手动恢复）。
+  /// 只暂停尚未开始的任务；已在 processing 的不打断（打断需消费者侧配合）。
+  Future<bool> pauseTask(String taskId) async {
+    final db = await _database();
+    final n = await db.update(
+      'ai_task_queue',
+      {'status': 'paused', 'updated_at': DateTime.now().millisecondsSinceEpoch},
+      where: 'task_id = ? AND status = ?',
+      whereArgs: [taskId, 'pending'],
+    );
+    return n > 0;
+  }
+
+  /// 启动（恢复）任务：paused / failed / cancelled → pending，重新进入消费队列。
+  Future<bool> resumeTask(String taskId) async {
+    final db = await _database();
+    final n = await db.update(
+      'ai_task_queue',
+      {'status': 'pending', 'updated_at': DateTime.now().millisecondsSinceEpoch},
+      where: "task_id = ? AND status IN ('paused', 'failed', 'cancelled')",
+      whereArgs: [taskId],
+    );
+    return n > 0;
+  }
+
+  /// 删除任务（仅从队列移除，不删除条目本身）。
+  Future<bool> deleteTask(String taskId) async {
+    final db = await _database();
+    final n = await db.delete('ai_task_queue', where: 'task_id = ?', whereArgs: [taskId]);
+    return n > 0;
   }
 
   /// 待处理队列任务快照（占位消费者接管，先进先出）。

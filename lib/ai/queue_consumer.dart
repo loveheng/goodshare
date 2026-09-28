@@ -45,13 +45,15 @@ class QueueConsumer {
   Future<int> reclaimStaleTasks() => _repo.reclaimStaleTasks();
 
   /// 排空当前 pending 任务（单条串行，防止并发写同一条目）。返回处理条数。
-  Future<int> pollOnce() async {
+  /// [force] = true 用于用户在前台主动触发（如「重新处理」）：跳过设备状态门控立即处理。
+  Future<int> pollOnce({bool force = false}) async {
     if (_busy) return 0;
     _busy = true;
     var processed = 0;
     try {
       while (true) {
-        if (canProcess != null && !(await canProcess!())) break; // 设备状态不允许则停手
+        // force=true 时无视 canProcess（省电/内存门控），确保用户主动操作有响应
+        if (!force && canProcess != null && !(await canProcess!())) break; // 设备状态不允许则停手
         final tasks = await _repo.pendingTasks(limit: 1);
         if (tasks.isEmpty) break;
         await _process(tasks.first);
@@ -87,9 +89,16 @@ class QueueConsumer {
         sourceType: item.sourceType,
         rawContent: item.rawContent,
         rawFilePath: item.rawFilePath,
+        taskAction: task['task_action'] as String?,
       );
       final impl = await _registry.resolve(input);
-      final result = await impl.reconstruct(input);
+      // 超时兜底：任一实现挂起（如 Sherpa 转写在部分机型不返回）都会永久占住
+      // _busy 与任务心跳，导致队列堵死、后续条目（含图片 OCR）永远不被消费。
+      // 超时降级为「占位完成」，与项目「降级不卡死」口径一致。
+      final result = await impl.reconstruct(input).timeout(
+            const Duration(seconds: 60),
+            onTimeout: () => ReconstructResult(humanMd: input.rawContent ?? ''),
+          );
       // 经 Handler 特权入口回写（machine_json 过 Schema、item_type 变更受 AI 特权约束），
       // 与 UI / MCP 共用同一落库出口；落库复用 repo 通知驱动前台刷新。
       // actor=pipeline 由本文件（管线传输层）指定，命令载荷本身无法伪造。

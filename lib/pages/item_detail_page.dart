@@ -77,8 +77,9 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
 
   Future<void> _run(Future<Object?> Function() action, String done) async {
     try {
-      await action();
-      _snack(done);
+      final res = await action();
+      // 命令层可能回更具体的提示（如「已放入任务列表，前面还有 N 条」），优先展示
+      _snack(res is CommandResult ? (res.note ?? done) : done);
       await _reload();
     } on ActionException catch (e) {
       _snack(e.message);
@@ -251,17 +252,33 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                   icon: const Icon(Icons.category_outlined),
                   label: const Text('重分类'),
                 ),
-              OutlinedButton.icon(
-                onPressed: () => _run(
-                  () => widget.handler.execute(
-                    ReprocessCommand(_item.id!),
-                    vaultContext: widget.vaultContext,
+              // 转写**只手动触发**（音频不做实时 / 摄入即转写，只存文件）：
+              // 仅音频 / 视频条目显示，点击才入队 transcribe_audio 跑 Sherpa。
+              if (_item.itemType == InboxItem.typeAudio || _item.itemType == InboxItem.typeVideo)
+                OutlinedButton.icon(
+                  onPressed: () => _run(
+                    () => widget.handler.execute(
+                      TranscribeCommand(_item.id!),
+                      vaultContext: widget.vaultContext,
+                    ),
+                    '已入队转写',
                   ),
-                  '已重新处理',
+                  icon: const Icon(Icons.subtitles_outlined),
+                  label: const Text('转写'),
                 ),
-                icon: const Icon(Icons.refresh),
-                label: const Text('重新处理'),
-              ),
+              // 图片 OCR 同样**只手动触发**（与音频转写对称）：仅图片条目显示。
+              if (_item.itemType == InboxItem.typeImage)
+                OutlinedButton.icon(
+                  onPressed: () => _run(
+                    () => widget.handler.execute(
+                      OcrCommand(_item.id!),
+                      vaultContext: widget.vaultContext,
+                    ),
+                    '已入队 OCR',
+                  ),
+                  icon: const Icon(Icons.document_scanner_outlined),
+                  label: const Text('识别文字'),
+                ),
               if (!vault)
                 OutlinedButton.icon(
                   onPressed: () => _run(

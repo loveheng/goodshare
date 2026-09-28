@@ -31,13 +31,20 @@ import 'machine_json_validator.dart';
 /// 约束来源：编辑锁（设计 §4.9）、重分类白名单（F7 决策）、machine_json Schema（D4 决策）、
 /// Vault 物理隔离（PRD §7 隐私硬约束）。
 class ItemActionHandler {
-  ItemActionHandler(this._repo, {this.mergeWindow = _defaultMergeWindow});
+  ItemActionHandler(
+    this._repo, {
+    this.mergeWindow = _defaultMergeWindow,
+    this.onEnqueued,
+  });
 
   final Repository _repo;
 
   /// 合并链追加窗口（设计 §4.9 / F6：同源连续收集在窗口内并链）。
   /// 单一事实源——`TextCollector` 的选链窗口直接取本值，避免两处窗口漂移。
   final Duration mergeWindow;
+
+  /// 任务入队后回调（如触发 AI 队列立即处理）；UI 主动 reprocess 时用于绕过门控。
+  final void Function()? onEnqueued;
 
   static const _defaultMergeWindow = Duration(minutes: 5);
 
@@ -71,6 +78,8 @@ class ItemActionHandler {
       final SetVaultCommand c => _setVault(c, actor, seeVault, txn),
       final ReclassifyCommand c => _reclassify(c, actor, seeVault, txn),
       final ReprocessCommand c => _reprocess(c, seeVault, txn),
+      final TranscribeCommand c => _transcribe(c, seeVault, txn),
+      final OcrCommand c => _ocr(c, seeVault, txn),
       final UnlockEditCommand c => _unlockEdit(c, seeVault, txn),
       final RestoreCommand c => _restore(c, seeVault, txn),
       final DeleteForeverCommand c => _deleteForever(c, txn),
@@ -234,8 +243,82 @@ class ItemActionHandler {
       expectedVersion: cmd.expectedVersion,
       txn: txn,
     );
-    await _repo.enqueueTask(cmd.id, Repository.taskActionFor(item.itemType), txn: txn);
+    // 图片「重新处理」= 重新 OCR（2026-09-28 用户口径：摄入不自动 OCR，但点重新处理
+    // 就要出文字）；音频仍只认手动「转写」入口，其 reprocess 仅占位、不跑模型。
+    final action = item.itemType == InboxItem.typeImage
+        ? Repository.taskOcrAndExtract
+        : Repository.taskActionFor(item.itemType);
+    await _repo.enqueueTask(cmd.id, action, txn: txn);
+    onEnqueued?.call();
     return _result('reprocess', cmd.id, seeVault: seeVault, txn: txn, note: '已重新入队');
+  }
+
+  /// 手动转写音频 / 视频：显式入队 transcribe_audio（2026-09-28 用户拍板——
+  /// 音频不做实时转写、摄入也不自动转写，只存文件；转写必须用户手动触发）。
+  ///
+  /// 「仅音频 / 视频可转写」的校验下沉在动作层：AI / MCP 换个入口也绕不过。
+  Future<CommandResult> _transcribe(
+    TranscribeCommand cmd,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    if (item.itemType != InboxItem.typeAudio && item.itemType != InboxItem.typeVideo) {
+      throw ActionException(
+        '只有音频 / 视频能转写（当前类型：${item.itemType}）',
+        code: ActionErrorCode.invalidRequest,
+        hint: '图片请点「重新处理」走 OCR',
+      );
+    }
+    await _write(
+      'transcribe',
+      cmd.id,
+      {'is_processed': 0},
+      expectedVersion: cmd.expectedVersion,
+      txn: txn,
+    );
+    await _repo.enqueueTask(cmd.id, Repository.taskTranscribeAudio, txn: txn);
+    onEnqueued?.call();
+    return _result('transcribe', cmd.id, seeVault: seeVault, txn: txn,
+        note: await _queuedNote('已开始转写'));
+  }
+
+  /// 手动 OCR 图片：显式入队 ocr_and_extract（2026-09-28 用户拍板——分享摄入不默认
+  /// OCR，只存文件；识别文字必须用户手动触发，与音频转写对称）。
+  ///
+  /// 「仅图片可 OCR」的校验下沉在动作层：AI / MCP 换个入口也绕不过。
+  Future<CommandResult> _ocr(
+    OcrCommand cmd,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    if (item.itemType != InboxItem.typeImage) {
+      throw ActionException(
+        '只有图片能识别文字（当前类型：${item.itemType}）',
+        code: ActionErrorCode.invalidRequest,
+        hint: '音频 / 视频请点「转写」',
+      );
+    }
+    await _write(
+      'ocr',
+      cmd.id,
+      {'is_processed': 0},
+      expectedVersion: cmd.expectedVersion,
+      txn: txn,
+    );
+    await _repo.enqueueTask(cmd.id, Repository.taskOcrAndExtract, txn: txn);
+    onEnqueued?.call();
+    return _result('ocr', cmd.id, seeVault: seeVault, txn: txn,
+        note: await _queuedNote('已开始识别文字'));
+  }
+
+  /// 入队后的提示文案：本任务之前仍有排队任务时，明确告知「已放入任务列表」及条数，
+  /// 避免用户以为点击没生效（前面排队时需要等待）。[immediate] 为无需排队时的文案。
+  Future<String> _queuedNote(String immediate) async {
+    final total = await _repo.pendingCount(); // 含刚入队的本条
+    final ahead = total - 1;
+    return ahead > 0 ? '已放入任务列表，前面还有 $ahead 条待处理' : immediate;
   }
 
   Future<CommandResult> _unlockEdit(UnlockEditCommand cmd, bool seeVault, Transaction? txn) async {

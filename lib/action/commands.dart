@@ -188,6 +188,10 @@ sealed class ItemCommand {
         return ReclassifyCommand(id, to, expectedVersion: ev);
       case 'reprocess':
         return ReprocessCommand(id, expectedVersion: ev);
+      case 'transcribe':
+        return TranscribeCommand(id, expectedVersion: ev);
+      case 'ocr':
+        return OcrCommand(id, expectedVersion: ev);
       case 'unlock_edit':
         return UnlockEditCommand(id, expectedVersion: ev);
       case 'restore':
@@ -382,6 +386,53 @@ final class ReprocessCommand extends ItemCommand {
 
   @override
   String get op => 'reprocess';
+
+  @override
+  String? get targetId => id;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'id': id,
+        if (expectedVersion != null) 'expected_version': expectedVersion,
+      };
+}
+
+/// 手动 OCR 图片（= UI「识别文字」）：入队 task_action=ocr_and_extract。
+///
+/// 与 [TranscribeCommand] 对称（2026-09-28 用户拍板：分享摄入不默认 OCR，只存文件，
+/// 识别文字必须用户手动触发）。是**唯一**会真正跑 ML Kit 识别的入口。
+final class OcrCommand extends ItemCommand {
+  const OcrCommand(this.id, {super.expectedVersion});
+
+  final String id;
+
+  @override
+  String get op => 'ocr';
+
+  @override
+  String? get targetId => id;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'id': id,
+        if (expectedVersion != null) 'expected_version': expectedVersion,
+      };
+}
+
+/// 手动转写音频 / 视频（= UI「转写」）：入队 task_action=transcribe_audio。
+///
+/// 与 [ReprocessCommand] 的区别：reprocess 按 item_type 走通用重构（音频只占位，
+/// 不跑模型），本命令显式指定转写动作，是**唯一**会真正跑 Sherpa 转写入口
+/// （2026-09-28 用户拍板：音频不做实时 / 摄入即转写，只存文件，转写手动触发）。
+final class TranscribeCommand extends ItemCommand {
+  const TranscribeCommand(this.id, {super.expectedVersion});
+
+  final String id;
+
+  @override
+  String get op => 'transcribe';
 
   @override
   String? get targetId => id;

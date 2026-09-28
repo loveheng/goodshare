@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import '../data/repository.dart';
 import 'asr.dart';
 import 'model_manager.dart';
 import 'reconstructor.dart';
@@ -30,8 +31,14 @@ class AsrReconstructor implements AiReconstructor {
 
   /// 音频与视频（离线转写 + 字幕）；图片/链接由 OcrReconstructor 处理。
   @override
-  Future<bool> handles(ReconstructInput input) async =>
-      input.itemType == 'audio' || input.itemType == 'video';
+  Future<bool> handles(ReconstructInput input) async {
+    final isMedia = input.itemType == 'audio' || input.itemType == 'video';
+    if (!isMedia) return false;
+    // 音频 / 视频转写**仅手动触发**（2026-09-28 用户拍板：不做实时转写、摄入不自动
+    // 转写，只存文件）。仅 task_action=transcribe_audio 的任务走 ASR；摄入后的通用
+    // 重构落占位实现，避免自动跑 Sherpa 长任务长期占住队列（曾导致整队堵死）。
+    return input.taskAction == Repository.taskTranscribeAudio;
+  }
 
   @override
   Future<ReconstructResult> reconstruct(ReconstructInput input) async {

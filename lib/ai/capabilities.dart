@@ -1,7 +1,4 @@
-import 'dart:io';
-
 import 'package:flutter/foundation.dart';
-import 'package:google_api_availability/google_api_availability.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// AI 能力开关与本机能力检测（2026-09-27 决策：设置页开关 + 首次检测持久化）。
@@ -32,8 +29,9 @@ class AiCapabilities extends ChangeNotifier {
     asrEnabled = prefs.getBool(_prefAsrEnabled) ?? true;
     _detected = prefs.getBool(_prefDetected) ?? false;
     if (_detected) {
-      // 首次检测后结果持久化，此后不再检测
-      ocrAvailable = prefs.getBool(_prefOcrAvailable);
+      // OCR 已切换为 bundled 离线库，本机恒可用（不再依赖 GMS）。
+      // 忽略旧持久化结果，避免早期在无 GMS 设备误判的 false 永久锁死开关。
+      ocrAvailable = true;
     }
     notifyListeners();
   }
@@ -55,19 +53,10 @@ class AiCapabilities extends ChangeNotifier {
   }
 
   Future<void> _detectOcr() async {
-    try {
-      if (!Platform.isAndroid) {
-        // iOS 的 ML Kit 模型内置打包，不依赖 GMS
-        ocrAvailable = true;
-        return;
-      }
-      final availability =
-          await GoogleApiAvailability.instance.checkGooglePlayServicesAvailability();
-      ocrAvailable = availability == GooglePlayServicesAvailability.success;
-    } catch (e) {
-      debugPrint('[AiCapabilities] OCR detection failed: $e');
-      ocrAvailable = false;
-    }
+    // 已切换为 bundled 中文识别库（com.google.mlkit:text-recognition-chinese），
+    // 模型随 APK 打包，不依赖 GMS / Play 动态下载，故本机恒可用（含国内无 GMS 设备）。
+    // 不再做 GoogleApiAvailability 检测，避免无 GMS 机型被误关 OCR。
+    ocrAvailable = true;
   }
 
   Future<void> setOcrEnabled(bool v) async {

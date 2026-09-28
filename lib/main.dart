@@ -22,6 +22,9 @@ import 'update/remote_config_store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 必须在 runApp 之前注册生命周期观察者，确保完整捕获启动期
+  // inactive→resumed 序列，PrivacyBlurOverlay 能正确回到前台
+  AppLifecycleManager.instance.init();
   // 规则二：限制图片缓存水位，长列表缩略图不会撑爆内存（默认 1000 张 / 100MB 过高）
   PaintingBinding.instance.imageCache
     ..maximumSizeBytes = 100 << 20 // 100MB
@@ -31,7 +34,9 @@ Future<void> main() async {
   await Db.instance();
   await repo.purgeDeleted();
   // 动作层先建：摄入（TextCollector/ShareIntake）与 MCP 共用同一写入口
-  final handler = ItemActionHandler(repo);
+  // aiQueue 用 late：handler 的 onEnqueued 闭包延迟引用，装配期（下方）才赋值
+  late final AiQueueService aiQueue;
+  final handler = ItemActionHandler(repo, onEnqueued: () => aiQueue.kick());
   final collector = TextCollector(handler);
   await collector.load();
   final caps = AiCapabilities();
@@ -64,11 +69,9 @@ Future<void> main() async {
   consumer.start();
   // 第 3 档：前台服务保活 + 设备状态感知调度 + 内存压力优雅中断
   // （consumer 启动 / 僵尸回收 / resumed 排空均收口进 AiQueueService）
-  final aiQueue = AiQueueService(repo: repo, consumer: consumer, mcp: mcp);
+  aiQueue = AiQueueService(repo: repo, consumer: consumer, mcp: mcp);
   consumer.canProcess = () async => aiQueue.inferenceAllowed;
   await aiQueue.init();
-  // 规则一/三/四枢纽：生命周期广播，各模块（队列回收 / 安全中心 / 草稿）自行订阅
-  AppLifecycleManager.instance.init();
   runApp(GoodShareApp(
     repo: repo,
     handler: handler,

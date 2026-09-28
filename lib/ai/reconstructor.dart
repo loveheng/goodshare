@@ -6,6 +6,7 @@ class ReconstructInput {
     this.sourceType,
     this.rawContent,
     this.rawFilePath,
+    this.taskAction,
   });
 
   final String itemId;
@@ -13,6 +14,11 @@ class ReconstructInput {
   final String? sourceType;
   final String? rawContent;
   final String? rawFilePath; // 附件路径（图片 OCR / 音频处理用）
+
+  /// 队列任务动作（`ai_task_queue.task_action`）。用于区分「摄入后的通用重构」与
+  /// 「用户手动触发的专项处理」——音频转写仅手动（2026-09-28 用户拍板），
+  /// 只有本值为 [Repository.taskTranscribeAudio] 时才走转写实现。
+  final String? taskAction;
 }
 
 /// AI 双态重构产出：人类态 / 机器态 / 标签 / 重分类 / 多视角聚类。
