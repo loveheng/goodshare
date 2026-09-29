@@ -34,6 +34,7 @@ updated: 2026-09-29
 - [vector-embeddings.md](design/vector-embeddings.md) — 向量检索与派生数据策略：item_embeddings 独立派生表（schema v9，不进备份、恢复即清、可全量重算）、int8 量化约定、检索路径分档（暴力余弦 → sqlite-vec）。
 - [scheduling-tasks.md](design/scheduling-tasks.md) — 任务编排与调度评估：暂缓引入自组装编排器的结论与重开触发条件、大参数处理三铁律（只传引用/快照截断/产物分级即弃）。
 - [video-clips.md](design/video-clips.md) — 视频切片（关键区间）设计：clips_json 附属记录（schema v10）、clip:* 队列任务三段链（ffmpeg 提区间音轨→端侧 ASR→LLM 摘要）、区间结果独立回写通道不覆盖整片产物、视频源文件不进备份。
+- [content-pipeline.md](design/content-pipeline.md) — 内容管线设计：富文本归一化（lib/doc/ 接口+Registry，html/pdf/plain → Markdown 子集）与文件引用策略（引用原件不复制、attach_state 状态机、分享后弹提醒+快捷导入）；详情页「文档形态」改造与自建富文本渲染器（弃 flutter_markdown_plus）的 SSOT。
 
 ## engineering（工程规范）
 
