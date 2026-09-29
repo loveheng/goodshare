@@ -153,11 +153,18 @@ void main() {
     );
   });
 
-  test('工具清单共 18 个且不含 execute_action', () {
+  test('工具清单共 24 个且不含 execute_action', () {
     final names = toolSchemas().map((s) => s['name']).toList();
-    expect(names.length, 18);
+    expect(names.length, 24);
     expect(names, isNot(contains('execute_action')));
-    expect(names, containsAll(['update_item', 'unlock_edit', 'set_vault', 'reprocess_item', 'query_machine_data', 'get_timeline_context', 'batch_items', 'append_segment', 'translate_item', 'summarize_item', 'extract_tags', 'classify_item', 'scan_barcode_item', 'analyze_text_item']));
+    expect(names, containsAll([
+      'update_item', 'unlock_edit', 'set_vault', 'reprocess_item',
+      'query_machine_data', 'get_timeline_context', 'batch_items',
+      'append_segment', 'translate_item', 'summarize_item', 'extract_tags',
+      'classify_item', 'scan_barcode_item', 'analyze_text_item',
+      'list_workspaces', 'create_workspace', 'rename_workspace',
+      'delete_workspace', 'add_to_workspace', 'remove_from_workspace',
+    ]));
   });
 
   test('expected_version 乐观锁：版本过期 → version_conflict，不静默覆盖', () async {
@@ -202,6 +209,24 @@ void main() {
       () => callTool('append_segment', {'id': plain.id, 'text': 'y'}, repo),
       throwsA(isA<McpRpcError>()),
     );
+  });
+
+  test('工作区 MCP 工具：创建 → 加入条目 → 移除（与 UI 同动作层）', () async {
+    final it = await repo.add(InboxItem(itemType: InboxItem.typeNote, rawContent: 'x', createdAt: 1));
+    final created = await callTool('create_workspace', {'name': '调研'}, repo);
+    expect(jsonDecode(textOf(created))['ok'], isTrue);
+    final ws = (await repo.listWorkspaces()).first;
+    expect(ws.name, '调研');
+
+    await callTool('add_to_workspace', {'workspace_id': ws.id, 'id': it.id}, repo);
+    expect((await repo.listWorkspaceItems(ws.id)).length, 1);
+
+    // 重复加入幂等：不会重复落关系行
+    await callTool('add_to_workspace', {'workspace_id': ws.id, 'id': it.id}, repo);
+    expect((await repo.listWorkspaceItems(ws.id)).length, 1);
+
+    await callTool('remove_from_workspace', {'workspace_id': ws.id, 'id': it.id}, repo);
+    expect((await repo.listWorkspaceItems(ws.id)).length, 0);
   });
 
   test('写工具返回最新条目快照（AI 上下文与数据库对齐）', () async {

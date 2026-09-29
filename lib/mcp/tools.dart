@@ -10,7 +10,9 @@ import 'jsonrpc.dart';
 
 /// MCP 工具集（PRD §7）：list/get/add/query_machine_data/get_timeline_context/
 /// update/delete/set_vault/reprocess/unlock_edit/batch_items/append_segment/translate_item/
-/// summarize_item/extract_tags/classify_item 等；execute_action 已裁决剔除。
+/// summarize_item/extract_tags/classify_item/analyze_text_item/scan_barcode_item 等；
+/// 工作区：list_workspaces/create_workspace/rename_workspace/delete_workspace/
+/// add_to_workspace/remove_from_workspace；execute_action 已裁决剔除。
 /// 所有写/改动作经 ItemActionHandler（UI 与 MCP 同一套校验与实现）。
 /// 隐私硬约束由 Repository 默认查询保证：Vault 与已删条目物理不可见；
 /// 因此 MCP 对 Vault 条目仅可 set_vault(on=true) 移入，无法移出或读取。
@@ -324,6 +326,75 @@ List<Map<String, Object?>> toolSchemas() => [
             },
           },
           'required': ['id'],
+        },
+      },
+      {
+        'name': 'list_workspaces',
+        'description': '列出用户所有工作区（条目集合容器，对应手机端「工作区」tab）。'
+            '返回每个工作区的 id / name / createdAt。Vault 过滤对列表无影响（仅条目进工作区受 Vault 约束）。',
+        'inputSchema': {'type': 'object', 'properties': {}},
+      },
+      {
+        'name': 'create_workspace',
+        'description': '新建一个工作区（与手机端「新建工作区」同一入口）。返回新建工作区的 id 与 name。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'name': {'type': 'string', 'description': '工作区名称，不能为空'},
+          },
+          'required': ['name'],
+        },
+      },
+      {
+        'name': 'rename_workspace',
+        'description': '重命名工作区（与手机端同一入口）。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'workspace_id': {'type': 'string', 'description': '工作区 id（list_workspaces 返回）'},
+            'name': {'type': 'string', 'description': '新名称，不能为空'},
+          },
+          'required': ['workspace_id', 'name'],
+        },
+      },
+      {
+        'name': 'delete_workspace',
+        'description': '删除工作区（关系记录随外键级联清理，条目本身不受影响）。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'workspace_id': {'type': 'string', 'description': '工作区 id（list_workspaces 返回）'},
+          },
+          'required': ['workspace_id'],
+        },
+      },
+      {
+        'name': 'add_to_workspace',
+        'description': '把一条条目加入工作区（与手机端「加入工作区」同一入口）。'
+            'Vault 条目对 AI 不可见，加入时会被拒绝。重复加入幂等。返回条目最新快照。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'workspace_id': {'type': 'string', 'description': '工作区 id（list_workspaces 返回）'},
+            'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
+            'expected_version': {
+              'type': 'integer',
+              'description': '可选乐观锁：你读取该条目时看到的 version，不一致则拒绝',
+            },
+          },
+          'required': ['workspace_id', 'id'],
+        },
+      },
+      {
+        'name': 'remove_from_workspace',
+        'description': '把一条条目移出工作区（与手机端同一入口）。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'workspace_id': {'type': 'string', 'description': '工作区 id（list_workspaces 返回）'},
+            'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
+          },
+          'required': ['workspace_id', 'id'],
         },
       },
     ];
@@ -648,6 +719,85 @@ Future<List<Map<String, Object?>>> callTool(
       if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
       final r = await _guarded(() => handler.execute(
             ExtractTagsCommand(id, expectedVersion: _int(args['expected_version'])),
+            actor: CommandActor.ai,
+          ));
+      return [_text(jsonEncode(r.toJson()))];
+
+    case 'list_workspaces':
+      final ws = await repo.listWorkspaces();
+      return [
+        _text(jsonEncode({
+          'count': ws.length,
+          'workspaces': [
+            for (final w in ws)
+              {'id': w.id, 'name': w.name, 'createdAt': _iso(w.createdAt)},
+          ],
+        })),
+      ];
+
+    case 'create_workspace':
+      final name = _str(args['name']);
+      if (name == null || name.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 name 不能为空');
+      }
+      final r = await _guarded(() => handler.execute(
+            CreateWorkspaceCommand(name.trim()),
+            actor: CommandActor.ai,
+          ));
+      return [_text(jsonEncode(r.toJson()))];
+
+    case 'rename_workspace':
+      final wsId = _str(args['workspace_id']);
+      final name = _str(args['name']);
+      if (wsId == null || wsId.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 workspace_id 不能为空');
+      }
+      if (name == null || name.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 name 不能为空');
+      }
+      final r = await _guarded(() => handler.execute(
+            RenameWorkspaceCommand(wsId, name.trim()),
+            actor: CommandActor.ai,
+          ));
+      return [_text(jsonEncode(r.toJson()))];
+
+    case 'delete_workspace':
+      final wsId = _str(args['workspace_id']);
+      if (wsId == null || wsId.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 workspace_id 不能为空');
+      }
+      final r = await _guarded(() => handler.execute(
+            DeleteWorkspaceCommand(wsId),
+            actor: CommandActor.ai,
+          ));
+      return [_text(jsonEncode(r.toJson()))];
+
+    case 'add_to_workspace':
+      final wsId = _str(args['workspace_id']);
+      final id = _str(args['id']);
+      if (wsId == null || wsId.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 workspace_id 不能为空');
+      }
+      if (id == null || id.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 id（条目 uuid）不能为空');
+      }
+      final r = await _guarded(() => handler.execute(
+            AddToWorkspaceCommand(wsId, id, expectedVersion: _int(args['expected_version'])),
+            actor: CommandActor.ai,
+          ));
+      return [_text(jsonEncode(r.toJson()))];
+
+    case 'remove_from_workspace':
+      final wsId = _str(args['workspace_id']);
+      final id = _str(args['id']);
+      if (wsId == null || wsId.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 workspace_id 不能为空');
+      }
+      if (id == null || id.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 id（条目 uuid）不能为空');
+      }
+      final r = await _guarded(() => handler.execute(
+            RemoveFromWorkspaceCommand(wsId, id),
             actor: CommandActor.ai,
           ));
       return [_text(jsonEncode(r.toJson()))];

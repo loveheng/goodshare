@@ -737,10 +737,36 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     await SharePlus.instance.share(ShareParams(text: text));
   }
 
-  void _workspaceHint() {
-    // 工作区数据模型与命令层尚未实现（ui-spec §4.11），不给假入口
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('工作区随后续版本开放')),
+  Future<void> _workspaceHint() async {
+    // 加入工作区：列出用户工作区 → 选一个 → AddToWorkspaceCommand。
+    // Vault 条目由动作层在 add_to_workspace 时拒绝（同 list 口径），UI 不必预过滤。
+    final ws = await widget.repo.listWorkspaces();
+    if (!mounted) return;
+    final chosen = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('加入工作区'),
+        children: [
+          if (ws.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Text('还没有工作区，去「工作区」tab 新建一个'),
+            ),
+          for (final w in ws)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, w.id),
+              child: Text(w.name),
+            ),
+        ],
+      ),
+    );
+    if (chosen == null) return;
+    await _run(
+      () => widget.handler.execute(
+        AddToWorkspaceCommand(chosen, _item.id!),
+        vaultContext: widget.vaultContext,
+      ),
+      '已加入工作区',
     );
   }
 }

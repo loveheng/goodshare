@@ -93,7 +93,12 @@ class _HomeShellState extends State<HomeShell> {
       vaultOnly: _vaultOnly,
       onVaultOnlyChanged: _setVaultOnly,
     ),
-    WorkspacePage(onOpenDrawer: () => _scaffoldKey.currentState?.openDrawer()),
+    WorkspacePage(
+      repo: widget.repo,
+      handler: widget.handler,
+      caps: widget.caps,
+      onOpenDrawer: () => _scaffoldKey.currentState?.openDrawer(),
+    ),
     SettingsPage(
       handler: widget.handler,
       repo: widget.repo,

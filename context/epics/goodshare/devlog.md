@@ -174,19 +174,20 @@ last-merge: 2026-09-29
 - [2026-09-30] [验证]: flutter analyze lib/ test/ → No issues found；flutter test → **179/179 全绿**（新增 `test/rich_text_parser_test.dart` 21 条：标题六档 / 段落 / 软换行 / 引用递归 / 列表聚合 / 有序识别 / 待办三种形态 / 代码块 language / 分隔线 / **表格降级不丢内容** / 空输入 / 未闭合围栏 / 行内粗体优先 / 斜体 / 行内码 / 链接 / 混合不丢字 / 无标记退化 / 未闭合标记原样保留）；flutter build apk --debug → ✓ Built
 - [2026-09-30] [环境坑]: 本机构建须带 `ANDROID_SDK_ROOT=$HOME/android-sdk ANDROID_HOME=$HOME/android-sdk`，否则 Gradle 用 `/usr/lib/android-sdk`（NDK 28.2 许可证未接受且目录不可写）报 `LicenceNotAcceptedException`。**`android/local.properties` 的 `sdk.dir` 会被 Flutter 每次构建重写，改它无效**——只能靠环境变量
 
-## 断点
-- [断点] **清场已完成**并提交：`db6d855` 设计文档批（content-pipeline.md 新建 + ui-spec/README 同步）、`76faa8b` 代码批（归一化层 + 速记混合接口骨架 + devlog），工作区已干净。下一步按此顺序：①**富文本渲染器**（块级解析 + 行内 `TextSpan`，纯函数 + 单测先行，替换 `item_view_template` 的 2 处 `MarkdownBody`，随后移除 `flutter_markdown_plus` 依赖）②`Repository.list` 加排序参数（时间维度前提）③导航层改版（删 `timeline_page` / `ai_tags_page` / `vault_page` 三页 + 主列表重写 + 顶部 ☰/搜索/＋ + 底部速记条 + 侧边栏 + `SecureWindow` 改按视图判定）④文档类「转换 + 确认」闭环（`doc_meta_json`）⑤引用模式与提醒（`attach_state`）。前置待实测（阻塞 ⑤，不阻塞 ①②③④）：`file_picker` / `image_picker` 能否拿到 SAF 可持久化 URI
+# 2026-09-30 · 工作区：MCP 工具 + UI 真实化（闭环）
 
-# 2026-09-30 · 工作区：命令层 + 数据层（schema v14）
-
-[落点] lib/models/workspace.dart（新）/ lib/data/db.dart / lib/data/repository.dart / lib/action/commands.dart / lib/action/item_action_handler.dart / test/workspace_test.dart（新）
+[落点] lib/mcp/tools.dart / lib/pages/workspace_page.dart / lib/pages/home_shell.dart / lib/pages/item_detail_page.dart / test/mcp_tools_test.dart
 
 ## 做法
-- schema v11→v14（**顺带修复：`version` 常量此前停在 11，v12 doc_meta_json / v13 attach_state 迁移已写但老库不会补列**）：workspaces + workspace_items 两表（多对多，外键级联），`_ensureWorkspaceTables` 幂等迁移
-- 命令五件套进 `ItemCommand` sealed 家族：create/rename/delete_workspace（操作对象非条目，targetId=null，先于强制 id 校验解析）+ add_to_workspace（带 expectedVersion）/remove_from_workspace；supportedOps 同步
-- handler `_dispatch` 补五 case：非条目命令不走乐观锁（工作区无并发编辑冲突面）；add 走 `_require` 可见性校验——**Vault 条目对 AI actor 拒绝，UI vaultContext 放行**（工作区不得成为隐私后门）；空名称 / not_found 校验下沉动作层
-- Repository CRUD：create/rename/delete/list/byIdWorkspace/addToWorkspace（ConflictAlgorithm.ignore 幂等）/remove/listWorkspaceItems（与 list 同口径过滤 Vault/已删）/listItemWorkspaces
+- MCP 工具补齐 6 个（守 Human-AI 对称性铁律：UI 能建则 AI 必能建）：list_workspaces / create_workspace / rename_workspace / delete_workspace / add_to_workspace / remove_from_workspace；toolSchemas + callTool switch 注册，以 CommandActor.ai 走 ItemActionHandler（与 UI 同校验）；add_to_workspace 的 Vault 隔离由动作层 _require(seeVault:) 保证
+- 工作区页真实化：WorkspacePage 重写——列出/新建/进入工作区显示条目（复用 ContentCard，点击进详情）；home_shell 改传 repo/handler/caps
+- 详情页「加入工作区」真入口：_workspaceHint 由假 SnackBar 改为弹工作区选择对话框 → AddToWorkspaceCommand
+- 测试：工具清单断言 18→24 + 补 workspaces 名；新增 MCP 端到端用例（创建→加入→幂等→移除）
 
 ## 备注
-- **未完成（工作区剩余面）**：MCP tools 注册（list_workspaces / get_workspace 等，hint 文案已引用但工具不存在）、UI（工作区列表/详情/加入入口）、备份是否携带工作区两表待拍板（建议进备份——属用户事实数据非派生）
-- 删除工作区 = 关系行外键级联，条目本身不动；重复加入幂等
+- 工作区闭环完成：数据层 / 命令层 / handler / MCP / UI 五面齐备
+- 备份是否携带 workspaces + workspace_items 两表待拍板（倾向进备份：属用户事实数据非派生）
+- 第5步引用模式「摄入改 ref」仍待 SAF 实测（本机无设备），attach_state 状态机与可达性检测已就位，摄入默认仍为 owned 是刻意保守
+
+## 断点
+- [断点] 五步改版（排序参数 / 导航层 / 详情文档化 / 归一化落库 / 引用模式地基）已全部提交；工作区闭环本批完成。剩余：①**引用模式「摄入改 ref」**需实测 file_picker/image_picker 能否拿 SAF 可持久化 URI（本机无设备，阻塞项）②**备份携带工作区两表**待拍板 ③待办勾选写路径（V2，TodoMark 生产侧未实现）④PDF 转换器（pdfx）+ 文档类型支持矩阵
