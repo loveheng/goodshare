@@ -1,6 +1,6 @@
 # 拾贝（goodshare）Android 云端构建
-# - push main / PR / 手动触发：analyze + test + release 构建 + 产物上传
-# - 推送 v* 标签：额外创建 GitHub Release 并附 APK（供手机端自更新下载）
+# - push main / PR / 手动触发：仅 analyze + test 当门禁（不出包，避免每次提交都产 APK）
+# - 推送 v* 标签：analyze + test + 构建 arm64 APK + 产物上传 + 自动发 GitHub Release
 # 约定：release APK 使用 debug 签名（个人使用口径，仓库内无 keystore，勿加 secrets）
 
 name: android-ci
@@ -40,12 +40,14 @@ jobs:
           channel: stable
           cache: true
 
-      # 专门的 Android SDK action：自带【最新】cmdline-tools，仓库元数据完整。
+      # 以下「安装 Android SDK + 构建 + 上传」仅在推送 v* 标签时执行，
+      # 避免每次推 main/PR 都产出一个 APK 包（用户要求：只推新标签才打包）。
       # 注意包名是 platforms;android-37.0（带 .0，因该 API 37 平台含 ExtensionLevel，
       # sdkmanager 列表里就是 android-37.0；写 android-37 会报「找不到包」）。
       # 与本地 ~/android-sdk 口径一致：platforms;android-37.0 + build-tools;36.0.0。
       # 该 action 会自动设 ANDROID_HOME。
       - name: 安装 Android SDK（compileSdk 37 / build-tools 36.0.0）
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: android-actions/setup-android@v3
         with:
           packages: 'platforms;android-37.0 build-tools;36.0.0 platform-tools'
@@ -61,15 +63,19 @@ jobs:
 
       # 只构建 arm64-v8a（2026-09-27 决策）。注意：--target-platform 必须配合
       # --split-per-abi 才会真正裁 ABI（单用仍产出三架构包），产物为 app-arm64-v8a-release.apk
+      # 仅推送 v* 标签时打包（平时推 main/PR 只跑 analyze+test 门禁，不出包）。
       - name: 构建 Release APK（arm64）
+        if: startsWith(github.ref, 'refs/tags/v')
         run: flutter build apk --release --split-per-abi --target-platform android-arm64
 
       - name: 计算校验和
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           cd build/app/outputs/flutter-apk
           sha256sum app-arm64-v8a-release.apk | tee sha256sums.txt
 
       - name: 上传构建产物
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
           name: app-release-${{ github.sha }}
