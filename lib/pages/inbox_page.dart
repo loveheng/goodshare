@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
 
 import '../action/item_action_handler.dart';
+import '../action/commands.dart';
 import '../ai/capabilities.dart';
+import '../ai/reconstructor.dart';
 import '../data/repository.dart';
 import '../ui/drawer_menu_button.dart';
 import '../models/item.dart';
+import '../share/attachments.dart';
 import '../ui/content_card.dart';
 import '../ui/slogans.dart';
 import '../ui/repo_auto_reload.dart';
@@ -150,6 +153,15 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
       appBar: AppBar(
         leading: drawerMenuLeading(widget.onOpenDrawer),
         title: const Text('全部'),
+        actions: [
+          // 文档扫描（2026-09-29）：前台相机流，仅 GMS 设备可用；无 GMS 在点击时
+          // 运行时优雅降级并提示原因（不做脆性预检以免国内无 GMS 设备误关入口）。
+          IconButton(
+            icon: const Icon(Icons.document_scanner_outlined),
+            tooltip: '扫描文档',
+            onPressed: _scanDocument,
+          ),
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(92),
           child: Column(
@@ -202,6 +214,93 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
               ],
             ),
     );
+  }
+
+  /// 文档扫描（前台相机流，2026-09-29）：经 [AiCapabilities.documentScan] 调起系统扫描，
+  /// 产出直接新建条目（每页一张图片，或整本 PDF）。无 GMS → 运行时降级并提示原因。
+  Future<void> _scanDocument() async {
+    final cap = widget.caps.documentScan;
+    if (cap == null) return;
+    final ready = await cap.ensureReady();
+    if (!ready.available) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(ready.reason ?? '文档扫描不可用')),
+        );
+      }
+      return;
+    }
+    Map<String, Object?>? scan;
+    try {
+      final result = await cap.reconstruct(ReconstructInput(
+        itemId: '_docscan',
+        itemType: InboxItem.typeDocument,
+        rawContent: '',
+        taskAction: Repository.taskScanDocument,
+      ));
+      final raw = result.machineJson?['document_scan'];
+      if (raw == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(result.note ?? '未扫描到内容')),
+          );
+        }
+        return;
+      }
+      scan = raw as Map<String, Object?>;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('文档扫描失败：$e')),
+        );
+      }
+      return;
+    }
+    int n = 0;
+    int failed = 0;
+    final images = (scan['images'] as List? ?? const []).cast<String>();
+    // 入库前先落 app 私有目录：扫描器返回的路径可能被系统清理（与分享摄入同口径）
+    Future<void> import(String itemType, String path) async {
+      final saved = await copyToAppDir(path);
+      if (saved == null) {
+        failed++;
+        return;
+      }
+      await widget.handler.execute(CollectCommand(
+        itemType: itemType,
+        sourceApp: 'goodshare.docscan',
+        rawFilePath: saved,
+        humanTitle: '扫描文档',
+      ));
+      n++;
+    }
+
+    try {
+      for (final p in images) {
+        await import(InboxItem.typeImage, p);
+      }
+      if (images.isEmpty && scan['pdf'] != null) {
+        await import(InboxItem.typeDocument, scan['pdf'] as String);
+      }
+    } catch (e) {
+      // CollectCommand 校验/入库失败：报告部分完成，不让异常逃逸
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('文档入库中断：已添加 $n 个，失败 ${failed + 1} 个（$e）')),
+        );
+      }
+      if (n > 0 && mounted) reload();
+      return;
+    }
+    if (mounted) {
+      reload();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+            content: Text(failed > 0
+                ? '已添加 $n 个扫描页，$failed 个保存失败'
+                : '已添加 $n 个扫描页')),
+      );
+    }
   }
 
   /// 第 0 页：全部（按类型分组带计数）

@@ -15,6 +15,9 @@ import 'ai/clip_reconstructor.dart';
 import 'ai/model_manager.dart';
 import 'ai/ocr_reconstructor.dart';
 import 'ai/image_label_reconstructor.dart';
+import 'ai/barcode_reconstructor.dart';
+import 'ai/text_analysis_capability.dart';
+import 'ai/document_scan_capability.dart';
 import 'ai/queue_consumer.dart';
 import 'ai/reconstructor.dart';
 import 'ai/translate_reconstructor.dart';
@@ -76,6 +79,9 @@ Future<void> main() async {
   // AI 队列消费者：v1 = 图片 ML Kit OCR + 音频 Sherpa 离线转写（均受设置开关门控）
   // + 链接离线抓取 + 其余占位复制
   final llmEngine = ChannelLlmEngine();
+  // 文档扫描能力实例：同时注入 caps（UI 取用）与注册表（能力清单），保持单例
+  final docScan = DocumentScanCapability();
+  caps.documentScan = docScan;
   final consumer = QueueConsumer(
     repo,
     ReconstructorRegistry([
@@ -84,7 +90,13 @@ Future<void> main() async {
         isUrlFetchEnabled: () => caps.urlFetchEnabled,
       ),
       // 图片分类（ML Kit Image Labeling，2026-09-29）：仅手动触发，base 模型离线可用
-      const ImageLabelReconstructor(),
+      ImageLabelCapability(),
+      BarcodeReconstructor(),
+      // 文本分析（ML Kit Language ID + Entity Extraction，2026-09-29）：仅笔记，离线
+      TextAnalysisCapability(),
+      // 文档扫描（ML Kit Document Scanner，2026-09-29）：前台相机流，GMS 设备可用，
+      // 仅 UI 取用（caps.documentScan），不进队列路由
+      docScan,
       AsrReconstructor(
         isAsrEnabled: () => caps.asrEnabled,
         models: models,

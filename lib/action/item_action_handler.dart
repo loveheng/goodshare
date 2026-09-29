@@ -85,6 +85,8 @@ class ItemActionHandler {
       final ExtractTagsCommand c => _extractTags(c, seeVault, txn),
       final OcrCommand c => _ocr(c, seeVault, txn),
       final ClassifyCommand c => _classify(c, seeVault, txn),
+      final ScanBarcodeCommand c => _scanBarcode(c, seeVault, txn),
+      final AnalyzeTextCommand c => _analyzeText(c, seeVault, txn),
       final ClipCommand c => _clip(c, seeVault, txn),
       final ClipProcessCommand c => _clipProcess(c, seeVault, txn),
       final MarkWholeVideoCommand c => _markWholeVideo(c, seeVault, txn),
@@ -349,6 +351,62 @@ class ItemActionHandler {
     onEnqueued?.call();
     return _result('classify', cmd.id, seeVault: seeVault, txn: txn,
         note: await _queuedNote('已开始识别分类'));
+  }
+
+  /// 手动扫描条码：显式入队 scan_barcode（2026-09-29，与 OCR / 分类对称——
+  /// 端侧重资源动作一律手动 / 显式触发，摄入不自动跑模型）。
+  /// 「仅图片可扫描」的校验下沉在动作层：AI / MCP 换个入口也绕不过。
+  Future<CommandResult> _scanBarcode(
+    ScanBarcodeCommand cmd,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    if (item.itemType != InboxItem.typeImage) {
+      throw ActionException(
+        '只有图片能扫描条码（当前类型：${item.itemType}）',
+        code: ActionErrorCode.invalidRequest,
+      );
+    }
+    await _write(
+      'scan_barcode',
+      cmd.id,
+      {'is_processed': 0},
+      expectedVersion: cmd.expectedVersion,
+      txn: txn,
+    );
+    await _repo.enqueueTask(cmd.id, Repository.taskScanBarcode, txn: txn);
+    onEnqueued?.call();
+    return _result('scan_barcode', cmd.id, seeVault: seeVault, txn: txn,
+        note: await _queuedNote('已开始识别条码'));
+  }
+
+  /// 手动文本分析：显式入队 analyze_text（2026-09-29，与 OCR / 分类 / 条码对称——
+  /// 端侧重资源动作一律手动 / 显式触发，摄入不自动跑模型）。
+  /// 「仅笔记可分析」的校验下沉在动作层：AI / MCP 换个入口也绕不过。
+  Future<CommandResult> _analyzeText(
+    AnalyzeTextCommand cmd,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    if (item.itemType != InboxItem.typeNote) {
+      throw ActionException(
+        '只有笔记能分析文本（当前类型：${item.itemType}）',
+        code: ActionErrorCode.invalidRequest,
+      );
+    }
+    await _write(
+      'analyze_text',
+      cmd.id,
+      {'is_processed': 0},
+      expectedVersion: cmd.expectedVersion,
+      txn: txn,
+    );
+    await _repo.enqueueTask(cmd.id, Repository.taskAnalyzeText, txn: txn);
+    onEnqueued?.call();
+    return _result('analyze_text', cmd.id, seeVault: seeVault, txn: txn,
+        note: await _queuedNote('已开始分析文本'));
   }
 
   /// 视频切片：登记关键区间并入队转写+摘要任务（2026-09-29，设计 docs/design/video-clips.md）。

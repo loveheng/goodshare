@@ -153,11 +153,11 @@ void main() {
     );
   });
 
-  test('工具清单共 16 个且不含 execute_action', () {
+  test('工具清单共 18 个且不含 execute_action', () {
     final names = toolSchemas().map((s) => s['name']).toList();
-    expect(names.length, 16);
+    expect(names.length, 18);
     expect(names, isNot(contains('execute_action')));
-    expect(names, containsAll(['update_item', 'unlock_edit', 'set_vault', 'reprocess_item', 'query_machine_data', 'get_timeline_context', 'batch_items', 'append_segment', 'translate_item', 'summarize_item', 'extract_tags', 'classify_item']));
+    expect(names, containsAll(['update_item', 'unlock_edit', 'set_vault', 'reprocess_item', 'query_machine_data', 'get_timeline_context', 'batch_items', 'append_segment', 'translate_item', 'summarize_item', 'extract_tags', 'classify_item', 'scan_barcode_item', 'analyze_text_item']));
   });
 
   test('expected_version 乐观锁：版本过期 → version_conflict，不静默覆盖', () async {
@@ -291,5 +291,43 @@ void main() {
     expect(task, isNotNull, reason: '失败原因必须随条目回传，否则 AI 只能猜「为什么没译文」');
     expect(task!['status'], 'failed');
     expect(task['note'], '无可用翻译引擎（语言包未就绪）');
+  });
+
+  test('scan_barcode_item / analyze_text_item：空 id 拒绝；happy path 入队', () async {
+    const blank = {'id': ''};
+    expect(
+      () => callTool('scan_barcode_item', blank, repo),
+      throwsA(isA<McpRpcError>()),
+    );
+    expect(
+      () => callTool('analyze_text_item', blank, repo),
+      throwsA(isA<McpRpcError>()),
+    );
+
+    final img = await repo.add(InboxItem(itemType: InboxItem.typeImage, rawContent: '', createdAt: 1));
+    final note = await repo.add(InboxItem(itemType: InboxItem.typeNote, rawContent: '分析我', createdAt: 1));
+    final rb = jsonDecode(textOf(await callTool('scan_barcode_item', {'id': img.id}, repo))) as Map<String, Object?>;
+    expect(rb['ok'], isTrue);
+    final ra = jsonDecode(textOf(await callTool('analyze_text_item', {'id': note.id}, repo))) as Map<String, Object?>;
+    expect(ra['ok'], isTrue);
+
+    final actions = (await repo.pendingTasks()).map((t) => t['task_action']).toSet();
+    expect(actions, containsAll([Repository.taskScanBarcode, Repository.taskAnalyzeText]));
+  });
+
+  test('scan_barcode_item：类型不符拒绝；Vault 条目对 AI actor 不可见', () async {
+    final note = await repo.add(InboxItem(itemType: InboxItem.typeNote, rawContent: 'x', createdAt: 1));
+    expect(
+      () => callTool('scan_barcode_item', {'id': note.id}, repo),
+      throwsA(isA<McpRpcError>()),
+      reason: '条码扫描仅图片条目可用',
+    );
+
+    final secret = await repo.add(InboxItem(itemType: InboxItem.typeImage, rawContent: '', isVault: true, createdAt: 2));
+    expect(
+      () => callTool('scan_barcode_item', {'id': secret.id}, repo),
+      throwsA(isA<McpRpcError>()),
+      reason: 'Vault 隔离对 MCP（AI actor）同样生效',
+    );
   });
 }

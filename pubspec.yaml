@@ -32,11 +32,23 @@ dependencies:
   google_mlkit_translation: ^0.15.1
   ffmpeg_kit_flutter_new_min_gpl: ^2.6.2
   google_mlkit_image_labeling: ^0.16.1
+  google_mlkit_barcode_scanning: ^0.16.1
+  google_mlkit_language_id: ^0.15.1
+  google_mlkit_entity_extraction: ^0.17.1
+  google_mlkit_document_scanner: ^0.6.1
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
   sqflite_common_ffi: ^2.4.3
+  flutter_launcher_icons: ^0.14.0
+
+flutter_launcher_icons:
+  android: "ic_launcher"
+  ios: true
+  image_path: "assets/icon/app_icon.png"
+  min_sdk_android: 21
+  remove_alpha_ios: true
 
 flutter:
   uses-material-design: true

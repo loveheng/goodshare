@@ -258,6 +258,41 @@ List<Map<String, Object?>> toolSchemas() => [
         },
       },
       {
+        'name': 'scan_barcode_item',
+        'description': '用端侧 ML Kit 扫描图片中的条码 / 二维码（与手机端「识别条码」按钮同一入口）。'
+            '异步入队执行：本调用只返回入队结果，[类型:值] 稍后落库到 facets，'
+            '随后用 get_item 读取 facets 字段。仅图片条目可用，非图片会被拒绝。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
+            'expected_version': {
+              'type': 'integer',
+              'description': '可选乐观锁：你读取该条目时看到的 version，不一致则拒绝',
+            },
+          },
+          'required': ['id'],
+        },
+      },
+      {
+        'name': 'analyze_text_item',
+        'description': '用端侧离线 ML Kit 分析笔记正文（与手机端「分析文本」按钮同一入口）：'
+            '同时做语言识别（写 facets[\'语言\']）与实体提取（日期 / 邮箱 / 电话 / 地址 / URL / 金额等，'
+            '写 facets[\'实体\']，格式 [类型:值]）。异步入队执行：本调用只返回入队结果，'
+            '随后用 get_item 读取 facets 字段。仅笔记条目可用，非笔记会被拒绝。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
+            'expected_version': {
+              'type': 'integer',
+              'description': '可选乐观锁：你读取该条目时看到的 version，不一致则拒绝',
+            },
+          },
+          'required': ['id'],
+        },
+      },
+      {
         'name': 'summarize_item',
         'description': '用端侧大模型为条目正文生成摘要（与手机端「摘要」按钮同一入口）。'
             '异步入队执行：本调用只返回入队结果，摘要稍后落库，随后用 get_item 读取 summary 字段。'
@@ -568,6 +603,30 @@ Future<List<Map<String, Object?>>> callTool(
       if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
       final r = await _guarded(() => handler.execute(
             ClassifyCommand(
+              id,
+              expectedVersion: _int(args['expected_version']),
+            ),
+            actor: CommandActor.ai,
+          ));
+      return [_text(jsonEncode(r.toJson()))];
+
+    case 'scan_barcode_item':
+      final id = _str(args['id']);
+      if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      final r = await _guarded(() => handler.execute(
+            ScanBarcodeCommand(
+              id,
+              expectedVersion: _int(args['expected_version']),
+            ),
+            actor: CommandActor.ai,
+          ));
+      return [_text(jsonEncode(r.toJson()))];
+
+    case 'analyze_text_item':
+      final id = _str(args['id']);
+      if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      final r = await _guarded(() => handler.execute(
+            AnalyzeTextCommand(
               id,
               expectedVersion: _int(args['expected_version']),
             ),

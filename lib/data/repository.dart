@@ -62,6 +62,14 @@ class Repository extends ChangeNotifier {
   static const taskTranslate = 'translate';
   // 图片分类（ML Kit Image Labeling，2026-09-29）：仅手动触发，产出写入 facets['分类']
   static const taskClassifyImage = 'classify_image';
+  // 条码 / 二维码扫描（ML Kit Barcode Scanning，2026-09-29）：仅手动触发，产出写入 facets['条码']
+  static const taskScanBarcode = 'scan_barcode';
+  // 文本分析（ML Kit Language ID + Entity Extraction，2026-09-29）：仅笔记手动触发，
+  // 产出写入 facets['语言'] 与 facets['实体']
+  static const taskAnalyzeText = 'analyze_text';
+  // 文档扫描（ML Kit Document Scanner，2026-09-29）：前台相机流，不经队列，
+  // 产出直接新建条目；仅作 handles 契约占位与 UI taskAction 对齐用
+  static const taskScanDocument = 'scan_document';
   // 端侧 LLM 任务动作（2026-09-28，设计见 docs/design/on-device-llm.md §5）：
   // 摘要 / 关键词均由专门命令显式入队（手动触发，绝不自动入队）。
   static const taskLlmSummarize = 'llm_summarize';

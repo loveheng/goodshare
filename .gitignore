@@ -9,3 +9,6 @@ captures/
 .cxx/
 context/CURRENT
 .dart_tool/
+scripts/.env
+.env
+.atomcode/

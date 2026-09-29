@@ -23,6 +23,18 @@ updated: 2026-09-29
    - APK 文件（如 `app-release.apk`）
 3. 在 app「更新」页填入目录 URL，如 `https://gitee.com/<user>/<repo>/raw/master/updates`
 
+### Cloudflare R2（推荐：国内外均稳、免流量费、可控）
+
+适合作为常驻更新源。前置：Cloudflare 后台对该 bucket 开启「公开访问」并绑定自定义域（如 `update.example.com`），确保 `https://<域>/updates/...` 可公开 GET。
+
+1. 准备仓库根 `.env`（参考 `.env.example`）：填 `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET` / `R2_PUBLIC_DOMAIN`。无需额外 CLI（上传由 `scripts/upload-r2.mjs` 用 Node 内置模块完成；脚本读取优先级：根 `.env` > `scripts/.env`）。
+2. 仓库根执行：`bash scripts/release-r2.sh`（可选 `--commit` 把清单纳入版本管理）。
+   脚本自动：读取 `pubspec.yaml` 版本 → `flutter build apk --release`（整包，跨 ABI 兜底）→ 算 sha256 → 生成 `updates/goodshare-update.json` → 用 `aws s3 cp`（R2 endpoint）上传 apk + json。
+3. 脚本末尾打印「更新源 URL」，形如 `https://update.example.com/updates`，填进 App「更新」页。
+   - `release-r2.sh` 已在 `flutter build` 时通过 `--dart-define=UPDATE_SOURCE_URL=...` 把该源编进 APK，因此**装上即自带默认更新源，首次无需手动填**；App「更新」页仍可手动改源覆盖。
+
+> `r2.dev` 默认公开域有限速，不建议作生产更新源；生产请绑定自定义域（自定义域免 egress 流量费）。`R2_PUBLIC_DOMAIN` 与 `REMOTE_PREFIX` 共同决定最终 URL 与 App 端源地址，务必一致。
+
 ### 清单格式 goodshare-update.json
 
 ```json

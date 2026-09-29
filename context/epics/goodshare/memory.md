@@ -38,6 +38,7 @@ last-merge: 2026-09-29
 - [2026-09-29] 派生数据策略拍板（用户拍板「分表立即做，量化/检索记档」）：向量等派生数据与事实源严格分表——schema v9 新增 item_embeddings（item_id/model/chunk_index/dim/dtype/vec，PK(item_id,model,chunk_index)），Repository 嵌入 CRUD 骨架（replaceItemEmbeddings 按模型整替等）；快照整表清空（**向量不进备份**）、restoreFrom 清 stale（恢复=事实源全量替换+派生缓存归零）；接入时执行 int8 量化（dtype 列已预留）与检索分档（≤1 万 Dart 暴力余弦，≥10 万再议 sqlite-vec）；分块纪律=只对长文本分块，短条目整条一向量。SSOT：docs/design/vector-embeddings.md
 - [2026-09-29] 视频切片（关键区间）拍板 + 落地（@confirm 台账 D1-D3 全清）：D1=切片结果挂**原条目附属记录**（schema v10 clips_json JSON 列，与 appendix/facets 同风格；不产生新条目防列表刷屏）；D2=**转写+摘要先行**（ffmpeg 提区间音轨→AsrEngine.transcribeToCues 原语直调（无字幕副作用）→LlmReconstructor 复用摘要；向量引擎另期，item_embeddings 按区间序号就绪）；D3=**视频源文件不进 WebDAV 备份**（字幕/译文/切片产物照进，恢复走「文件缺失」降级态）。硬约束：ReconstructResult.clip 独立通道，handler 只合并 clips_json **不触碰条目级 human_md/summary_md**；任务动作 clip:<start>-<end> 编码（translate:<lang> 同口径）超时 180s；区间 [1s,30min] 校验下沉动作层；UX=播放器打点式选多区间（设起点/终点捕获播放位置）。SSOT：docs/design/video-clips.md
 - [2026-09-29] 视频切片**改版**（E1-E3 台账全清，用户重定方向）：①标记 ≠ 处理——标记只记时间点供播放跳转，处理显式触发可勾选子集（提取片段/转写/摘要），止步于片段合法（登记即入队废除）②四段链：提取（E1 精确重编码，ffmpeg min→min_gpl 引入 libx264，产物 clip_segments/）→转写→摘要（E2 勾摘要自动带动转写 normalizeClipSteps）→向量二期 ③两极标记：区间标记 + 整片标记（video_whole_marked v11 列，源文件进备份范围 opt-in，上传仍手动触发）④段结构 v2 加 steps/status(marked|processing|done|failed)/clipPath（clips_json 吸收）；标记 ≠ 完成语义 UI 必须明示。SSOT：docs/design/video-clips.md（含改版记录）
+- [2026-09-29] ML 能力抽象层（用户拍板「新建 MlCapability + 旧 Image Labeling 直接改，不写适配器」）：[MlCapability] 直接 implements [AiReconstructor]，默认 reconstruct 组合 前置(ensureReady) + 执行(run) + 后置(normalize/dispose)，所有端侧 ML 能力统一收口（保证 Android/iOS 各自调官方插件但门控与产出口径共享，官方效果一致、人/AI/双端同一份状态）。引入范围：barcode/language_id/entity 引入（离线轻量、国内可用）；doc_scan 引入但**环境检测门控**（GMS 可用才启用，否则降级隐藏入口）；face/object/pose **预留占位**（不引依赖、不实现、不抢相册职责）。SSOT：lib/ai/ml_capability.dart
 
 ## 进度
 - [2026-09-27] dev-init 接入完成：git 仓库 + context/ 记忆体系 + 白名单骨架 + 项目池（首次 scaffold 因 cwd 漂移落到了 workspace 根，已整体迁回——教训：Bash 一律显式 cd）
@@ -77,6 +78,10 @@ last-merge: 2026-09-29
 - [2026-09-29] 切片**改版落地**：标记/处理拆分（ClipCommand 纯标记 + ClipProcessCommand + MarkWholeVideoCommand）+ ClipReconstructor 多步链（libx264 提取片段→转写→摘要）+ 段结构 v2 + v11 整片标记列 + Sheet 改版/播放器跳转 chips/整片按钮 + 备份 opt-in 与 clip_segments 白名单 + ffmpeg min_gpl 切换（构建 ✓）。analyze 0 / test 144 绿
 
 - [2026-09-29] 图片分类（ML Kit Image Labeling）落地（用户拍板「手动+离线中文映射」；analyze 0 / test 131 绿）：新增 `lib/ai/image_label_reconstructor.dart`(ImageLabelReconstructor，仅 taskAction==classify_image 处理 image，写 facets['分类']，超时 20s 兜底，失败/空产出带 note 可观测) + `lib/ai/image_labels_zh.dart`(base 模型英文标签离线映射中文，高频覆盖未命中保留英文)；依赖 `google_mlkit_image_labeling ^0.16.1`（base 模型 bundled 离线可用，不依赖 Play 语言包，国内无 GMS 也能跑——显著优于 translation）；`Repository.taskClassifyImage` + `ClassifyCommand`(op=classify，动作层校验仅图片) + handler `_classify` + `main` Registry 注册 + MCP `classify_item`(第 16 工具) + 详情页「识别分类」按钮与空产出状态分支。复用既有 facets 落库链路（handler 写 facets_json）与队列超时/降级/R1 可观测机制，零新增架构成本。
+
+- [2026-09-29] 兼容基线拍板：minSdk=34（Android 14，用户「兼容安卓14以上不做低版本兼容」），顺带化解 entity-extraction minSdk 26 硬要求；targetSdk 仍固定 34。构建 ✓
+
+- [2026-09-29] face/object/pose 预留占位定档（`ml_capability.dart` 的 `ExecutionMode.placeholder` 已定义）：不实现、不引依赖，由系统相册承担，MlCapability 已留插槽；本轮 ML 体系 = 4 落地（图片分类 / 条码 / 文本分析 = backgroundQueue，文档扫描 = foregroundUi）+ 3 预留（人脸 / 物体 / 姿势 = placeholder）
 
 ## 断点
 - [断点] 下一步：五轮工作 + 切片改版（标记/处理拆分、四段链、两极标记、ffmpeg min_gpl）已落地全绿待提交（analyze 0 / test 144 / docs lint OK / debug 构建 ✓）；提交后真机验收——①图片分类 facets 出中文标签 ②WebDAV 备份→清数据→恢复闭环 ③Vault 不进备份明示 ④slogans 四落点与远端覆盖 ⑤切片改版：打点保存不触发处理→播放器标记跳转→勾选子集处理→「关键区间」按状态展示→整片标记后备份携带视频（重点验 libx264 重编码耗时/体积与 APK 增重）。遗留：向量嵌入引擎、切片 MCP 工具、自动备份/凭证加密、iOS FoundationModels/图片描述/NPU 档

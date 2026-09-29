@@ -18,3 +18,11 @@
 -keepattributes *Annotation*, Exceptions, Signature, InnerClasses, EnclosingMethod, RuntimeVisible*Annotations
 -dontwarn com.google.mlkit.**
 -dontwarn com.google.android.gms.**
+
+# WorkManager / Room：release R8 会误删 androidx.work 内 Room 反射生成的 WorkDatabase_Impl，
+# 导致启动 "Failed to create an instance of androidx.work.impl.WorkDatabase" 崩溃。保留相关类。
+-keep class androidx.work.** { *; }
+-keep class androidx.room.** { *; }
+-keep class * extends androidx.room.RoomDatabase { *; }
+-dontwarn androidx.work.**
+-dontwarn androidx.room.**

@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'subtitle.dart';
 import 'translation.dart';
 import 'translation_mlkit.dart';
+import 'document_scan_capability.dart';
 
 /// AI 能力开关与本机能力检测（2026-09-27 决策：设置页开关 + 首次检测持久化）。
 ///
@@ -40,6 +41,11 @@ class AiCapabilities extends ChangeNotifier {
 
   /// ML Kit 引擎实例（语言包下载/查询入口）；null = 无该引擎。
   MlKitTranslationEngine? engine;
+
+  /// 文档扫描能力（前台相机流，2026-09-29）；main 装配注入，UI 经此取实例调起扫描。
+  /// 仅 GMS 设备可用，无 GMS 时 [DocumentScanCapability.ensureReady] 仍返回就绪、
+  /// 实际扫描在 [run] 运行时优雅降级（避免脆性 GMS 预检误关入口，见能力类注释）。
+  DocumentScanCapability? documentScan;
 
   bool _detected = false;
 

@@ -1,12 +1,9 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../action/item_action_handler.dart';
 import '../ai/capabilities.dart';
 import '../data/repository.dart';
 import '../models/item.dart';
-import '../service/secure_window.dart';
 import '../ui/content_card.dart';
 import '../ui/drawer_menu_button.dart';
 import '../ui/repo_auto_reload.dart';
@@ -14,6 +11,10 @@ import 'item_detail_page.dart';
 
 /// 保险箱页：is_vault=1 列表，动作走 vaultContext=true（可移出）。
 /// 生物识别门随 V3 加密一并上线（D1 决策）；当前内容仅存在于本机。
+///
+/// 安全窗（FLAG_SECURE）不再由此页生命周期驱动——主页用 IndexedStack 常驻挂载，
+/// initState 在启动即触发会导致全局「银行级」不可截图。由 HomeShell 按当前 tab
+/// 索引统一开关（见 [SecureWindow.setVaultTabVisible]）。
 class VaultPage extends StatefulWidget {
   const VaultPage({
     super.key,
@@ -39,16 +40,7 @@ class _VaultPageState extends State<VaultPage> with RepoAutoReload {
   @override
   void initState() {
     super.initState();
-    // 进入保险箱即开启 FLAG_SECURE，防止敏感内容被截屏 / 多任务卡片偷窥
-    unawaited(SecureWindow.setSecure(true));
     _reload();
-  }
-
-  @override
-  void dispose() {
-    // 离开保险箱清除 FLAG_SECURE，恢复普通页面可截图分享
-    unawaited(SecureWindow.setSecure(false));
-    super.dispose();
   }
 
   @override

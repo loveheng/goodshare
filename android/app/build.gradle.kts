@@ -20,7 +20,9 @@ android {
         applicationId = "com.zzh.goodshare"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        // 34（Android 14，用户拍板「兼容安卓14以上不做低版本兼容」）：个人侧载无商店约束，
+        // entity-extraction 等新 ML Kit 依赖（minSdk 26）自然满足
+        minSdk = 34
         // 固定 34：targetSdk 35+ 时 dataSync 前台服务受 6h/24h 限制，MCP 常驻服务不可接受；
         // 本 app 侧载分发，无商店 targetSdk 硬约束。
         targetSdk = 34
@@ -54,6 +56,22 @@ dependencies {
     // 坐标经 AndroLLM 实际工程核实（2026-09-29）：artifact 为 litertlm-android，
     // 非 litert-lm（后者在 Maven Central 不存在，构建期即解析失败）。
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.16.0")
+
+    // 依赖对齐（2026-09-29 修复启动崩溃）：google_mlkit_entity_extraction 传递引入
+    // androidx.work:work-runtime:2.7.0（2021 年老版本），其内嵌 Room 生成的 WorkDatabase
+    // 在 Android 16（API 36）/ 现代 room 上实例化失败 → 启动即崩
+    // "Failed to create an instance of androidx.work.impl.WorkDatabase"。
+    // 仅升 room 不够（病根在 2.7.0 这版 work-runtime 本身太老），故强升 work-runtime 到现代版本，
+    // 使其使用自带的兼容 room；同时锁定 room-runtime 版本对齐。
+    implementation("androidx.room:room-runtime:2.6.1")
+}
+
+// 强升 work-runtime：覆盖 entity-extraction 拉入的 2.7.0。flutter_foreground_task 不直接依赖
+// work-runtime（用前台 Service，非 WorkManager），升级无副作用；WorkManager 启动初始化恢复正常工作。
+configurations.all {
+    resolutionStrategy {
+        force("androidx.work:work-runtime:2.9.0")
+    }
 }
 
 kotlin {

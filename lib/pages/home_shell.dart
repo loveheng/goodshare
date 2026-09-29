@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../action/item_action_handler.dart';
@@ -8,6 +10,7 @@ import '../ai/model_manager.dart';
 import '../data/repository.dart';
 import '../share/text_collector.dart';
 import '../service/mcp_controller.dart';
+import '../service/secure_window.dart';
 import '../sync/backup_service.dart';
 import '../ui/floating_ball.dart';
 import 'add_sheet.dart';
@@ -53,11 +56,18 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
 
+  /// 「保险箱」tab 在底部导航中的索引（与安全窗开关对应）。
+  static const int _vaultIndex = 3;
+
+  int _index = 0; // 首页落点：全部
+
   @override
   void initState() {
     super.initState();
+    // 初始落点在「全部」(index 0)，保险箱不可见：确保启动时 FLAG_SECURE 关闭，
+    // 普通页面可截图分享。仅在切到保险箱 tab 时才开启安全窗。
+    unawaited(SecureWindow.setVaultTabVisible(_index == _vaultIndex));
   }
-  int _index = 0; // 首页落点：全部
   late final List<Widget> _pages = [
     InboxPage(
       repo: widget.repo,
@@ -106,7 +116,12 @@ class _HomeShellState extends State<HomeShell> {
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
+        onDestinationSelected: (i) {
+          setState(() => _index = i);
+          // 切换 tab 时同步安全窗：只有「保险箱」tab 才开启 FLAG_SECURE，
+          // 离开即恢复普通页面可截图（与 vault 详情维度叠加，互不干扰）。
+          unawaited(SecureWindow.setVaultTabVisible(i == _vaultIndex));
+        },
         destinations: const [
           NavigationDestination(icon: Icon(Icons.inbox_outlined), label: '全部'),
           NavigationDestination(icon: Icon(Icons.timeline_outlined), label: '时光机'),

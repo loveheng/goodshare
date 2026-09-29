@@ -9,14 +9,25 @@ import 'update_manifest.dart';
 
 /// 自更新 + 配置热更服务：一个可配置的静态源（gitee/github raw、任意静态托管）
 /// 放一份 goodshare-update.json，app 检查/下载/校验全在这里完成。
+/// 编译期注入的默认更新源（构建时 --dart-define=UPDATE_SOURCE_URL=...）。
+/// 非空时，用户未手动配置即自动采用，实现「装上即可检查更新」。
+const String kDefaultUpdateSourceUrl =
+    String.fromEnvironment('UPDATE_SOURCE_URL', defaultValue: '');
+
 class UpdateService {
-  UpdateService(this._prefs);
+  UpdateService(this._prefs, {this.defaultSourceUrl = kDefaultUpdateSourceUrl});
 
   final SharedPreferences _prefs;
+  final String defaultSourceUrl;
   static const _prefSourceUrl = 'update_source_url';
   static const manifestFileName = 'goodshare-update.json';
 
-  Future<String?> sourceUrl() async => _prefs.getString(_prefSourceUrl);
+  /// 当前更新源：优先用户手动保存值，否则回退编译期内置默认源。
+  Future<String?> sourceUrl() async {
+    final saved = _prefs.getString(_prefSourceUrl);
+    if (saved != null && saved.isNotEmpty) return saved;
+    return defaultSourceUrl.isEmpty ? null : defaultSourceUrl;
+  }
 
   Future<void> setSourceUrl(String url) async {
     final trimmed = url.trim();

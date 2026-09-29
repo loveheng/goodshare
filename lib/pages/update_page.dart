@@ -224,15 +224,16 @@ class _UpdatePageState extends State<UpdatePage> {
                   Text('更新源', style: Theme.of(context).textTheme.titleSmall),
                   const SizedBox(height: 4),
                   Text(
-                    '一个可静态托管的目录 URL，里面放 goodshare-update.json（格式见仓库 docs/guide/self-update.md）。'
-                    '推荐 gitee 仓库 raw 地址，国内可达。',
+                    '默认更新源已内置（构建时注入），装上即可「检查更新」；'
+                    '如需更换为其他静态托管，可在此修改后点「保存更新源」。'
+                    '托管格式见 docs/guide/self-update.md。',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                   const SizedBox(height: 8),
                   TextField(
                     controller: _urlCtrl,
                     decoration: const InputDecoration(
-                      hintText: 'https://gitee.com/<user>/<repo>/raw/master/updates',
+                      hintText: 'https://<host>/updates',
                       border: OutlineInputBorder(),
                       isDense: true,
                     ),

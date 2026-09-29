@@ -20,7 +20,8 @@ format: v2
 - (功能)[medium] ACTION_PROCESS_TEXT：任意 app 选中文本一键收集（需自定义平台通道）
 - (功能)[medium] 标签管理（编辑/筛选）；数据量大后评估 FTS 全文索引替换 LIKE
 - (风险)[medium] 国产 ROM 省电策略可能杀前台服务：真机验证华为/小米等存活情况，必要时引导加白名单
-- (优化)[low] 自定义 app 图标与启动页（flutter_launcher_icons）
+- (优化)[done] 自定义 app 图标：flutter_launcher_icons 已接入（pubspec.yaml），源图 assets/icon/app_icon.png（1024²），生成 Android ic_launcher（mipmap 五套）+ iOS AppIcon（remove_alpha_ios: true，规避 App Store alpha 限制）
+- (功能)[low] 启动页 splash 自定义（自「图标与启动页」拆出，待办）
 - (文档)[low] release 签名配置文档化（keytool + signingConfig）
 - (优化)[low] 图文同分享（相册带文案）时文案会被插件丢弃（toJsonObject 只取 uri），需 fork 插件或自写 intent 解析才能补齐
 - (功能)[medium] Shorebird 接入收尾：本机被两件事挡住——官方安装脚本 404（改用 GitHub release 包手动装）+ api.shorebird.dev TLS 握手失败（需代理）；用户侧网络可用时按 docs/guide/self-update.md §2 走 shorebird init/login/release

@@ -270,6 +270,12 @@ sealed class ItemCommand {
             clip: _clipSeg(json['clip']),
           ),
         );
+      case 'classify':
+        return ClassifyCommand(id, expectedVersion: ev);
+      case 'scan_barcode':
+        return ScanBarcodeCommand(id, expectedVersion: ev);
+      case 'analyze_text':
+        return AnalyzeTextCommand(id, expectedVersion: ev);
       default:
         throw ActionException(
           '未知命令：$op',
@@ -300,6 +306,9 @@ sealed class ItemCommand {
     'collect',
     'append_segment',
     'apply_ai_result',
+    'classify',
+    'scan_barcode',
+    'analyze_text',
   ];
 }
 
@@ -475,6 +484,53 @@ final class ClassifyCommand extends ItemCommand {
 
   @override
   String get op => 'classify';
+
+  @override
+  String? get targetId => id;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'id': id,
+        if (expectedVersion != null) 'expected_version': expectedVersion,
+      };
+}
+
+/// 手动扫描条码 / 二维码（= UI「识别条码」/ MCP scan_barcode_item）：入队 task_action=scan_barcode。
+///
+/// 与 [ClassifyCommand] 对称（端侧重资源动作一律手动 / 显式触发，摄入不自动跑模型）。
+/// 产出写入 facets['条码']（结构化：[类型:值]）；识别只标注不动作（不抢链接打开 / Wi-Fi 连接）。
+final class ScanBarcodeCommand extends ItemCommand {
+  const ScanBarcodeCommand(this.id, {super.expectedVersion});
+
+  final String id;
+
+  @override
+  String get op => 'scan_barcode';
+
+  @override
+  String? get targetId => id;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'id': id,
+        if (expectedVersion != null) 'expected_version': expectedVersion,
+      };
+}
+
+/// 手动文本分析（= UI「分析文本」/ MCP analyze_text_item）：入队 task_action=analyze_text。
+///
+/// 与 [ScanBarcodeCommand] 对称（端侧重资源动作一律手动 / 显式触发，摄入不自动跑模型）。
+/// 作用于**笔记条目**：语言识别 + 实体提取，产出写入 facets['语言'] 与 facets['实体']；
+/// 识别只标注不动作（URL 实体不自动打开）。
+final class AnalyzeTextCommand extends ItemCommand {
+  const AnalyzeTextCommand(this.id, {super.expectedVersion});
+
+  final String id;
+
+  @override
+  String get op => 'analyze_text';
 
   @override
   String? get targetId => id;

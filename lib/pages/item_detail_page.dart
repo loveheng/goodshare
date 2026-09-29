@@ -52,6 +52,10 @@ String aiTaskStatusText(String status, String action, bool empty, {String? note}
     Repository.taskOcrAndExtract => '识别已结束，但没有识别出文字：图片可能不含文字或过于模糊',
     Repository.taskClassifyImage =>
       '分类已结束，但没有识别出已知标签：图片可能过于抽象、非实体内容，或类别不在常用映射表内',
+    Repository.taskScanBarcode =>
+      '扫描已结束，但没有识别到条码 / 二维码：图片可能不含条码，或条码过于模糊、超出取景框',
+    Repository.taskAnalyzeText =>
+      '分析已结束，但没有提取到内容：笔记可能过短，或不含可识别的语言 / 实体',
     _ => '处理已结束但未产出内容，可在「AI 任务队列」查看',
   };
 }
@@ -151,14 +155,15 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     super.initState();
     // 退后台时强制落盘正在编辑的草稿
     _lifecycleSub = AppLifecycleManager.instance.onBackgrounded.listen((_) => _editDraft?.flushAll());
-    // Vault 敏感内容：开启 FLAG_SECURE 防截屏（离开时清除）
-    if (widget.vaultContext) unawaited(SecureWindow.setSecure(true));
+    // Vault 敏感内容：开启 FLAG_SECURE 防截屏（离开时清除）。用 detail 维度计数，
+    // 与保险箱 tab 维度互不干扰——叠在保险箱 tab 上也不会被本页 dispose 提前解除。
+    if (widget.vaultContext) unawaited(SecureWindow.enterVaultDetail());
   }
 
   @override
   void dispose() {
     _lifecycleSub?.cancel();
-    if (widget.vaultContext) unawaited(SecureWindow.setSecure(false));
+    if (widget.vaultContext) unawaited(SecureWindow.exitVaultDetail());
     super.dispose();
   }
 
@@ -546,6 +551,34 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                   ),
                   icon: const Icon(Icons.auto_awesome_motion_outlined),
                   label: const Text('识别分类'),
+                ),
+              // 条码扫描同样**只手动触发**（与 OCR / 分类对称）：仅图片条目显示，
+              // 点击才入队 scan_barcode 跑 ML Kit Barcode Scanning；识别只标注不动作。
+              if (_item.itemType == InboxItem.typeImage)
+                OutlinedButton.icon(
+                  onPressed: () => _run(
+                    () => widget.handler.execute(
+                      ScanBarcodeCommand(_item.id!),
+                      vaultContext: widget.vaultContext,
+                    ),
+                    '已入队条码扫描',
+                  ),
+                  icon: const Icon(Icons.qr_code_scanner_outlined),
+                  label: const Text('识别条码'),
+                ),
+              // 文本分析（语言识别 + 实体提取，2026-09-29）：仅笔记条目显示，
+              // 端侧离线 ML Kit，手动触发；写 facets['语言'] / facets['实体']。
+              if (_item.itemType == InboxItem.typeNote)
+                OutlinedButton.icon(
+                  onPressed: () => _run(
+                    () => widget.handler.execute(
+                      AnalyzeTextCommand(_item.id!),
+                      vaultContext: widget.vaultContext,
+                    ),
+                    '已开始分析文本',
+                  ),
+                  icon: const Icon(Icons.text_snippet_outlined),
+                  label: const Text('分析文本'),
                 ),
               // 翻译：正文非空才可翻译（图片 / 音视频需先 OCR / 转写出文本）。
               // 与 OCR / 转写同构——端侧动作一律手动 / 显式触发，摄入不自动跑。

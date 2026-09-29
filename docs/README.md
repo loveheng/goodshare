@@ -32,6 +32,7 @@ updated: 2026-09-29
 - [image-annotation.md](design/image-annotation.md) — 图片标注设计。
 - [s3-backup.md](design/s3-backup.md) — S3 备份与恢复设计：dio+crypto 手写 SigV4 薄封装 + `VACUUM INTO` DB 快照、固定包结构与 manifest 提交标记、附件增量跳过、Vault 排除与全量替换恢复语义；对象存储 Server 明确不做（桌面精修走 MCP）。
 - [vector-embeddings.md](design/vector-embeddings.md) — 向量检索与派生数据策略：item_embeddings 独立派生表（schema v9，不进备份、恢复即清、可全量重算）、int8 量化约定、检索路径分档（暴力余弦 → sqlite-vec）。
+- [scheduling-tasks.md](design/scheduling-tasks.md) — 任务编排与调度评估：暂缓引入自组装编排器的结论与重开触发条件、大参数处理三铁律（只传引用/快照截断/产物分级即弃）。
 - [video-clips.md](design/video-clips.md) — 视频切片（关键区间）设计：clips_json 附属记录（schema v10）、clip:* 队列任务三段链（ffmpeg 提区间音轨→端侧 ASR→LLM 摘要）、区间结果独立回写通道不覆盖整片产物、视频源文件不进备份。
 
 ## engineering（工程规范）

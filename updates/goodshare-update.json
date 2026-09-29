@@ -1,0 +1,7 @@
+{
+  "versionCode": 4006,
+  "versionName": "1.2.0",
+  "apkUrl": "https://r2.oklhj.eu.org/updates/app-release.apk",
+  "sha256": "a5676be1b351dd0e09728d2eba8f96423a637e93e7695a4aa0b52b5f1b634026",
+  "changelog": "feat(sync): 备份传输层落地 S3（SigV4 薄封装 + Multipart）并移除 WebDAV"
+}
