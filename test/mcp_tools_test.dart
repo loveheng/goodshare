@@ -153,11 +153,11 @@ void main() {
     );
   });
 
-  test('工具清单共 15 个且不含 execute_action', () {
+  test('工具清单共 16 个且不含 execute_action', () {
     final names = toolSchemas().map((s) => s['name']).toList();
-    expect(names.length, 15);
+    expect(names.length, 16);
     expect(names, isNot(contains('execute_action')));
-    expect(names, containsAll(['update_item', 'unlock_edit', 'set_vault', 'reprocess_item', 'query_machine_data', 'get_timeline_context', 'batch_items', 'append_segment', 'translate_item', 'summarize_item', 'extract_tags']));
+    expect(names, containsAll(['update_item', 'unlock_edit', 'set_vault', 'reprocess_item', 'query_machine_data', 'get_timeline_context', 'batch_items', 'append_segment', 'translate_item', 'summarize_item', 'extract_tags', 'classify_item']));
   });
 
   test('expected_version 乐观锁：版本过期 → version_conflict，不静默覆盖', () async {

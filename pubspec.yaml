@@ -30,7 +30,8 @@ dependencies:
   sqflite: ^2.4.4
   video_player: ^2.14.0
   google_mlkit_translation: ^0.15.1
-  ffmpeg_kit_flutter_new_min: ^3.6.2
+  ffmpeg_kit_flutter_new_min_gpl: ^2.6.2
+  google_mlkit_image_labeling: ^0.16.1
 dev_dependencies:
   flutter_test:
     sdk: flutter

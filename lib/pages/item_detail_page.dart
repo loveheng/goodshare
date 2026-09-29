@@ -14,10 +14,12 @@ import '../models/draft_store.dart';
 import '../models/item.dart';
 import '../service/secure_window.dart';
 import '../ui/content_card.dart';
+import '../ui/clip_editor_sheet.dart';
 import '../ui/draft_controller.dart';
 import '../ui/item_view_template.dart';
 import '../ui/repo_auto_reload.dart';
 import '../ui/tokens.dart';
+import '../ui/slogans.dart';
 
 /// 详情页：ItemViewTemplate 双态外壳 + 动作区。
 /// 全部写操作经 ItemActionHandler（与 MCP 同一实现）；vaultContext=true 表示
@@ -48,6 +50,8 @@ String aiTaskStatusText(String status, String action, bool empty, {String? note}
       '转写已结束，但没有识别出任何文本。常见原因：音频不是中文（请在「设置 → 语音转写模型」'
           '换到「全能 · 多语种」或「全球 · Whisper」）、模型未下载、音频无语音',
     Repository.taskOcrAndExtract => '识别已结束，但没有识别出文字：图片可能不含文字或过于模糊',
+    Repository.taskClassifyImage =>
+      '分类已结束，但没有识别出已知标签：图片可能过于抽象、非实体内容，或类别不在常用映射表内',
     _ => '处理已结束但未产出内容，可在「AI 任务队列」查看',
   };
 }
@@ -487,6 +491,35 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                   icon: const Icon(Icons.subtitles_outlined),
                   label: const Text('转写'),
                 ),
+              // 视频切片（2026-09-29）：播放器打点选多区间，逐区间转写+摘要，
+              // 产出进「关键区间」（clips_json），不占用条目级转写文本。
+              if (_item.itemType == InboxItem.typeVideo)
+                OutlinedButton.icon(
+                  onPressed: () => showClipEditorSheet(
+                    context,
+                    handler: widget.handler,
+                    item: _item,
+                    vaultContext: widget.vaultContext,
+                  ),
+                  icon: const Icon(Icons.content_cut),
+                  label: const Text('切片'),
+                ),
+              // 整片标记（2026-09-29）：整个视频都重要 → 源文件进备份范围
+              //（下次手动备份携带）；标记不触发上传。
+              if (_item.itemType == InboxItem.typeVideo)
+                OutlinedButton.icon(
+                  onPressed: () => _run(
+                    () => widget.handler.execute(
+                      MarkWholeVideoCommand(_item.id!, marked: !_item.videoWholeMarked),
+                      vaultContext: widget.vaultContext,
+                    ),
+                    _item.videoWholeMarked ? '已取消整片标记' : '已标记整片：下次备份将携带此视频',
+                  ),
+                  icon: Icon(_item.videoWholeMarked
+                      ? Icons.bookmark
+                      : Icons.bookmark_border),
+                  label: const Text('整片'),
+                ),
               // 图片 OCR 同样**只手动触发**（与音频转写对称）：仅图片条目显示。
               if (_item.itemType == InboxItem.typeImage)
                 OutlinedButton.icon(
@@ -499,6 +532,20 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                   ),
                   icon: const Icon(Icons.document_scanner_outlined),
                   label: const Text('识别文字'),
+                ),
+              // 图片分类同样**只手动触发**（与 OCR 对称）：仅图片条目显示，
+              // 点击才入队 classify_image 跑 ML Kit Image Labeling。
+              if (_item.itemType == InboxItem.typeImage)
+                OutlinedButton.icon(
+                  onPressed: () => _run(
+                    () => widget.handler.execute(
+                      ClassifyCommand(_item.id!),
+                      vaultContext: widget.vaultContext,
+                    ),
+                    '已入队分类',
+                  ),
+                  icon: const Icon(Icons.auto_awesome_motion_outlined),
+                  label: const Text('识别分类'),
                 ),
               // 翻译：正文非空才可翻译（图片 / 音视频需先 OCR / 转写出文本）。
               // 与 OCR / 转写同构——端侧动作一律手动 / 显式触发，摄入不自动跑。
@@ -562,6 +609,9 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
               ),
             ],
           ),
+          const SizedBox(height: 24),
+          PoeticText(sloganFor(SloganKeys.detailFooter),
+              large: false, align: TextAlign.center),
         ],
       ),
     );

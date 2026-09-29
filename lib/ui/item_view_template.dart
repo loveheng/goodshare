@@ -9,6 +9,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 
 import '../ai/audio_extract.dart';
+import '../ai/video_clips.dart';
 import '../ai/subtitle.dart';
 import '../models/item.dart';
 import 'image_annotator.dart';
@@ -235,11 +236,112 @@ Widget _videoView(BuildContext context, InboxItem item) {
           padding: const EdgeInsets.only(bottom: Insets.sm),
           child: SelectableText(item.bodyText),
         ),
-      _VideoPlayer(path: item.rawFilePath!),
+      _VideoPlayer(
+        path: item.rawFilePath!,
+        jumpTargets: [
+          for (final c in parseClipsJson(item.clipsJson)) c.startMs,
+        ],
+      ),
       _AudioExportRow(item: item),
       if (item.id != null) _SubtitleExportRow(itemId: item.id!),
+      if (parseClipsJson(item.clipsJson).isNotEmpty) _ClipsList(item: item),
     ],
   );
+}
+
+/// 「关键区间」区块（2026-09-29，视频切片产物展示）：
+/// 每段起止 + 转写文本 + 摘要；note 优先于状态推断（与 _AiTaskStatusLine 同口径）——
+/// 失败 / 空产出 / 摘要未生成都明说，不静默。
+class _ClipsList extends StatelessWidget {
+  const _ClipsList({required this.item});
+
+  final InboxItem item;
+
+  String _fmt(int ms) {
+    final s = (ms / 1000).round();
+    return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final clips = parseClipsJson(item.clipsJson);
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: Insets.sm),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '关键区间（${clips.length}）',
+            style: Theme.of(context)
+                .textTheme
+                .labelMedium
+                ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: Insets.sm),
+          for (final c in clips)
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: Insets.sm),
+              padding: const EdgeInsets.all(Insets.sm),
+              decoration: BoxDecoration(
+                color: scheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('${_fmt(c.startMs)} → ${_fmt(c.endMs)}（时长 ${_fmt(c.durationMs)}）',
+                      style: Theme.of(context).textTheme.labelMedium),
+                  if (c.status == kClipStatusMarked) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      '已标记（未处理）——标记仅记时间点，处理后才算收藏完成',
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodySmall
+                          ?.copyWith(color: scheme.onSurfaceVariant),
+                    ),
+                  ] else if ((c.text ?? '').isEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      c.note ??
+                          (c.status == kClipStatusProcessing
+                              ? '处理中…（AI 任务队列可查进度）'
+                              : '暂无文本'),
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: c.status == kClipStatusFailed ? scheme.error : scheme.onSurfaceVariant),
+                    ),
+                  ] else ...[
+                    const SizedBox(height: 4),
+                    SelectableText(c.text!),
+                    if ((c.summary ?? '').isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: SelectableText(
+                          '摘要：${c.summary}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                    if (c.note != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          c.note!,
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(color: scheme.onSurfaceVariant),
+                        ),
+                      ),
+                  ],
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }
 
 /// 「字幕产物」清单：该条目的每个字幕文件都列出来并各自可分享——主文件
@@ -477,7 +579,10 @@ class _AudioPlayerState extends State<_AudioPlayer> {
 
 /// 视频简单播放器：画面 + 播放/暂停 + 进度条 + 时间；加载/解码失败给错误态。
 class _VideoPlayer extends StatefulWidget {
-  const _VideoPlayer({required this.path});
+  const _VideoPlayer({required this.path, this.jumpTargets = const []});
+
+  /// 切片标记的时间点（毫秒）：点击快速跳转（标记 ≠ 处理，导航用途）。
+  final List<int> jumpTargets;
 
   final String path;
 
@@ -486,6 +591,11 @@ class _VideoPlayer extends StatefulWidget {
 }
 
 class _VideoPlayerState extends State<_VideoPlayer> {
+  String _fmtMs(int ms) {
+    final s = (ms / 1000).round();
+    return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
+  }
+
   late final VideoPlayerController _controller =
       VideoPlayerController.file(File(widget.path));
   bool _ready = false;
@@ -563,6 +673,24 @@ class _VideoPlayerState extends State<_VideoPlayer> {
                       child: VideoPlayer(_controller),
                     ),
         ),
+        if (_error == null && widget.jumpTargets.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(Insets.xs, Insets.xs, Insets.xs, 0),
+            child: Wrap(
+              spacing: Insets.sm,
+              runSpacing: Insets.sm,
+              children: [
+                for (final ms in widget.jumpTargets)
+                  ActionChip(
+                    label: Text('标记 ${_fmtMs(ms)}', style: theme.textTheme.labelSmall),
+                    visualDensity: VisualDensity.compact,
+                    onPressed: _ready
+                        ? () => _controller.seekTo(Duration(milliseconds: ms))
+                        : null,
+                  ),
+              ],
+            ),
+          ),
         if (_error == null)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: Insets.xs),

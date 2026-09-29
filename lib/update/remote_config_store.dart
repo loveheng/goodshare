@@ -36,6 +36,7 @@ class RemoteConfigStore {
       if (config.announcementId != null) 'announcementId': config.announcementId,
       if (config.mcpInstructions != null) 'mcpInstructions': config.mcpInstructions,
       if (config.flags.isNotEmpty) 'flags': config.flags,
+      if (config.slogans != null && config.slogans!.isNotEmpty) 'slogans': config.slogans,
     }));
   }
 

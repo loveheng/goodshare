@@ -16,7 +16,7 @@ class Db {
     final dir = await getDatabasesPath();
     final db = await openDatabase(
       _pathOverride ?? p.join(dir, 'goodshare.db'),
-      version: 8,
+      version: 11,
       onCreate: (db, version) => _createAll(db),
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -38,6 +38,12 @@ class Db {
         await _ensureTaskNoteColumn(db);
         // 幂等补齐 inbox_items.summary_md（v7→v8 端侧 LLM 摘要）
         await _ensureSummaryColumn(db);
+        // 幂等补齐 item_embeddings 派生表（v8→v9 向量派生数据分表）
+        await _ensureEmbeddingsTable(db);
+        // 幂等补齐 inbox_items.clips_json（v9→v10 视频切片附属记录）
+        await _ensureClipsColumn(db);
+        // 幂等补齐 inbox_items.video_whole_marked（v10→v11 整片标记=备份 opt-in）
+        await _ensureWholeMarkedColumn(db);
       },
       onOpen: (db) async {
         // ai_task_queue 的外键级联依赖此开关，sqflite 默认关闭
@@ -65,6 +71,8 @@ class Db {
         translated_md TEXT,                         -- 译文（翻译层产出，与 human_md 并列不覆盖）
         translate_lang TEXT,                        -- 译文语言码（BCP-47），与 translated_md 成对
         summary_md TEXT,                            -- 端侧 LLM 摘要（与 human_md 并列不覆盖，2026-09-28 v8）
+        clips_json TEXT,                            -- 视频切片（关键区间）附属记录（2026-09-29 v10，lib/ai/video_clips.dart）
+        video_whole_marked INTEGER NOT NULL DEFAULT 0, -- 整片标记：1=用户认为整个视频重要，备份时携带源文件（2026-09-29 v11）
         tags TEXT,                                  -- JSON Array: ["前端","团建"]
         facets_json TEXT,                           -- JSON: 视角→标签数组，AI 分类页消费（V2）
         is_vault INTEGER NOT NULL DEFAULT 0,        -- 0 公开 / 1 私密保险箱
@@ -108,6 +116,18 @@ class Db {
         target_id TEXT,                        -- 关联对象（item id / 'quick_note'）
         content TEXT,                          -- 草稿正文
         updated_at INTEGER NOT NULL            -- 毫秒时间戳
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS item_embeddings (
+        item_id TEXT NOT NULL REFERENCES inbox_items(id) ON DELETE CASCADE,
+        model TEXT NOT NULL,                   -- 嵌入模型标识（换模型 = 全量重算，旧档先清）
+        chunk_index INTEGER NOT NULL,          -- 分块序号 0 起（短条目整条一向量恒 0）
+        dim INTEGER NOT NULL,                  -- 向量维度（读取侧校验用）
+        dtype TEXT NOT NULL DEFAULT 'f32',     -- 字节编码 f32/int8（int8 量化约定见 docs/design/vector-embeddings.md §2）
+        vec BLOB NOT NULL,                     -- 向量字节（f32=小端 float32 / int8=量化字节）
+        created_at INTEGER NOT NULL,           -- 毫秒时间戳
+        PRIMARY KEY (item_id, model, chunk_index)
       )
     ''');
   }
@@ -158,6 +178,50 @@ class Db {
     final has = cols.any((c) => (c['name'] as String?) == 'summary_md');
     if (!has) {
       await db.execute('ALTER TABLE inbox_items ADD COLUMN summary_md TEXT');
+    }
+  }
+
+  /// 幂等建 item_embeddings 派生表（v8→v9，2026-09-29）。
+  ///
+  /// 派生数据分表决策：向量是源文本的可再生衍生物，独立成表保证
+  /// ①事实源（四表）体积不随向量增长 ②换嵌入模型可整表重算
+  /// ③备份/恢复把整表当缓存对待（快照清空、恢复即清），见 docs/design/vector-embeddings.md。
+  static Future<void> _ensureEmbeddingsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS item_embeddings (
+        item_id TEXT NOT NULL REFERENCES inbox_items(id) ON DELETE CASCADE,
+        model TEXT NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        dim INTEGER NOT NULL,
+        dtype TEXT NOT NULL DEFAULT 'f32',
+        vec BLOB NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (item_id, model, chunk_index)
+      )
+    ''');
+  }
+
+  /// 幂等补齐 inbox_items.video_whole_marked（v10→v11 整片标记，2026-09-29）。
+  ///
+  /// 两极标记的「整片」极：用户认为整个视频重要 → 备份时携带源文件（D3 默认排除的
+  /// 逐条目 opt-in）。标记本身不触发上传，上传仍由手动备份触发。
+  static Future<void> _ensureWholeMarkedColumn(Database db) async {
+    final cols = await db.rawQuery('PRAGMA table_info(inbox_items)');
+    final has = cols.any((c) => (c['name'] as String?) == 'video_whole_marked');
+    if (!has) {
+      await db.execute('ALTER TABLE inbox_items ADD COLUMN video_whole_marked INTEGER NOT NULL DEFAULT 0');
+    }
+  }
+
+  /// 幂等补齐 inbox_items.clips_json（v9→v10 视频切片，2026-09-29）。
+  ///
+  /// 切片结果为原条目附属记录（JSON 列，与 appendix/facets 同风格）：
+  /// 每段 {start_ms, end_ms, text, summary, note, created_at}，见 lib/ai/video_clips.dart。
+  static Future<void> _ensureClipsColumn(Database db) async {
+    final cols = await db.rawQuery('PRAGMA table_info(inbox_items)');
+    final has = cols.any((c) => (c['name'] as String?) == 'clips_json');
+    if (!has) {
+      await db.execute('ALTER TABLE inbox_items ADD COLUMN clips_json TEXT');
     }
   }
 }

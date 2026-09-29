@@ -101,7 +101,13 @@ class QueueConsumer {
       // 60s 对 1.5B 模型长输入偏紧。
       final isLlmTask = input.taskAction == Repository.taskLlmSummarize ||
           input.taskAction == Repository.taskLlmTags;
-      final timeout = isLlmTask ? const Duration(seconds: 120) : const Duration(seconds: 60);
+      // 切片任务 = 提区间音轨 + ASR + LLM 摘要三段串行，单独放宽到 180s（设计 video-clips.md）
+      final isClipTask = input.taskAction?.startsWith(Repository.taskClipPrefix) ?? false;
+      final timeout = isClipTask
+          ? const Duration(seconds: 180)
+          : isLlmTask
+              ? const Duration(seconds: 120)
+              : const Duration(seconds: 60);
       final result = await impl.reconstruct(input).timeout(
             timeout,
             onTimeout: () => ReconstructResult(

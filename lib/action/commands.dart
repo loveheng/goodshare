@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../ai/reconstructor.dart';
+import '../ai/video_clips.dart';
 import '../models/item.dart';
 
 /// 命令协议（Command Pattern）：UI 与 AI 的唯一共同语言（Human-AI Parity 基石）。
@@ -195,6 +196,23 @@ sealed class ItemCommand {
         return TranscribeCommand(id, expectedVersion: ev);
       case 'summarize':
         return SummarizeCommand(id, expectedVersion: ev);
+      case 'clip':
+        return ClipCommand(
+          id,
+          startMs: _int(json['start_ms']) ?? -1,
+          endMs: _int(json['end_ms']) ?? -1,
+          expectedVersion: ev,
+        );
+      case 'clip_process':
+        return ClipProcessCommand(
+          id,
+          startMs: _int(json['start_ms']) ?? -1,
+          endMs: _int(json['end_ms']) ?? -1,
+          steps: _strList(json['steps']) ?? const [],
+          expectedVersion: ev,
+        );
+      case 'mark_whole_video':
+        return MarkWholeVideoCommand(id, marked: _bool(json['marked']) ?? true, expectedVersion: ev);
       case 'extract_tags':
         return ExtractTagsCommand(id, expectedVersion: ev);
       case 'ocr':
@@ -248,6 +266,8 @@ sealed class ItemCommand {
             facets: _facets(json['facets']),
             translatedMd: _str(json['translated_md']),
             translateLang: _str(json['translate_lang']),
+            summaryMd: _str(json['summary_md']),
+            clip: _clipSeg(json['clip']),
           ),
         );
       default:
@@ -268,6 +288,9 @@ sealed class ItemCommand {
     'reprocess',
     'transcribe',
     'summarize',
+    'clip',
+    'clip_process',
+    'mark_whole_video',
     'extract_tags',
     'ocr',
     'translate',
@@ -429,6 +452,29 @@ final class OcrCommand extends ItemCommand {
 
   @override
   String get op => 'ocr';
+
+  @override
+  String? get targetId => id;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'id': id,
+        if (expectedVersion != null) 'expected_version': expectedVersion,
+      };
+}
+
+/// 手动图片分类（= UI「识别分类」/ MCP classify_item）：入队 task_action=classify_image。
+///
+/// 与 [OcrCommand] 对称（2026-09-28 用户拍板：端侧重资源动作一律手动 / 显式触发，
+/// 摄入不自动跑模型）。产出写入 facets['分类']（AI 分类页消费）。
+final class ClassifyCommand extends ItemCommand {
+  const ClassifyCommand(this.id, {super.expectedVersion});
+
+  final String id;
+
+  @override
+  String get op => 'classify';
 
   @override
   String? get targetId => id;
@@ -679,6 +725,94 @@ final class AppendSegmentCommand extends ItemCommand {
       };
 }
 
+/// 视频切片**标记**（= UI「添加切片」）：只登记关键区间时间点（播放时快速跳转），
+/// **不触发任何处理**——标记 ≠ 完成，处理由 [ClipProcessCommand] 显式触发
+/// （2026-09-29 改版拍板）。区间校验下沉在动作层（仅视频 / 时长合法 / 不重复）。
+final class ClipCommand extends ItemCommand {
+  const ClipCommand(
+    this.id, {
+    required this.startMs,
+    required this.endMs,
+    super.expectedVersion,
+  });
+
+  final String id;
+  final int startMs;
+  final int endMs;
+
+  @override
+  String get op => 'clip';
+
+  @override
+  String? get targetId => id;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'id': id,
+        'start_ms': startMs,
+        'end_ms': endMs,
+        if (expectedVersion != null) 'expected_version': expectedVersion,
+      };
+}
+
+/// 视频切片**处理**（= UI 每个标记上的「处理」按钮）：对该区间执行用户勾选的
+/// 链路子集（提取片段 / 转写 / 摘要，E2 摘要自动带动转写前置）。
+/// 步骤规整下沉在动作层；区间必须已标记存在。
+final class ClipProcessCommand extends ItemCommand {
+  const ClipProcessCommand(
+    this.id, {
+    required this.startMs,
+    required this.endMs,
+    this.steps = const [],
+    super.expectedVersion,
+  });
+
+  final String id;
+  final int startMs;
+  final int endMs;
+  final List<String> steps;
+
+  @override
+  String get op => 'clip_process';
+
+  @override
+  String? get targetId => id;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'id': id,
+        'start_ms': startMs,
+        'end_ms': endMs,
+        'steps': steps,
+        if (expectedVersion != null) 'expected_version': expectedVersion,
+      };
+}
+
+/// 整片标记（= UI「整片重要」开关）：两极标记的「整片」极——标记后该视频源文件
+/// 进备份范围（D3 默认排除的逐条目 opt-in）；标记本身不触发上传。
+final class MarkWholeVideoCommand extends ItemCommand {
+  const MarkWholeVideoCommand(this.id, {required this.marked, super.expectedVersion});
+
+  final String id;
+  final bool marked;
+
+  @override
+  String get op => 'mark_whole_video';
+
+  @override
+  String? get targetId => id;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'id': id,
+        'marked': marked,
+        if (expectedVersion != null) 'expected_version': expectedVersion,
+      };
+}
+
 /// AI 管线回写重构产出。**仅 [CommandActor.pipeline]**：
 /// 特权入口，若对 AI 开放即可绕过 edit_locked 直接改写条目。
 final class ApplyAiResultCommand extends ItemCommand {
@@ -704,6 +838,8 @@ final class ApplyAiResultCommand extends ItemCommand {
         if (result.facets != null) 'facets': result.facets,
         if (result.translatedMd != null) 'translated_md': result.translatedMd,
         if (result.translateLang != null) 'translate_lang': result.translateLang,
+        if (result.summaryMd != null) 'summary_md': result.summaryMd,
+        if (result.clip != null) 'clip': result.clip!.toJson(),
       };
 }
 
@@ -720,6 +856,19 @@ String _reqId(Map<String, Object?> json, String op) {
 }
 
 String? _str(Object? v) => v is String ? v : null;
+
+/// 解析 apply_ai_result 载荷里的 clip 段（切片产出，非法即报错不静默）。
+ClipSegment? _clipSeg(Object? v) {
+  if (v == null) return null;
+  if (v is! Map) {
+    throw ActionException('clip 字段非法（需对象）', code: ActionErrorCode.invalidRequest);
+  }
+  try {
+    return ClipSegment.fromJson(v.cast<String, Object?>());
+  } on FormatException catch (e) {
+    throw ActionException('clip 字段非法：${e.message}', code: ActionErrorCode.invalidRequest);
+  }
+}
 
 bool? _bool(Object? v) => switch (v) {
       bool b => b,

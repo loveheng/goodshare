@@ -11,8 +11,10 @@ import 'ai/capabilities.dart';
 import 'ai/llm.dart';
 import 'ai/llm_model_manager.dart';
 import 'ai/llm_reconstructor.dart';
+import 'ai/clip_reconstructor.dart';
 import 'ai/model_manager.dart';
 import 'ai/ocr_reconstructor.dart';
+import 'ai/image_label_reconstructor.dart';
 import 'ai/queue_consumer.dart';
 import 'ai/reconstructor.dart';
 import 'ai/translate_reconstructor.dart';
@@ -24,6 +26,7 @@ import 'pages/home_shell.dart';
 import 'service/mcp_controller.dart';
 import 'share/share_intake.dart';
 import 'share/text_collector.dart';
+import 'sync/backup_service.dart';
 import 'update/remote_config_store.dart';
 
 Future<void> main() async {
@@ -62,6 +65,9 @@ Future<void> main() async {
   final mcp = McpController(repo: repo);
   await mcp.load();
   await RemoteConfigStore.instance.load();
+  // S3 备份（2026-09-29）：独立状态机，不进 ai_task_queue；配置加载后设置页即可用
+  final backup = BackupService(repo);
+  await backup.load();
   final models = ModelManager();
   await models.load();
   final llmModels = LlmModelManager();
@@ -69,6 +75,7 @@ Future<void> main() async {
   await ShareIntake(handler, collector).init();
   // AI 队列消费者：v1 = 图片 ML Kit OCR + 音频 Sherpa 离线转写（均受设置开关门控）
   // + 链接离线抓取 + 其余占位复制
+  final llmEngine = ChannelLlmEngine();
   final consumer = QueueConsumer(
     repo,
     ReconstructorRegistry([
@@ -76,6 +83,8 @@ Future<void> main() async {
         isOcrEnabled: () => caps.ocrEnabled,
         isUrlFetchEnabled: () => caps.urlFetchEnabled,
       ),
+      // 图片分类（ML Kit Image Labeling，2026-09-29）：仅手动触发，base 模型离线可用
+      const ImageLabelReconstructor(),
       AsrReconstructor(
         isAsrEnabled: () => caps.asrEnabled,
         models: models,
@@ -84,7 +93,13 @@ Future<void> main() async {
       ),
       TranslationReconstructor(service: translationService),
       // 端侧 LLM（2026-09-28）：摘要（summary_md）与关键词提取，均由显式命令入队
-      LlmReconstructor(engine: ChannelLlmEngine()),
+      // 视频切片（2026-09-29）：区间音轨→ASR→LLM 摘要，产出合并进 clips_json
+      LlmReconstructor(engine: llmEngine),
+      ClipReconstructor(
+        engine: llmEngine,
+        models: models,
+        isAsrEnabled: () => caps.asrEnabled,
+      ),
       const PlaceholderReconstructor(),
     ]),
     handler,
@@ -104,6 +119,7 @@ Future<void> main() async {
     models: models,
     llmModels: llmModels,
     aiQueue: aiQueue,
+    backup: backup,
   ));
 }
 
@@ -118,6 +134,7 @@ class GoodShareApp extends StatelessWidget {
     required this.models,
     required this.llmModels,
     required this.aiQueue,
+    required this.backup,
   });
 
   final Repository repo;
@@ -128,6 +145,7 @@ class GoodShareApp extends StatelessWidget {
   final ModelManager models;
   final LlmModelManager llmModels;
   final AiQueueService aiQueue;
+  final BackupService backup;
 
   @override
   Widget build(BuildContext context) {
@@ -165,6 +183,7 @@ class GoodShareApp extends StatelessWidget {
         models: models,
         llmModels: llmModels,
         aiQueue: aiQueue,
+        backup: backup,
       ),
     );
   }

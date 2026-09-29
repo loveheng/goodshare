@@ -36,7 +36,13 @@ updated: 2026-09-29
     "announcement": "公告文本，可省略",
     "announcementId": "2026-09-27-1",
     "mcpInstructions": "覆盖 MCP initialize 的 instructions，可省略",
-    "flags": {}
+    "flags": {},
+    "slogans": {
+      "splash": "收下微小的喜欢，等待被需要的瞬间。",
+      "empty": "把零碎的喜欢收进口袋，在需要的时候开成花。",
+      "about": "时间会模糊记忆，但你的喜好，一直在这里安放。",
+      "detailFooter": "未必次次有用，但每次想起，它都在这里等回应。"
+    }
   }
 }
 ```
@@ -45,6 +51,19 @@ updated: 2026-09-29
 - `sha256` 生成：`sha256sum app-release.apk`
 - `config.mcpInstructions` 非空时会覆盖 MCP `initialize` 返回的服务说明（下次客户端连接生效）
 - 公告随「检查更新」刷新并缓存，更新页展示
+
+### config.slogans（文青风口号热更）
+
+`config.slogans` 是可选 map，按落点 key（`splash` / `empty` / `about` /
+`detailFooter`）覆盖 App 内四处文青风口号的文案（`lib/ui/slogans.dart` 消费）。
+
+- `splash`：首页「全部」**空态欢迎语**（原拟作启动闪屏，已改为融入主界面空态，无独立遮罩页）
+- `empty`：各**类型页空态引导**
+- `about`：设置「关于」区顶部
+- `detailFooter`：详情页滚动底部
+- **可部分覆盖**：只下发改动的 key，未覆盖的 key 仍用 App 内置的本地默认值。
+- **缺失该段或某 key 为空**：回退本地默认口号，不会空白。
+- 与公告同理，随「检查更新」刷新并缓存（`RemoteConfigStore` 持久化）。
 
 ### flags.llmManifestUrl（端侧大模型目录热更）
 

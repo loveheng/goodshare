@@ -6,6 +6,7 @@ import '../ai/language_codes.dart';
 import '../data/repository.dart';
 import '../models/item.dart';
 import 'commands.dart';
+import '../ai/video_clips.dart';
 import 'machine_json_validator.dart';
 
 /// UI / MCP / AI 管线共用的**唯一写入口**（Human-AI 对称架构的核心）。
@@ -83,6 +84,10 @@ class ItemActionHandler {
       final SummarizeCommand c => _summarize(c, seeVault, txn),
       final ExtractTagsCommand c => _extractTags(c, seeVault, txn),
       final OcrCommand c => _ocr(c, seeVault, txn),
+      final ClassifyCommand c => _classify(c, seeVault, txn),
+      final ClipCommand c => _clip(c, seeVault, txn),
+      final ClipProcessCommand c => _clipProcess(c, seeVault, txn),
+      final MarkWholeVideoCommand c => _markWholeVideo(c, seeVault, txn),
       final TranslateCommand c => _translate(c, seeVault, txn),
       final UnlockEditCommand c => _unlockEdit(c, seeVault, txn),
       final RestoreCommand c => _restore(c, seeVault, txn),
@@ -317,6 +322,83 @@ class ItemActionHandler {
         note: await _queuedNote('已开始识别文字'));
   }
 
+  /// 手动图片分类：显式入队 classify_image（2026-09-29，与 OCR / 转写对称——
+  /// 端侧重资源动作一律手动 / 显式触发，摄入不自动跑模型）。
+  ///
+  /// 「仅图片可分类」的校验下沉在动作层：AI / MCP 换个入口也绕不过。
+  Future<CommandResult> _classify(
+    ClassifyCommand cmd,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    if (item.itemType != InboxItem.typeImage) {
+      throw ActionException(
+        '只有图片能分类（当前类型：${item.itemType}）',
+        code: ActionErrorCode.invalidRequest,
+      );
+    }
+    await _write(
+      'classify',
+      cmd.id,
+      {'is_processed': 0},
+      expectedVersion: cmd.expectedVersion,
+      txn: txn,
+    );
+    await _repo.enqueueTask(cmd.id, Repository.taskClassifyImage, txn: txn);
+    onEnqueued?.call();
+    return _result('classify', cmd.id, seeVault: seeVault, txn: txn,
+        note: await _queuedNote('已开始识别分类'));
+  }
+
+  /// 视频切片：登记关键区间并入队转写+摘要任务（2026-09-29，设计 docs/design/video-clips.md）。
+  ///
+  /// 校验下沉在动作层：仅视频条目、区间时长合法、不与既有区间重复——
+  /// AI / MCP 换个入口也绕不过。登记即入队：区间先以空产出落 clips_json，
+  /// 队列完成后按区间回填（用户可见「待处理 → 有文本 → 有摘要」全过程）。
+  Future<CommandResult> _clip(
+    ClipCommand cmd,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    if (item.itemType != InboxItem.typeVideo) {
+      throw ActionException(
+        '只有视频能切片（当前类型：${item.itemType}）',
+        code: ActionErrorCode.invalidRequest,
+      );
+    }
+    if (!isValidClipInterval(cmd.startMs, cmd.endMs)) {
+      throw ActionException(
+        '切片区间非法（需 1 秒 ~ 30 分钟，且起点小于终点）',
+        code: ActionErrorCode.invalidRequest,
+      );
+    }
+    final clips = parseClipsJson(item.clipsJson);
+    if (clips.any((c) => c.startMs == cmd.startMs && c.endMs == cmd.endMs)) {
+      throw ActionException(
+        '该区间已存在',
+        code: ActionErrorCode.invalidRequest,
+        hint: '可在切片列表里查看已有区间',
+      );
+    }
+    final updated = [
+      ...clips,
+      ClipSegment(startMs: cmd.startMs, endMs: cmd.endMs, createdAt: DateTime.now().millisecondsSinceEpoch),
+    ];
+    await _write(
+      'clip',
+      cmd.id,
+      {'clips_json': encodeClipsJson(updated)},
+      expectedVersion: cmd.expectedVersion,
+      txn: txn,
+    );
+    // 标记 ≠ 处理（2026-09-29 改版拍板）：标记只记时间点供快速跳转，
+    // 处理由 ClipProcessCommand 显式触发——端侧重资源动作一律手动。
+    return _result('clip', cmd.id, seeVault: seeVault, txn: txn,
+        note: '已标记（处理后才算收藏完成）');
+  }
+
   /// 翻译条目正文：显式入队 translate（与 OCR / 转写同构——端侧重资源动作
   /// 一律手动 / 显式触发，摄入不自动跑）。
   ///
@@ -543,6 +625,86 @@ class ItemActionHandler {
     return _result('append_segment', cmd.id, seeVault: seeVault, txn: txn, note: '已追加到合并链');
   }
 
+  /// 视频切片处理：对已标记区间执行用户勾选的链路子集（提取/转写/摘要）。
+  /// 步骤规整（E2 摘要带动转写）与区间存在性校验下沉在动作层；登记 processing
+  /// 状态后入队 `clip:<s>-<e>:<steps>` 任务，完成/失败由管线回写。
+  Future<CommandResult> _clipProcess(
+    ClipProcessCommand cmd,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    if (item.itemType != InboxItem.typeVideo) {
+      throw ActionException(
+        '只有视频能切片处理（当前类型：${item.itemType}）',
+        code: ActionErrorCode.invalidRequest,
+      );
+    }
+    if (!isValidClipInterval(cmd.startMs, cmd.endMs)) {
+      throw ActionException(
+        '切片区间非法（需 1 秒 ~ 30 分钟，且起点小于终点）',
+        code: ActionErrorCode.invalidRequest,
+      );
+    }
+    final steps = normalizeClipSteps(cmd.steps);
+    if (steps.isEmpty) {
+      throw ActionException(
+        '请至少勾选一个处理步骤（提取片段 / 转写 / 摘要）',
+        code: ActionErrorCode.invalidRequest,
+      );
+    }
+    final clips = parseClipsJson(item.clipsJson);
+    final idx = clips.indexWhere((c) => c.startMs == cmd.startMs && c.endMs == cmd.endMs);
+    if (idx == -1) {
+      throw ActionException(
+        '该区间尚未标记',
+        code: ActionErrorCode.invalidRequest,
+        hint: '先在切片编辑里标记区间，再触发处理',
+      );
+    }
+    final updated = [...clips]..[idx] = clips[idx].copyWith(
+        steps: steps,
+        status: kClipStatusProcessing,
+        note: null,
+      );
+    await _write(
+      'clip_process',
+      cmd.id,
+      {'clips_json': encodeClipsJson(updated)},
+      expectedVersion: cmd.expectedVersion,
+      txn: txn,
+    );
+    await _repo.enqueueTask(cmd.id, Repository.clipTaskAction(cmd.startMs, cmd.endMs, steps), txn: txn);
+    onEnqueued?.call();
+    return _result('clip_process', cmd.id, seeVault: seeVault, txn: txn,
+        note: await _queuedNote('已开始处理切片'));
+  }
+
+  /// 整片标记：用户认为整个视频重要 → 源文件进备份范围（D3 默认排除的 opt-in）。
+  /// 标记本身不触发上传，上传仍由手动备份触发（用户拍板「处理之后才能备份」）。
+  Future<CommandResult> _markWholeVideo(
+    MarkWholeVideoCommand cmd,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    if (item.itemType != InboxItem.typeVideo) {
+      throw ActionException(
+        '只有视频能整片标记（当前类型：${item.itemType}）',
+        code: ActionErrorCode.invalidRequest,
+      );
+    }
+    await _write(
+      'mark_whole_video',
+      cmd.id,
+      {'video_whole_marked': cmd.marked ? 1 : 0},
+      expectedVersion: cmd.expectedVersion,
+      txn: txn,
+    );
+    return _result('mark_whole_video', cmd.id, seeVault: seeVault, txn: txn,
+        note: cmd.marked ? '已标记整片：下次备份将携带此视频源文件' : '已取消整片标记');
+  }
+
   /// AI 管线回写产出。Actor 已门控为 [CommandActor.pipeline]——
   /// 若对 MCP 开放，大模型即可绕过 edit_locked 直接改写条目。
   Future<CommandResult> _applyAiResult(
@@ -553,6 +715,15 @@ class ItemActionHandler {
   ) async {
     final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
     final r = cmd.result;
+    // 视频切片产出走独立通道：只合并进 clips_json（派生附属记录），**不触碰**
+    // human_md / summary_md 等条目级字段——区间结果不得覆盖整片产物。
+    if (r.clip != null) {
+      final merged = mergeClipResult(parseClipsJson(item.clipsJson), r.clip!);
+      await _write('apply_ai_result', cmd.id, {'clips_json': encodeClipsJson(merged)},
+          expectedVersion: cmd.expectedVersion, txn: txn);
+      return _result('apply_ai_result', cmd.id, seeVault: seeVault, txn: txn,
+          note: '已回写切片产出（${r.clip!.status == kClipStatusDone ? '完成' : r.clip!.status}）');
+    }
     final values = <String, Object?>{'human_md': r.humanMd, 'is_processed': 1};
     if (r.machineJson != null) {
       final raw = jsonEncode(r.machineJson);

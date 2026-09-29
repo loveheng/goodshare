@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-09-28
+updated: 2026-09-29
 ---
 
 # docs/ 结构索引
@@ -30,6 +30,9 @@ updated: 2026-09-28
 - [ai-capabilities-overview.md](design/ai-capabilities-overview.md) — AI 能力总览。
 - [on-device-llm.md](design/on-device-llm.md) — 端侧 LLM 设计：LiteRT-LM（Android，SoC 感知 NPU/GPU/CPU 模型包）+ FoundationModels（iOS 系统模型零下载）双端分治、模型分发与队列/命令整合。
 - [image-annotation.md](design/image-annotation.md) — 图片标注设计。
+- [s3-backup.md](design/s3-backup.md) — S3 备份与恢复设计：dio+crypto 手写 SigV4 薄封装 + `VACUUM INTO` DB 快照、固定包结构与 manifest 提交标记、附件增量跳过、Vault 排除与全量替换恢复语义；对象存储 Server 明确不做（桌面精修走 MCP）。
+- [vector-embeddings.md](design/vector-embeddings.md) — 向量检索与派生数据策略：item_embeddings 独立派生表（schema v9，不进备份、恢复即清、可全量重算）、int8 量化约定、检索路径分档（暴力余弦 → sqlite-vec）。
+- [video-clips.md](design/video-clips.md) — 视频切片（关键区间）设计：clips_json 附属记录（schema v10）、clip:* 队列任务三段链（ffmpeg 提区间音轨→端侧 ASR→LLM 摘要）、区间结果独立回写通道不覆盖整片产物、视频源文件不进备份。
 
 ## engineering（工程规范）
 

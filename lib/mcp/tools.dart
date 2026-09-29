@@ -9,8 +9,8 @@ import '../models/item.dart';
 import 'jsonrpc.dart';
 
 /// MCP 工具集（PRD §7）：list/get/add/query_machine_data/get_timeline_context/
-/// update/delete/set_vault/reprocess/unlock_edit/batch_items/append_segment/translate_item，
-/// 共 13 个；execute_action 已裁决剔除。
+/// update/delete/set_vault/reprocess/unlock_edit/batch_items/append_segment/translate_item/
+/// summarize_item/extract_tags/classify_item 等；execute_action 已裁决剔除。
 /// 所有写/改动作经 ItemActionHandler（UI 与 MCP 同一套校验与实现）。
 /// 隐私硬约束由 Repository 默认查询保证：Vault 与已删条目物理不可见；
 /// 因此 MCP 对 Vault 条目仅可 set_vault(on=true) 移入，无法移出或读取。
@@ -235,6 +235,23 @@ List<Map<String, Object?>> toolSchemas() => [
             'expected_version': {
               'type': 'integer',
               'description': '可选乐观锁：你读取该条目时看到的 version',
+            },
+          },
+          'required': ['id'],
+        },
+      },
+      {
+        'name': 'classify_item',
+        'description': '用端侧 ML Kit 给图片打分类标签（与手机端「识别分类」按钮同一入口）。'
+            '异步入队执行：本调用只返回入队结果，标签稍后落库到 facets，'
+            '随后用 get_item 读取 facets 字段。仅图片条目可用，非图片会被拒绝。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
+            'expected_version': {
+              'type': 'integer',
+              'description': '可选乐观锁：你读取该条目时看到的 version，不一致则拒绝',
             },
           },
           'required': ['id'],
@@ -540,6 +557,18 @@ Future<List<Map<String, Object?>>> callTool(
             TranslateCommand(
               id,
               targetLang: _str(args['target_lang']),
+              expectedVersion: _int(args['expected_version']),
+            ),
+            actor: CommandActor.ai,
+          ));
+      return [_text(jsonEncode(r.toJson()))];
+
+    case 'classify_item':
+      final id = _str(args['id']);
+      if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      final r = await _guarded(() => handler.execute(
+            ClassifyCommand(
+              id,
               expectedVersion: _int(args['expected_version']),
             ),
             actor: CommandActor.ai,

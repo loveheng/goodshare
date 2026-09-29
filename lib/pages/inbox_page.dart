@@ -6,6 +6,7 @@ import '../data/repository.dart';
 import '../ui/drawer_menu_button.dart';
 import '../models/item.dart';
 import '../ui/content_card.dart';
+import '../ui/slogans.dart';
 import '../ui/repo_auto_reload.dart';
 import 'item_detail_page.dart';
 
@@ -206,8 +207,22 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
   /// 第 0 页：全部（按类型分组带计数）
   Widget _allPage() {
     if (_all.isEmpty) {
+      // 首页空态：口号 1 作欢迎语（原为独立闪屏，已融入主界面空态，不占常驻空间）
       return Center(
-        child: Text('没有匹配的收集', style: Theme.of(context).textTheme.bodySmall),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            PoeticText(sloganFor(SloganKeys.splash), align: TextAlign.center),
+            const SizedBox(height: 16),
+            Icon(ContentCard.iconOf(InboxItem.typeNote),
+                size: 48, color: Theme.of(context).colorScheme.outlineVariant),
+            const SizedBox(height: 12),
+            Text('还没有任何收集', style: Theme.of(context).textTheme.bodyMedium),
+            const SizedBox(height: 4),
+            Text('点屏幕 + 添加第一条',
+                style: Theme.of(context).textTheme.bodySmall),
+          ],
+        ),
       );
     }
     final groups = <String, List<InboxItem>>{};
@@ -284,6 +299,9 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      PoeticText(sloganFor(SloganKeys.empty),
+                          large: false, align: TextAlign.center),
+                      const SizedBox(height: 16),
                       Icon(ContentCard.iconOf(type),
                           size: 48,
                           color: Theme.of(context).colorScheme.outlineVariant),

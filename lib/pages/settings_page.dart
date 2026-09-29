@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../action/item_action_handler.dart';
 import '../data/repository.dart';
 import '../ui/drawer_menu_button.dart';
+import '../ui/slogans.dart';
 import '../ai/ai_queue_service.dart';
 import '../ai/asr_model.dart';
 import '../ai/capabilities.dart';
@@ -13,6 +14,7 @@ import '../ai/model_manager.dart';
 import '../ai/subtitle.dart';
 import '../share/text_collector.dart';
 import '../service/mcp_controller.dart';
+import '../sync/backup_service.dart';
 import 'mcp_page.dart';
 import 'recent_deleted_page.dart';
 import 'update_page.dart';
@@ -32,6 +34,7 @@ class SettingsPage extends StatefulWidget {
     required this.models,
     required this.llmModels,
     required this.aiQueue,
+    required this.backup,
     this.onOpenDrawer,
   });
 
@@ -43,6 +46,7 @@ class SettingsPage extends StatefulWidget {
   final ModelManager models;
   final LlmModelManager llmModels;
   final AiQueueService aiQueue;
+  final BackupService backup;
   final VoidCallback? onOpenDrawer;
 
   @override
@@ -60,6 +64,7 @@ class _SettingsPageState extends State<SettingsPage> {
     widget.models.addListener(_onModelsChanged);
     widget.llmModels.addListener(_onModelsChanged);
     widget.aiQueue.addListener(_onAiQueueChanged);
+    widget.backup.addListener(_onBackupChanged);
     widget.caps.ensureDetected(); // 首次检测后持久化；此后幂等
     _refreshTranslation(); // 翻译可用性与语言包状态是动态的，每次进入实时查
   }
@@ -120,10 +125,15 @@ class _SettingsPageState extends State<SettingsPage> {
     widget.models.removeListener(_onModelsChanged);
     widget.llmModels.removeListener(_onModelsChanged);
     widget.aiQueue.removeListener(_onAiQueueChanged);
+    widget.backup.removeListener(_onBackupChanged);
     super.dispose();
   }
 
   void _onCapsChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _onBackupChanged() {
     if (mounted) setState(() {});
   }
 
@@ -392,7 +402,13 @@ class _SettingsPageState extends State<SettingsPage> {
                   builder: (_) => RecentDeletedPage(handler: widget.handler, repo: widget.repo)),
             ),
           ),
+          const _SectionHeader('S3 备份'),
+          _S3BackupSection(backup: widget.backup),
           const _SectionHeader('关于'),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+            child: PoeticText(sloganFor(SloganKeys.about), large: false),
+          ),
           ListTile(
             leading: const Icon(Icons.system_update_alt),
             title: const Text('检查更新'),
@@ -720,4 +736,338 @@ class _LlmModelTile extends StatelessWidget {
       ),
     );
   }
+}
+
+/// S3 备份区块（2026-09-29，设计 docs/design/s3-backup.md §6/§7）：
+/// 服务器配置（endpoint/bucket/region/AK/SK 掩码）+ 测试连接 + 手动备份/恢复（进度条/取消）。
+/// 隐私边界明示：保险箱条目不备份（DB 快照含未加密正文，未加密远端不承载）。
+class _S3BackupSection extends StatefulWidget {
+  const _S3BackupSection({required this.backup});
+
+  final BackupService backup;
+
+  @override
+  State<_S3BackupSection> createState() => _S3BackupSectionState();
+}
+
+class _S3BackupSectionState extends State<_S3BackupSection> {
+  final _endpointCtrl = TextEditingController();
+  final _bucketCtrl = TextEditingController();
+  final _regionCtrl = TextEditingController();
+  final _akCtrl = TextEditingController();
+  final _skCtrl = TextEditingController();
+  bool _obscure = true;
+  String? _lastResult;
+
+  @override
+  void initState() {
+    super.initState();
+    _endpointCtrl.text = widget.backup.endpoint ?? '';
+    _bucketCtrl.text = widget.backup.bucket ?? '';
+    _regionCtrl.text = widget.backup.region ?? '';
+  }
+
+  @override
+  void dispose() {
+    _endpointCtrl.dispose();
+    _bucketCtrl.dispose();
+    _regionCtrl.dispose();
+    _akCtrl.dispose();
+    _skCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveConfig() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final endpoint = _endpointCtrl.text.trim();
+    final bucket = _bucketCtrl.text.trim();
+    if (endpoint.isEmpty || bucket.isEmpty) {
+      messenger.showSnackBar(const SnackBar(content: Text('请填写 endpoint 与 bucket')));
+      return;
+    }
+    try {
+      await widget.backup.saveConfig(
+        endpoint: endpoint,
+        bucket: bucket,
+        region: _regionCtrl.text.trim(),
+        accessKey: _akCtrl.text.trim(),
+        secretKey: _skCtrl.text,
+      );
+      messenger.showSnackBar(const SnackBar(content: Text('已保存，可点「测试连接」验证')));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('保存失败：$e')));
+    }
+  }
+
+  Future<void> _test() async {
+    final messenger = ScaffoldMessenger.of(context);
+    // 测试连接测的是「屏幕上的当前值」而非旧存档：先保存再测，
+    // 避免用户改了输入框没点保存 → 测的还是旧配置 → 「我明明填了 https」的困惑
+    final endpoint = _endpointCtrl.text.trim();
+    final bucket = _bucketCtrl.text.trim();
+    if (endpoint.isEmpty || bucket.isEmpty) {
+      messenger.showSnackBar(const SnackBar(content: Text('请填写 endpoint 与 bucket')));
+      return;
+    }
+    try {
+      await widget.backup.saveConfig(
+        endpoint: endpoint,
+        bucket: bucket,
+        region: _regionCtrl.text.trim(),
+        accessKey: _akCtrl.text.trim(),
+        secretKey: _skCtrl.text,
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('保存失败：$e')));
+      return;
+    }
+    messenger.showSnackBar(const SnackBar(content: Text('正在测试连接…')));
+    try {
+      final msg = await widget.backup.testConnection();
+      messenger.showSnackBar(SnackBar(content: Text(msg)));
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.toString())));
+    }
+  }
+
+  Future<void> _backupNow() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final r = await widget.backup.runBackup();
+      messenger.showSnackBar(SnackBar(content: Text(r.message)));
+      setState(() => _lastResult = r.message);
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('备份启动失败：$e')));
+    }
+  }
+
+  Future<void> _restore() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('从 S3 恢复？'),
+        content: const Text(
+          '将用备份覆盖本机全部数据（条目 / 附件 / 草稿 / 任务队列）。\n'
+          '视频源文件不在备份内（恢复后该条目显示文件缺失，重新分享收集即可回填）；\n'
+          '保险箱条目从未进备份，不受影响。建议先做一次备份。',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('确认恢复')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      final r = await widget.backup.runRestore();
+      messenger.showSnackBar(SnackBar(content: Text(r.message)));
+      setState(() => _lastResult = r.message);
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('恢复启动失败：$e')));
+    }
+  }
+
+  String _progressLabel(BackupProgress p) {
+    final phase = switch (p.phase) {
+      'snapshot' => '生成数据库快照',
+      'attachments' => '上传附件',
+      'db' => '上传数据库',
+      'manifest' => '写入备份清单（提交）',
+      'restore_manifest' => '校验备份清单',
+      'restore_db' => '恢复数据库',
+      'restore_attachments' => '恢复附件',
+      _ => '',
+    };
+    final total = p.total > 0 ? ' $p.done/$p.total' : '';
+    final cur = p.currentLabel.isNotEmpty ? '（${p.currentLabel}）' : '';
+    return '$phase$total$cur';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final backup = widget.backup;
+    final busy = backup.busy;
+    final scheme = Theme.of(context).colorScheme;
+    final last = backup.lastBackup;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: TextField(
+            controller: _endpointCtrl,
+            enabled: !busy,
+            decoration: const InputDecoration(
+              labelText: 'S3 Endpoint',
+              hintText: 'https://s3.example.com:9000',
+              helperText: 'MinIO / NAS / R2 / B2 / OSS 等 S3 兼容服务（path-style）；'
+                  'R2 填 https://<账户ID>.r2.cloudflarestorage.com',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              Expanded(
+                flex: 3,
+                child: TextField(
+                  controller: _bucketCtrl,
+                  enabled: !busy,
+                  decoration: const InputDecoration(
+                    labelText: 'Bucket',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                flex: 2,
+                child: TextField(
+                  controller: _regionCtrl,
+                  enabled: !busy,
+                  decoration: const InputDecoration(
+                    labelText: 'Region',
+                    hintText: 'us-east-1',
+                    helperText: 'Cloudflare R2 填 auto',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: TextField(
+            controller: _akCtrl,
+            enabled: !busy,
+            decoration: const InputDecoration(
+              labelText: 'Access Key',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: TextField(
+            controller: _skCtrl,
+            enabled: !busy,
+            obscureText: _obscure,
+            decoration: InputDecoration(
+              labelText: 'Secret Key',
+              border: const OutlineInputBorder(),
+              isDense: true,
+              suffixIcon: IconButton(
+                icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility),
+                onPressed: () => setState(() => _obscure = !_obscure),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              Expanded(
+                child: FilledButton.tonal(onPressed: busy ? null : _saveConfig, child: const Text('保存配置')),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: FilledButton.tonalIcon(
+                  onPressed: busy ? null : _test,
+                  icon: const Icon(Icons.network_check, size: 18),
+                  label: const Text('测试连接'),
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (backup.hasConfig && !busy) ...[
+          const SizedBox(height: 12),
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.cloud_upload_outlined),
+            title: const Text('立即备份'),
+            subtitle: const Text('数据库 + 附件增量上传；视频默认不备份（详情页「整片标记」的视频例外）；保险箱条目不备份（未加密）'),
+            trailing: FilledButton(onPressed: _backupNow, child: const Text('备份')),
+          ),
+          ListTile(
+            dense: true,
+            leading: const Icon(Icons.cloud_download_outlined),
+            title: const Text('从备份恢复'),
+            subtitle: const Text('用最近一次备份覆盖本机数据（保险箱不受影响）'),
+            trailing: FilledButton.tonal(onPressed: _restore, child: const Text('恢复')),
+          ),
+        ],
+        if (busy) ...[
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Column(
+              children: [
+                LinearProgressIndicator(
+                  value: backup.progress.total > 0
+                      ? backup.progress.done / backup.progress.total
+                      : null,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  _progressLabel(backup.progress),
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(color: scheme.onSurfaceVariant),
+                ),
+                const SizedBox(height: 4),
+                TextButton.icon(
+                  onPressed: backup.cancel,
+                  icon: const Icon(Icons.stop, size: 16),
+                  label: const Text('取消（远端旧备份不受影响）'),
+                ),
+              ],
+            ),
+          ),
+        ],
+        if (!busy && _lastResult != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: Text(
+              _lastResult!,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+          ),
+        if (!busy && last != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: Text(
+              '最近备份：${_fmtBackupTs(last.ts)}（${last.itemCount} 条）',
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+String _fmtBackupTs(int ms) {
+  final d = DateTime.fromMillisecondsSinceEpoch(ms);
+  String two(int v) => v.toString().padLeft(2, '0');
+  return '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}';
 }

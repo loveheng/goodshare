@@ -8,6 +8,7 @@ import '../ai/model_manager.dart';
 import '../data/repository.dart';
 import '../share/text_collector.dart';
 import '../service/mcp_controller.dart';
+import '../sync/backup_service.dart';
 import '../ui/floating_ball.dart';
 import 'add_sheet.dart';
 import 'ai_tags_page.dart';
@@ -32,6 +33,7 @@ class HomeShell extends StatefulWidget {
     required this.models,
     required this.llmModels,
     required this.aiQueue,
+    required this.backup,
   });
 
   final Repository repo;
@@ -42,6 +44,7 @@ class HomeShell extends StatefulWidget {
   final ModelManager models;
   final LlmModelManager llmModels;
   final AiQueueService aiQueue;
+  final BackupService backup;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
@@ -84,6 +87,7 @@ class _HomeShellState extends State<HomeShell> {
       models: widget.models,
       llmModels: widget.llmModels,
       aiQueue: widget.aiQueue,
+      backup: widget.backup,
       onOpenDrawer: () => _scaffoldKey.currentState?.openDrawer(),
     ),
   ];

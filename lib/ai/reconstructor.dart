@@ -1,3 +1,5 @@
+import 'video_clips.dart';
+
 /// AI 双态重构输入：待处理的脏数据（V2 需求 §3.8 接口契约）。
 class ReconstructInput {
   const ReconstructInput({
@@ -42,6 +44,7 @@ class ReconstructResult {
     this.translateLang,
     this.summaryMd,
     this.note,
+    this.clip,
   });
 
   final String humanMd;
@@ -63,6 +66,11 @@ class ReconstructResult {
   ///
   /// 非空不代表失败（降级仍可能产出结果），只是把"静默成功"变成"明说"。
   final String? note;
+
+  /// 视频切片区间产出（2026-09-29，设计 docs/design/video-clips.md）。
+  /// 非空时 handler 只把本段合并进条目的 `clips_json`（派生附属记录），
+  /// **不触碰** human_md / summary_md 等条目级字段——区间结果不得覆盖整片产物。
+  final ClipSegment? clip;
   final bool masked; // 是否已执行隐私打码（V2 §3.4；占位实现恒 false）
   final String? itemType; // AI 重分类（如 image→chatlog）；null = 不改
   final Map<String, List<String>>? facets; // 多视角聚类：视角→标签（V2 AI 分类页消费）

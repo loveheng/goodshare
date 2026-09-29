@@ -7,6 +7,7 @@ class RemoteConfig {
     this.announcementId,
     this.mcpInstructions,
     this.flags = const {},
+    this.slogans,
   });
 
   factory RemoteConfig.fromJson(Map<String, Object?> json) => RemoteConfig(
@@ -14,6 +15,7 @@ class RemoteConfig {
         announcementId: json['announcementId'] as String?,
         mcpInstructions: json['mcpInstructions'] as String?,
         flags: (json['flags'] as Map?)?.cast<String, Object?>() ?? const {},
+        slogans: (json['slogans'] as Map?)?.cast<String, String>(),
       );
 
   static const empty = RemoteConfig();
@@ -24,6 +26,9 @@ class RemoteConfig {
   /// 非空时覆盖 MCP initialize 返回的 instructions（配置热更入口）
   final String? mcpInstructions;
   final Map<String, Object?> flags;
+
+  /// 文青风口号（按落点 key 覆盖本地默认值，缺省回退本地默认；详见 lib/ui/slogans.dart）
+  final Map<String, String>? slogans;
 }
 
 /// 更新清单：自更新 + 配置热更共用一份 update.json。

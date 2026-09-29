@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 
+import '../ai/video_clips.dart';
 import '../models/item.dart';
 import 'db.dart';
 
@@ -59,10 +60,41 @@ class Repository extends ChangeNotifier {
   static const taskSummarizeUrl = 'summarize_url';
   static const taskTranscribeAudio = 'transcribe_audio';
   static const taskTranslate = 'translate';
+  // 图片分类（ML Kit Image Labeling，2026-09-29）：仅手动触发，产出写入 facets['分类']
+  static const taskClassifyImage = 'classify_image';
   // 端侧 LLM 任务动作（2026-09-28，设计见 docs/design/on-device-llm.md §5）：
   // 摘要 / 关键词均由专门命令显式入队（手动触发，绝不自动入队）。
   static const taskLlmSummarize = 'llm_summarize';
   static const taskLlmTags = 'llm_tags';
+
+  // 视频切片（2026-09-29，设计 docs/design/video-clips.md）：区间编码进动作串
+  // （队列表无参数列，与 translate:<lang> 同口径）。
+  static const taskClipPrefix = 'clip:';
+
+  /// 视频切片任务动作：`clip:<startMs>-<endMs>:<steps>`（步骤字母 e/t/s，见
+  /// video_clips.dart 的 normalizeClipSteps——E2 摘要自动带动转写前置）。
+  static String clipTaskAction(int startMs, int endMs, List<String> steps) {
+    final letters = [for (final s in normalizeClipSteps(steps)) switch (s) {
+      'extract' => 'e',
+      'transcribe' => 't',
+      'summary' => 's',
+      _ => '',
+    }];
+    return '$taskClipPrefix$startMs-$endMs:${letters.join()}';
+  }
+
+  /// 解析 clip 任务动作；非 clip 前缀 / 格式坏 / 步骤为空 → null。
+  static (int, int, List<String>)? parseClipTaskAction(String? action) {
+    if (action == null || !action.startsWith(taskClipPrefix)) return null;
+    final m = RegExp(r'^clip:(\d+)-(\d+):([ets]{1,3})$').firstMatch(action);
+    if (m == null) return null;
+    final steps = <String>[
+      for (final ch in m.group(3)!.split(''))
+        if (ch == 'e') 'extract' else if (ch == 't') 'transcribe' else if (ch == 's') 'summary',
+    ];
+    if (steps.isEmpty) return null;
+    return (int.parse(m.group(1)!), int.parse(m.group(2)!), steps);
+  }
 
   /// translate 任务动作串：可带目标语言后缀（`translate` / `translate:ja`）。
   /// 队列表无参数列，故把「单次指定的目标语言」编码进动作串，避免为一次覆盖加列。
@@ -488,6 +520,156 @@ class Repository extends ChangeNotifier {
     return rows.map(InboxItem.fromMap).toList();
   }
 
+  // ---- S3 备份快照与恢复（2026-09-29，设计 docs/design/s3-backup.md §4/§5）----
+
+  /// 整库快照到 [dest]（`VACUUM INTO`，原子一致）。
+  ///
+  /// 安全边界：DB 快照含**未加密正文**，而备份目的地（未加密远端）不可信，
+  /// 故快照副本上先物理删除 Vault 条目（含关联队列/草稿行）再 `VACUUM` 回收页——
+  /// 不 VACUUM 则已删内容仍留在文件页里。Vault 只排除计数，不进快照。
+  ///
+  /// 版本约束：`VACUUM INTO` 需 SQLite 3.22+（Android 10+ 系统库；minSdk 24 的
+  /// 老设备会失败）——运行时探测，不满足时抛带设备级说明的异常（错误可感知，不静默降级）。
+  /// 过程文件走 `dest.snap.part`，成功后 rename 到 [dest]，中断不留半截快照。
+  Future<SnapshotResult> snapshotTo(File dest) async {
+    final db = await _database();
+    // SQLite 版本探测走标准函数 sqlite_version()：sqflite ffi 下 `PRAGMA sqlite_version`
+    // 返回空结果集（实测），标准 SELECT 两种实现都稳定
+    final verRow = await db.rawQuery('SELECT sqlite_version() AS v');
+    final ver = '${verRow.first['v']}';
+    if (!_sqliteVersionAtLeast(ver, 3, 22)) {
+      throw Exception('备份不可用：本机 SQLite $ver 过旧（备份需 3.22+，即 Android 10+ 系统库）');
+    }
+    final temp = File('${dest.path}.snap.part');
+    if (await temp.exists()) await temp.delete();
+    await db.execute('VACUUM INTO ?', [temp.path]);
+    // 打开快照（独立连接，不动主库），删 Vault 行后 VACUUM 压实
+    final snap = await openDatabase(temp.path);
+    late final SnapshotResult result;
+    try {
+      final count = (await snap.rawQuery('SELECT COUNT(*) c FROM inbox_items WHERE is_vault = 1'))
+          .first['c'] as int? ?? 0;
+      final embCount =
+          (await snap.rawQuery('SELECT COUNT(*) c FROM item_embeddings')).first['c'] as int? ?? 0;
+      if (count > 0 || embCount > 0) {
+        await snap.transaction((txn) async {
+          // 先删依赖方（队列按 item_id 级联/草稿按 target_id 前缀 'edit:<itemId>:<field>'），再删本体
+          await txn.rawQuery(
+            'DELETE FROM ai_task_queue WHERE item_id IN (SELECT id FROM inbox_items WHERE is_vault = 1)',
+          );
+          await txn.rawQuery(
+            "DELETE FROM drafts WHERE EXISTS (SELECT 1 FROM inbox_items v "
+            "WHERE v.is_vault = 1 AND drafts.target_id LIKE 'edit:' || v.id || ':%')",
+          );
+          await txn.rawQuery('DELETE FROM inbox_items WHERE is_vault = 1');
+          // 向量等派生数据整表不进备份（可全量重算，备份只保护事实源）
+          await txn.execute('DELETE FROM item_embeddings');
+        });
+        await snap.execute('VACUUM'); // 物理回收页：已删正文不得留在文件里
+      }
+      final kept = (await snap.rawQuery('SELECT COUNT(*) c FROM inbox_items')).first['c'] as int? ?? 0;
+      result = SnapshotResult(itemCount: kept, vaultExcluded: count);
+    } finally {
+      await snap.close();
+    }
+    await temp.rename(dest.path); // 成功后才转正：调用方拿到 dest 即完整快照
+    return result;
+  }
+
+  /// 版本比较：`PRAGMA sqlite_version` 返回如 '3.40.1'；按数字段比较，避免字符串序误判。
+  static bool _sqliteVersionAtLeast(String ver, int major, int minor) {
+    final parts = ver.split('.').map((s) => int.tryParse(s) ?? 0).toList();
+    final maj = parts.isNotEmpty ? parts[0] : 0;
+    final min = parts.length > 1 ? parts[1] : 0;
+    return maj > major || (maj == major && min >= minor);
+  }
+
+  /// 从快照文件 [src] 全量恢复四表（设计 §5：云端为源，本地被整体替换）。
+  ///
+  /// 走 ATTACH + 事务：单事务内 DELETE 本地各表 + INSERT FROM 快照，中途失败整体回滚，
+  /// 本地数据不会被恢复动作破坏一半。rowid 一并保留（FTS5 外容表映射依赖 rowid 稳定）。
+  Future<RestoreResult> restoreFrom(File src) async {
+    final db = await _database();
+    await db.execute("ATTACH DATABASE ? AS gs_backup", [src.path]);
+    try {
+      await db.transaction((txn) async {
+        for (final t in const ['inbox_items', 'ai_task_queue', 'daily_metrics', 'drafts']) {
+          await txn.execute('DELETE FROM $t');
+          await txn.execute('INSERT INTO $t SELECT * FROM gs_backup.$t');
+        }
+        // 派生向量随本地事实源一起失效（快照里本就没有；旧向量指向恢复前条目），
+        // 清空待重算，恢复语义恒为「事实源全量替换 + 缓存归零」
+        await txn.execute('DELETE FROM item_embeddings');
+      });
+    } finally {
+      await db.execute('DETACH DATABASE gs_backup');
+    }
+    final kept = (await db.rawQuery('SELECT COUNT(*) c FROM inbox_items')).first['c'] as int? ?? 0;
+    notifyListeners(); // 恢复后 UI 整体刷新（与 [transaction] 同口径：导入完成统一广播一次）
+    return RestoreResult(itemCount: kept);
+  }
+
+  /// 当前 DB schema 版本（备份 manifest 记录用，恢复端可据此提示跨大版本风险）。
+  ///
+  /// 读 `PRAGMA user_version`——openDatabase(version: 9) 由 sqflite 维护的应用级版本；
+  /// `PRAGMA schema_version` 是 SQLite 内部 schema cookie（DDL 即变），不是项目语义。
+  Future<int> schemaVersion() async {
+    final db = await _database();
+    final v = await db.rawQuery('PRAGMA user_version');
+    return v.first.values.first is int ? v.first.values.first as int : 0;
+  }
+
+  // ---- 向量派生数据（schema v9，设计 docs/design/vector-embeddings.md）----
+
+  /// 整体替换某条目在某模型下的全部向量（分块嵌入：长文本多 chunk，短条目恒单 chunk）。
+  ///
+  /// 派生缓存治理，非条目域写：不 bump 乐观锁 version、不 notifyListeners（不进任何
+  /// UI 读路径，消费方是未来的向量检索引擎）；写入方（嵌入管线）接入时无需经
+  /// ItemActionHandler——与 snapshotTo/restoreFrom 同属「数据层维护原语」。
+  Future<void> replaceItemEmbeddings({
+    required String itemId,
+    required String model,
+    required List<ItemEmbedding> vectors,
+  }) async {
+    final db = await _database();
+    await db.transaction((txn) async {
+      await txn.delete(
+        'item_embeddings',
+        where: 'item_id = ? AND model = ?',
+        whereArgs: [itemId, model],
+      );
+      final now = DateTime.now().millisecondsSinceEpoch;
+      for (final v in vectors) {
+        await txn.insert('item_embeddings', {
+          'item_id': itemId,
+          'model': model,
+          'chunk_index': v.chunkIndex,
+          'dim': v.dim,
+          'dtype': v.dtype,
+          'vec': v.vec,
+          'created_at': now,
+        });
+      }
+    });
+  }
+
+  /// 删除某条目的向量（缺省全模型；换模型重算前清旧档用）。
+  Future<void> deleteItemEmbeddings(String itemId, {String? model}) async {
+    final db = await _database();
+    await db.delete(
+      'item_embeddings',
+      where: model == null ? 'item_id = ?' : 'item_id = ? AND model = ?',
+      whereArgs: model == null ? [itemId] : [itemId, model],
+    );
+  }
+
+  /// 当前库内向量总行数（体积观测与测试用）。
+  Future<int> embeddingsCount() async {
+    final db = await _database();
+    final rows = await db.rawQuery('SELECT COUNT(*) c FROM item_embeddings');
+    return rows.first['c'] as int? ?? 0;
+  }
+
   (String, List<Object?>) _filters({
     String? query,
     String? type,
@@ -509,4 +691,37 @@ class Repository extends ChangeNotifier {
     }
     return (where.join(' AND '), args);
   }
+}
+
+/// 快照导出结果（[Repository.snapshotTo]）：快照内条目数（不含 Vault）与被排除的 Vault 计数。
+class SnapshotResult {
+  const SnapshotResult({required this.itemCount, required this.vaultExcluded});
+
+  final int itemCount;
+  final int vaultExcluded;
+}
+
+/// 恢复导入结果（[Repository.restoreFrom]）：导入后本地条目数（含软删，全量替换语义）。
+class RestoreResult {
+  const RestoreResult({required this.itemCount});
+
+  final int itemCount;
+}
+
+/// 单条向量（[Repository.replaceItemEmbeddings] 载荷）。
+///
+/// [vec] 为原始字节，按 [dtype] 解释：`f32` = 小端 float32（每维 4 字节）、
+/// `int8` = 量化字节（每维 1 字节，量化约定见 docs/design/vector-embeddings.md §2）。
+class ItemEmbedding {
+  const ItemEmbedding({
+    required this.chunkIndex,
+    required this.dim,
+    required this.dtype,
+    required this.vec,
+  });
+
+  final int chunkIndex;
+  final int dim;
+  final String dtype;
+  final Uint8List vec;
 }

@@ -1,4 +1,4 @@
 ---
-confirm: pending
+confirm: resolved
 format: v1
 ---

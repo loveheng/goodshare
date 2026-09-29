@@ -33,6 +33,8 @@ class InboxItem {
     this.translatedMd,
     this.translateLang,
     this.summaryMd,
+    this.clipsJson,
+    this.videoWholeMarked = false,
     List<String> tags = const [],
     Map<String, List<String>>? facets,
     this.isVault = false,
@@ -63,6 +65,8 @@ class InboxItem {
   final String? translatedMd; // 译文（翻译层产出；与 humanMd 并列，不覆盖原文）
   final String? translateLang; // 译文语言码（BCP-47），与 translatedMd 成对
   final String? summaryMd; // 端侧 LLM 摘要（与 humanMd 并列，不覆盖原文；2026-09-28 v8）
+  final String? clipsJson; // 视频切片（关键区间）附属记录 JSON（schema v10，2026-09-29）
+  final bool videoWholeMarked; // 整片标记：备份时携带源文件（schema v11，2026-09-29）
   final List<String> tags;
   final Map<String, List<String>>? facets; // 多视角聚类：视角 → 标签（AI 分类页消费，V2）
   final bool isVault;
@@ -113,6 +117,8 @@ class InboxItem {
         'translated_md': translatedMd,
         'translate_lang': translateLang,
         'summary_md': summaryMd,
+        'clips_json': clipsJson,
+        'video_whole_marked': videoWholeMarked ? 1 : 0,
         'tags': jsonEncode(tags),
         'facets_json': facets == null ? null : jsonEncode(facets),
         'is_vault': isVault ? 1 : 0,
@@ -179,6 +185,8 @@ class InboxItem {
       translatedMd: map['translated_md'] as String?,
       translateLang: map['translate_lang'] as String?,
       summaryMd: map['summary_md'] as String?,
+      clipsJson: map['clips_json'] as String?,
+      videoWholeMarked: (map['video_whole_marked'] as int? ?? 0) == 1,
       tags: tagsOf(map['tags']),
       facets: facetsOf(map['facets_json']),
       isVault: (map['is_vault'] as int? ?? 0) == 1,
@@ -208,6 +216,8 @@ class InboxItem {
     String? translatedMd,
     String? translateLang,
     String? summaryMd,
+    String? clipsJson,
+    bool? videoWholeMarked,
     List<String>? tags,
     Map<String, List<String>>? facets,
     bool? isVault,
@@ -235,6 +245,8 @@ class InboxItem {
         translatedMd: translatedMd ?? this.translatedMd,
         translateLang: translateLang ?? this.translateLang,
         summaryMd: summaryMd ?? this.summaryMd,
+        clipsJson: clipsJson ?? this.clipsJson,
+        videoWholeMarked: videoWholeMarked ?? this.videoWholeMarked,
         tags: tags ?? this.tags,
         facets: facets ?? this.facets,
         isVault: isVault ?? this.isVault,

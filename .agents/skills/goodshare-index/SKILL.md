@@ -24,6 +24,9 @@ description: 拾贝 goodshare（Flutter 分享收集器+MCP 服务）的「功�
 | 浏览 | 收集列表/搜索/详情/再分享 UI、导航/页面/设置树/组件规范、详情模板注册表 | `lib/pages/` `lib/ui/` `lib/main.dart`（`find lib/pages lib/ui -type f`） | docs/design/ui-spec.md |
 | MCP 服务 | 端点/鉴权/版本协商、工具集、token 总控、前台保活 | `lib/mcp/` `lib/service/`（`find lib/mcp lib/service -type f`） | docs/guide/mcp-integration.md、docs/architecture/overview.md |
 | 更新体系 | 应用内自更新（清单/下载/校验/安装）、配置热更（公告/MCP instructions） | `lib/update/` `lib/pages/update_page.dart`（`find lib/update -type f`） | docs/guide/self-update.md |
+| 备份同步 | S3 备份/恢复（endpoint/bucket/AK/SK 配置与测试、DB 快照 VACUUM INTO、SigV4 传输、附件增量上传/下载、全量替换恢复、Vault 排除）、BackupService 状态机与进度 | `lib/sync/` `lib/pages/settings_page.dart`（备份区块）（`find lib/sync -type f`） | docs/design/s3-backup.md |
+| 向量派生数据 | item_embeddings 派生表（schema v9，分块向量缓存：不进备份、恢复即清、换模型全量重算）、嵌入 CRUD（`replaceItemEmbeddings`/`deleteItemEmbeddings`/`embeddingsCount`） | `lib/data/db.dart` `lib/data/repository.dart` | docs/design/vector-embeddings.md |
+| 视频切片 | 关键区间登记/校验（ClipCommand）、clip:* 队列任务（ffmpeg 提区间→ASR→LLM 摘要）、clips_json 附属记录（schema v10）、区间结果独立回写通道 | `lib/ai/video_clips.dart` `lib/ai/clip_reconstructor.dart` `lib/action/`（clip 路径） | docs/design/video-clips.md |
 | 桌面桥接 | stdio↔HTTP 桥、e2e 自检、客户端接入配置 | `mcp-bridge/`（`find mcp-bridge -type f`） | docs/guide/mcp-integration.md |
 | 构建发布 | manifest 权限/intent-filter、targetSdk、签名 | `android/`（`find android/app -type f`） | .agents/skills/goodshare-workflow |
 
