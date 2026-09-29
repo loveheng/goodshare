@@ -7,7 +7,7 @@ import 'normalizer.dart';
 /// - 纯文本（txt / OCR 产出 / ASR 转写）→ 按空行分段为段落块
 ///
 /// 纯文本无层级结构可言，不强造标题——铁律是「宁可样式平，不可吞内容」。
-class PlainTextNormalizer implements DocumentNormalizer {
+class PlainTextNormalizer extends DocumentNormalizer {
   @override
   List<String> get extensions => const ['txt', 'text', 'log', 'csv'];
 
@@ -20,7 +20,7 @@ class PlainTextNormalizer implements DocumentNormalizer {
 }
 
 /// 直通：输入本身就是 Markdown 子集载体。
-class MarkdownNormalizer implements DocumentNormalizer {
+class MarkdownNormalizer extends DocumentNormalizer {
   @override
   List<String> get extensions => const ['md', 'markdown'];
 

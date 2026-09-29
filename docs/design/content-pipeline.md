@@ -60,7 +60,7 @@ updated: 2026-09-29
 lib/doc/
 ├─ normalizer.dart      DocumentNormalizer 接口 + Registry（按扩展名/MIME 分发）
 ├─ html_to_md.dart      网页抓取 → 富文本
-├─ pdf_to_md.dart       pdfx 提取 → 富文本（启发式结构）
+├─ pdf_to_md.dart       pdfrx 提取 → 富文本（启发式结构）
 ├─ plain_to_md.dart     txt / OCR / 转写 → 段落块
 └─ (docx 留插槽：接口已备，实现不做)
 ```
@@ -70,7 +70,7 @@ lib/doc/
 | `md` | 直通 | 高 | — |
 | `txt` | 空行分段 → 段落块 | 中 | 无层级 |
 | `html` | h/ul/ol/blockquote/pre → Markdown | 高 | **现 `url_extract.dart` 丢全部结构，须补** |
-| `pdf` | pdfx 提取 + 字号/位置启发式判标题 | 中低 | **DEGRADE**：启发式，命中即标题，否则段落 |
+| `pdf` | pdfrx 提取 + 行特征启发式判标题 | 中低 | **DEGRADE**：纯文本无字号/位置，按行特征猜标题，命中即标题，否则段落 |
 | OCR / 转写 | 纯文本 → 段落块 | 低 | 源本身无结构 |
 | `docx` | **不做** | — | OOXML 解析代价与收益不成比例；退化为文件卡 + 系统打开 |
 
@@ -150,7 +150,7 @@ ref（引用中，未复制） ──用户点导入──▶ owned（已持有�
 
 | 项 | 默认 |
 |---|---|
-| PDF 库 | `pdfx`（可渲染 + 可提取文本）；引入前核 pub.dev 活跃度与许可 |
+| PDF 库 | `pdfrx`（文本提取；渲染需求另议）；已核 pub.dev 活跃度与许可（注：`pdfx` 2.x 仅渲染无文本 API，`pdf_text` 在本项目 Dart 3.13 下 http 版本冲突不可用） |
 | 长文门控 | 截断 +「展开全文」 |
 | 富文本链接 | 不可点（不加 `url_launcher`） |
 | 待办勾选 | 渲染先出，勾选下一轮 |

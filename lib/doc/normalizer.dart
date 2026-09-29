@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'html_to_md.dart';
+import 'pdf_to_md.dart';
 import 'plain_to_md.dart';
 
 /// 文档归一化：把各种来源格式统一转成 app 的富文本载体（Markdown 子集）。
@@ -69,6 +70,13 @@ abstract class DocumentNormalizer {
   ///
   /// 纯函数实现（html/plain）直接返回；需要引擎的实现（pdf）内部异步处理。
   Future<NormalizedDoc> normalize(String content, {int maxChars = kNormalizeMaxChars});
+
+  /// 从文件路径归一化。默认实现：读文本后调 [normalize]；
+  /// 二进制格式（pdf）重写此默认以专用读取器（如 pdfium）。
+  Future<NormalizedDoc> normalizePath(String path, {int maxChars = kNormalizeMaxChars}) async {
+    final content = await File(path).readAsString();
+    return normalize(content, maxChars: maxChars);
+  }
 }
 
 /// 归一化器注册表：按扩展名分派。
@@ -79,7 +87,7 @@ class DocumentNormalizers {
     MarkdownNormalizer(),
     HtmlNormalizer(),
     PlainTextNormalizer(),
-    // PdfNormalizer 待 pdfx 引入后注册（PDF 是二进制，需专门读取路径）。
+    PdfNormalizer(),
   ];
 
   /// 取路径扩展名（小写，不含点）；无扩展名返回空串。
@@ -101,6 +109,7 @@ class DocumentNormalizers {
   }
 
   /// 读文件并归一化。无匹配归一化器 / 读取失败返回 null（不抛异常逃逸）。
+  /// 二进制格式（pdf）由归一化器自行读取路径，不在此读文本。
   static Future<NormalizedDoc?> normalizeFile(
     String path, {
     int maxChars = kNormalizeMaxChars,
@@ -108,8 +117,7 @@ class DocumentNormalizers {
     final n = resolveFor(path);
     if (n == null) return null;
     try {
-      final content = await File(path).readAsString();
-      return await n.normalize(content, maxChars: maxChars);
+      return await n.normalizePath(path, maxChars: maxChars);
     } catch (e) {
       return NormalizedDoc(
         markdown: '',

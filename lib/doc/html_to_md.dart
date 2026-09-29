@@ -11,7 +11,7 @@ import 'normalizer.dart';
 /// - 图片 → `[图片：alt]` 文本占位（富文本载体不支持内联图片）
 /// - 有序列表 → 统一为 `- `（有序性不保留，属已知降级）
 /// - 其余不认识的标签 → 剥为纯文本
-class HtmlNormalizer implements DocumentNormalizer {
+class HtmlNormalizer extends DocumentNormalizer {
   @override
   List<String> get extensions => const ['html', 'htm', 'xhtml'];
 

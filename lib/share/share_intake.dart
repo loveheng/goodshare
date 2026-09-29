@@ -16,10 +16,19 @@ import 'text_parse.dart';
 /// 入库一律经 `ItemActionHandler`（`CollectCommand`）——与手动添加、MCP `add_item` 同源，
 /// 共享同一套防呆与入队出口（Human-AI 对称性：写必走动作层）。
 class ShareIntake {
-  ShareIntake(this._handler, this._collector);
+  ShareIntake(this._handler, this._collector, {this.referenceMode = true});
 
   final ItemActionHandler _handler;
   final TextCollector _collector;
+
+  /// 引用模式（content-pipeline §6/§7）：默认 true——分享摄入**不复制**原件，
+  /// 直接引用源 URI 并标记 `attachState=ref`，app 不占用户存储。
+  /// 复制模式（false）走旧路径 [copyToAppDir]，标记为 owned。
+  ///
+  /// ⚠️ 持久化 URI 权限（takePersistableUriPermission）与 content:// 可达性检测
+  /// 依赖 Android SAF，需真机验证（本机无设备）。未实测前引用条目可能随源 app
+  /// 回收权限而失效——属已知平台约束，非代码缺陷，详见 epic devlog。
+  final bool referenceMode;
   bool _busy = false;
 
   /// 来源标识：插件 1.9.0 不提供来源 App 信息，统一记为「系统分享」便于溯源。
@@ -51,15 +60,27 @@ class ShareIntake {
       final (texts, files) = classify(medias);
 
       for (final f in files) {
-        final saved = await copyToAppDir(f.path);
-        if (saved == null) continue; // 源文件失效，丢弃该附件
         final t = _typeOfMedia(f);
-        await _handler.execute(CollectCommand(
-          itemType: t,
-          sourceApp: _sourceApp,
-          humanTitle: _baseName(f.path),
-          rawFilePath: saved,
-        ));
+        if (referenceMode) {
+          // 引用模式：不复制，直接引用源 URI（content:// 或 file://），
+          // 标记 ref——app 不占用户存储（content-pipeline §6）。
+          await _handler.execute(CollectCommand(
+            itemType: t,
+            sourceApp: _sourceApp,
+            humanTitle: _baseName(f.path),
+            rawFilePath: f.path,
+            attachState: InboxItem.attachRef,
+          ));
+        } else {
+          final saved = await copyToAppDir(f.path);
+          if (saved == null) continue; // 源文件失效，丢弃该附件
+          await _handler.execute(CollectCommand(
+            itemType: t,
+            sourceApp: _sourceApp,
+            humanTitle: _baseName(f.path),
+            rawFilePath: saved,
+          ));
+        }
       }
 
       for (final t in texts) {

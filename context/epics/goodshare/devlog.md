@@ -191,3 +191,22 @@ last-merge: 2026-09-29
 
 ## 断点
 - [断点] 五步改版（排序参数 / 导航层 / 详情文档化 / 归一化落库 / 引用模式地基）已全部提交；工作区闭环本批完成。剩余：①**引用模式「摄入改 ref」**需实测 file_picker/image_picker 能否拿 SAF 可持久化 URI（本机无设备，阻塞项）②**备份携带工作区两表**待拍板 ③待办勾选写路径（V2，TodoMark 生产侧未实现）④PDF 转换器（pdfx）+ 文档类型支持矩阵
+
+---
+
+# 2026-09-30 · 内容管线收尾：引用模式落地 + 备份携带工作区表 + PDF 文本提取（pdfrx）
+
+[落点] lib/share/share_intake.dart（referenceMode 默认 ref 不复制存源 URI）/ lib/action/commands.dart（CollectCommand.attachState）/ lib/action/item_action_handler.dart（引用模式生效）/ lib/doc/attach.dart（Attach.reachable 兼容 content://）；lib/data/repository.dart（restoreFrom 4→6 表）；lib/doc/pdf_to_md.dart（PdfNormalizer）/ lib/doc/normalizer.dart（注册 DocumentNormalizers）/ pubspec.yaml（pdfrx ^2.6.5）+ pubspec.lock
+
+## 做法
+- **引用模式（摄入改 ref）**：`ShareIntake.referenceMode` 默认 true——分享进来的附件**不复制进 app 私有目录**，直接存源 URI（含 `content://`）并标 `attachRef`；`CollectCommand.attachState` 把状态机（ref/owned/lost）写入 appendix_json 段；handler 生效路径据 attachState 走引用而非 owned 复制；`Attach.reachable` 扩展支持 `content://`（SAF 授予的临时/持久读权限 URI）。与 09-29 已落地的 attach_state 列 + Attach.reachable 地基衔接。
+- **备份携带工作区两表（用户拍板）**：`restoreFrom` 恢复表由 4 张（inbox_items/ai_task_queue/daily_metrics/drafts）扩到 6 张，新增 workspaces / workspace_items——属用户事实数据非派生，按用户拍板进备份（与 Vault 排除、派生向量清空互不冲突）。snapshotTo 侧不变。
+- **PDF 文本提取（pdfx→pdfrx 选型）**：`pdfx` 2.x 实测仅渲染无文本 API；`pdf_text` 在本项目 Dart 3.13 下依赖 `http ^0.13.0`，与 `package_info_plus ^10.2.1` 拉的 `http ^1.6.0` 冲突且 `<0.5.0` 无 null safety，无法解析；`pdf_render` 仅渲染不适用。选定 `pdfrx ^2.6.5`（底层 PDFium，当前 Flutter 3.13/Dart 3.13 下唯一既活跃又支持文本提取的库）。新增 `lib/doc/pdf_to_md.dart`（`PdfNormalizer`：`loadDocumentFile` → 逐页 `page.loadText()` 拼 `fullText`，按行特征启发式判标题，标 DEGRADE），注册进 `DocumentNormalizers` 按 `.pdf` 分派。
+
+## 备注
+- 三家 PDF 库底层皆 PDFium native，体积差别主要在 Dart 面；我们仅用 pdfrx 的 `loadText`，未引入其渲染 widget，Dart 侧多出的渲染代码不进使用路径，包体/启动影响有限。
+- 引用模式默认开启，但 `takePersistableUriPermission` 持久化与 content URI 跨会话可达性依赖 Android SAF，**本机无设备无法真机验证**——代码已就绪但属"真机待验证"，未实测前引用条目可能随源 app 回收权限而失效。设计文档（content-pipeline.md）已标注此阻塞。
+- docs/design ui-spec.md 与 content-pipeline.md 共 4 处 `pdfx` 选法已更正为 `pdfrx`，并注明"纯文本无字号/位置、按行特征猜标题"。
+
+## 断点
+- [断点] 三块已落地全绿待提交（analyze 0 / test 全绿）；提交后真机验收——①引用模式 SAF 持久化与 content URI 可达性（本机无设备，阻塞项）②PDF 文本提取对文本型 PDF 覆盖（扫描件返回空、UI 已据 note 明示）③备份恢复 workspaces/workspace_items 两表闭环。遗留：待办勾选写路径（V2，TodoMark 生产侧未实现）、文档类型支持矩阵、iOS/鸿蒙适配

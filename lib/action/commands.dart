@@ -742,6 +742,7 @@ final class CollectCommand extends ItemCommand {
     this.humanTitle,
     this.tags,
     this.collectMode = InboxItem.modeScatter,
+    this.attachState = InboxItem.attachOwned,
   });
 
   final String itemType;
@@ -751,6 +752,9 @@ final class CollectCommand extends ItemCommand {
   final String? humanTitle;
   final List<String>? tags;
   final String collectMode;
+  /// 附件持有方式（content-pipeline §7）：默认 owned（已复制副本）；
+  /// 引用模式摄入传 [InboxItem.attachRef]（不复制原件）。
+  final String attachState;
 
   bool get isMerge => collectMode == InboxItem.modeMerge;
 
@@ -770,7 +774,8 @@ final class CollectCommand extends ItemCommand {
         if (humanTitle != null) 'title': humanTitle,
         if (tags != null) 'tags': tags,
         'collect_mode': collectMode,
-      };
+        'attach_state': attachState,
+        };
 }
 
 /// 往合并链末尾追加一段（= 手机端连续速记自动并链 / MCP append_segment）。

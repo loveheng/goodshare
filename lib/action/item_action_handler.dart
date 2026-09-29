@@ -628,6 +628,7 @@ class ItemActionHandler {
         humanTitle: cmd.humanTitle,
         tags: cmd.tags ?? const [],
         collectMode: cmd.collectMode,
+        attachState: cmd.attachState,
         // 合并链：新链即锁定（须先「解除编辑」），首段同样记入 appendix（设计 §4.9）
         editLocked: merge,
         appendix: merge && cmd.rawContent != null

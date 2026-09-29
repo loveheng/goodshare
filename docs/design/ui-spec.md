@@ -254,7 +254,7 @@ graph TD
 
 ## 8. 实现指针（Flutter）
 
-- 取色：`dynamic_color`；路由：`go_router`；**富文本渲染：自建（`lib/doc/` 归一化 + 自建渲染器，2026-09-29 弃 `flutter_markdown_plus`——停更分叉 + 待办勾选在渲染器架构下无法实现，见 [content-pipeline.md](content-pipeline.md) §5）**；状态：`flutter_riverpod`（蓝图 Zustand 等价）；Json 视图：`json_view`；生物识别：`local_auth`；PDF：`pdfx`（渲染 + 文本提取，引入前核 pub.dev）。
+- 取色：`dynamic_color`；路由：`go_router`；**富文本渲染：自建（`lib/doc/` 归一化 + 自建渲染器，2026-09-29 弃 `flutter_markdown_plus`——停更分叉 + 待办勾选在渲染器架构下无法实现，见 [content-pipeline.md](content-pipeline.md) §5）**；状态：`flutter_riverpod`（蓝图 Zustand 等价）；Json 视图：`json_view`；生物识别：`local_auth`；PDF：`pdfrx`（文本提取；渲染需求另议；已核 pub.dev 活跃度与许可）。
 - 详情 Markdown 与机器态共享同一 `item` 数据，避免双源不一致。
 
 ## 9. 分期范围

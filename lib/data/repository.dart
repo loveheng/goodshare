@@ -724,16 +724,26 @@ class Repository extends ChangeNotifier {
     return maj > major || (maj == major && min >= minor);
   }
 
-  /// 从快照文件 [src] 全量恢复四表（设计 §5：云端为源，本地被整体替换）。
+  /// 从快照文件 [src] 全量恢复（设计 §5：云端为源，本地被整体替换）。
   ///
   /// 走 ATTACH + 事务：单事务内 DELETE 本地各表 + INSERT FROM 快照，中途失败整体回滚，
   /// 本地数据不会被恢复动作破坏一半。rowid 一并保留（FTS5 外容表映射依赖 rowid 稳定）。
+  ///
+  /// 恢复表 = 条目域四表 + **工作区两表**（workspaces / workspace_items，schema v14，
+  /// 属用户事实数据非派生，须随备份带入；漏恢复会导致「备份里有、恢复后丢」的不一致）。
   Future<RestoreResult> restoreFrom(File src) async {
     final db = await _database();
     await db.execute("ATTACH DATABASE ? AS gs_backup", [src.path]);
     try {
       await db.transaction((txn) async {
-        for (final t in const ['inbox_items', 'ai_task_queue', 'daily_metrics', 'drafts']) {
+        for (final t in const [
+          'inbox_items',
+          'ai_task_queue',
+          'daily_metrics',
+          'drafts',
+          'workspaces',
+          'workspace_items',
+        ]) {
           await txn.execute('DELETE FROM $t');
           await txn.execute('INSERT INTO $t SELECT * FROM gs_backup.$t');
         }

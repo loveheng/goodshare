@@ -33,6 +33,13 @@ class Attach {
   static Future<bool> reachable(InboxItem item) async {
     final path = item.rawFilePath;
     if (path == null || path.isEmpty) return true;
+    // content:// / file:// 是跨进程 URI，Dart File 无法 stat（会抛）；
+    // 真实可达性需 ContentResolver——真机平台桥接待补（content-pipeline §7）。
+    // 此处不误报 lost：引用态 UI 已明示「原件删除/授权失效将不可打开」，
+    // 缺失平台检测 ≠ 已失效，故保守视为可达。
+    if (path.startsWith('content://') || path.startsWith('file://')) {
+      return true; // TODO(platform): 真机用 ContentResolver 检测 content URI 可达性
+    }
     try {
       return await File(path).exists();
     } catch (_) {
