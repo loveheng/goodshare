@@ -12,6 +12,9 @@ format: v2
 - [ ] [2026-09-28] (功能) 真离线翻译引擎（OPUS-MT / 自托管小模型）：翻译层骨架已就位，实现 `TranslationEngine` 并注册进 `TranslationRouter` 即可接棒——国内 ML Kit 语言包不可达时才有译文产出 (src: ai, translation-skeleton)
 - [ ] [2026-09-28] (功能) iOS Apple Translation framework 引擎实现（骨架期 Android 独享，iOS 恒落 Noop） (src: ai, translation-skeleton)
 - [ ] [2026-09-28] (优化) 源语识别替换启发式：当前 `detectSourceLanguage` 为字符分布启发式（已标 DEGRADE），接入语言识别能力后替换，接口不变 (src: ai, translation-skeleton)
+- [ ] [2026-09-30] (功能) 超长文本 Phase 2 归一化分块：按标题层级 + 500-token 滑动窗口切分 `human_md`，消费侧（渲染/摘要/向量）按需取 chunk；`item_embeddings.chunk_index` 结构已预留，先补生产侧切块 (src: content-pipeline, long-text)
+- [ ] [2026-09-30] (优化) 超长文本 Phase 3 解析异步化：将 `MarkdownSubsetParser` 的解析（数万字正则 + 块/行内 AST 构造）移出主线程到 Isolate，避免超长正文首帧解析卡 UI（RichTextView 解析缓存已在，补 Isolate 调度） (src: content-pipeline, long-text)
+- [ ] [2026-09-30] (功能) 超长文本 Phase 4 向量引擎落地 + RAG/Map-Reduce 摘要：实现嵌入生产者（写入 `item_embeddings` 分块向量）+ 超长摘要走 Map-Reduce（先分块摘要再归并），解决 Context 溢出瓶颈 (src: content-pipeline, long-text)
 
 
 ## misc
