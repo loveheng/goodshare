@@ -97,6 +97,11 @@ class ItemActionHandler {
       final CollectCommand c => _collect(c, txn),
       final AppendSegmentCommand c => _append(c, seeVault, txn),
         final ApplyAiResultCommand c => _applyAiResult(c, actor, seeVault, txn),
+        final CreateWorkspaceCommand c => _createWorkspace(c),
+        final RenameWorkspaceCommand c => _renameWorkspace(c),
+        final DeleteWorkspaceCommand c => _deleteWorkspace(c),
+        final AddToWorkspaceCommand c => _addToWorkspace(c, seeVault, txn),
+        final RemoveFromWorkspaceCommand c => _removeFromWorkspace(c),
       };
 
   /// 原子批量执行：一条命令失败则整批回滚，杜绝「字改了但标签没打上」的脏数据。
@@ -816,6 +821,96 @@ class ItemActionHandler {
     }
     await _write('apply_ai_result', cmd.id, values, expectedVersion: cmd.expectedVersion, txn: txn);
     return _result('apply_ai_result', cmd.id, seeVault: seeVault, txn: txn, note: '已回写 AI 产出');
+  }
+
+  // ---- 工作区（2026-09-30：条目集合容器，多对多，见 ui-spec §4.11） ----
+  //
+  // 工作区操作对象不是条目，无乐观锁语义（工作区无并发编辑冲突面）；
+  // add/remove 对条目走 _require 可见性校验——Vault 条目对 AI 不可见，
+  // 工作区不得成为隐私隔离的后门。
+
+  Future<CommandResult> _createWorkspace(CreateWorkspaceCommand cmd) async {
+    final name = cmd.name.trim();
+    if (name.isEmpty) {
+      throw ActionException('工作区名称不能为空', code: ActionErrorCode.invalidRequest);
+    }
+    final ws = await _repo.createWorkspace(name);
+    return CommandResult(
+      op: 'create_workspace',
+      targetId: ws.id,
+      note: '已创建工作区「${ws.name}」',
+    );
+  }
+
+  Future<CommandResult> _renameWorkspace(RenameWorkspaceCommand cmd) async {
+    final name = cmd.name.trim();
+    if (name.isEmpty) {
+      throw ActionException('工作区名称不能为空', code: ActionErrorCode.invalidRequest);
+    }
+    final existing = await _repo.byIdWorkspace(cmd.workspaceId);
+    if (existing == null) {
+      throw ActionException(
+        '工作区不存在：id=${cmd.workspaceId}',
+        code: ActionErrorCode.notFound,
+        hint: '先执行 list_workspaces 确认 id',
+      );
+    }
+    await _repo.renameWorkspace(cmd.workspaceId, name);
+    return CommandResult(
+      op: 'rename_workspace',
+      targetId: cmd.workspaceId,
+      note: '已重命名为「$name」',
+    );
+  }
+
+  Future<CommandResult> _deleteWorkspace(DeleteWorkspaceCommand cmd) async {
+    final existing = await _repo.byIdWorkspace(cmd.workspaceId);
+    if (existing == null) {
+      throw ActionException(
+        '工作区不存在：id=${cmd.workspaceId}',
+        code: ActionErrorCode.notFound,
+        hint: '先执行 list_workspaces 确认 id',
+      );
+    }
+    await _repo.deleteWorkspace(cmd.workspaceId);
+    return CommandResult(
+      op: 'delete_workspace',
+      targetId: cmd.workspaceId,
+      note: '已删除工作区「${existing.name}」（条目本身不受影响）',
+    );
+  }
+
+  Future<CommandResult> _addToWorkspace(
+    AddToWorkspaceCommand cmd,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    final ws = await _repo.byIdWorkspace(cmd.workspaceId, txn: txn);
+    if (ws == null) {
+      throw ActionException(
+        '工作区不存在：id=${cmd.workspaceId}',
+        code: ActionErrorCode.notFound,
+        hint: '先执行 list_workspaces 确认 id',
+      );
+    }
+    await _require(cmd.itemId, seeVault: seeVault, txn: txn);
+    await _repo.addToWorkspace(cmd.workspaceId, cmd.itemId, txn: txn);
+    return _result('add_to_workspace', cmd.itemId, seeVault: seeVault, txn: txn,
+        note: '已加入工作区「${ws.name}」');
+  }
+
+  Future<CommandResult> _removeFromWorkspace(RemoveFromWorkspaceCommand cmd) async {
+    final ws = await _repo.byIdWorkspace(cmd.workspaceId);
+    if (ws == null) {
+      throw ActionException(
+        '工作区不存在：id=${cmd.workspaceId}',
+        code: ActionErrorCode.notFound,
+        hint: '先执行 list_workspaces 确认 id',
+      );
+    }
+    await _repo.removeFromWorkspace(cmd.workspaceId, cmd.itemId);
+    return _result('remove_from_workspace', cmd.itemId,
+        seeVault: false, note: '已移出工作区「${ws.name}」');
   }
 
   // ---- 只读 / 批量维护（非命令：查询与例行清理，无脏数据风险） ----

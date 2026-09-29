@@ -162,6 +162,19 @@ sealed class ItemCommand {
         hint: '可选 op：${supportedOps.join(', ')}',
       );
     }
+    // 工作区类命令的操作对象不是条目（无条目 id）——先于此处的「强制 id」校验处理，
+    // 不为它们伪造一个 id 语义。
+    switch (op) {
+      case 'create_workspace':
+        return CreateWorkspaceCommand(_reqField(json, 'name', op));
+      case 'rename_workspace':
+        return RenameWorkspaceCommand(
+          _reqField(json, 'workspace_id', op),
+          _reqField(json, 'name', op),
+        );
+      case 'delete_workspace':
+        return DeleteWorkspaceCommand(_reqField(json, 'workspace_id', op));
+    }
     final id = _reqId(json, op);
     final ev = _int(json['expected_version']);
     switch (op) {
@@ -276,6 +289,14 @@ sealed class ItemCommand {
         return ScanBarcodeCommand(id, expectedVersion: ev);
       case 'analyze_text':
         return AnalyzeTextCommand(id, expectedVersion: ev);
+      case 'add_to_workspace':
+        return AddToWorkspaceCommand(
+          _reqField(json, 'workspace_id', op),
+          id,
+          expectedVersion: ev,
+        );
+      case 'remove_from_workspace':
+        return RemoveFromWorkspaceCommand(_reqField(json, 'workspace_id', op), id);
       default:
         throw ActionException(
           '未知命令：$op',
@@ -309,6 +330,11 @@ sealed class ItemCommand {
     'classify',
     'scan_barcode',
     'analyze_text',
+    'create_workspace',
+    'rename_workspace',
+    'delete_workspace',
+    'add_to_workspace',
+    'remove_from_workspace',
   ];
 }
 
@@ -899,9 +925,122 @@ final class ApplyAiResultCommand extends ItemCommand {
       };
 }
 
+// ───────────────────────────── 工作区（2026-09-30） ─────────────────────────────
+//
+// Human-AI 对称性铁律：工作区若 UI 能建，AI 也必须能建——否则违反
+// 「删掉 UI 只接微信机器人能否不改核心代码」的试金石。工作区不是隐私边界，
+// 没有只给人不给 AI 的理由（但 Vault 条目仍受 is_vault=0 约束）。
+
+/// 新建工作区（= UI「新建工作区」/ MCP create_workspace）。
+final class CreateWorkspaceCommand extends ItemCommand {
+  const CreateWorkspaceCommand(this.name);
+
+  final String name;
+
+  @override
+  String get op => 'create_workspace';
+
+  /// 操作对象不是条目，故无目标 id。
+  @override
+  String? get targetId => null;
+
+  @override
+  Map<String, Object?> toJson() => {'op': op, 'name': name};
+}
+
+/// 重命名工作区（= MCP rename_workspace）。
+final class RenameWorkspaceCommand extends ItemCommand {
+  const RenameWorkspaceCommand(this.workspaceId, this.name);
+
+  final String workspaceId;
+  final String name;
+
+  @override
+  String get op => 'rename_workspace';
+
+  @override
+  String? get targetId => null;
+
+  @override
+  Map<String, Object?> toJson() =>
+      {'op': op, 'workspace_id': workspaceId, 'name': name};
+}
+
+/// 删除工作区（= MCP delete_workspace）；关系行由外键级联清理。
+final class DeleteWorkspaceCommand extends ItemCommand {
+  const DeleteWorkspaceCommand(this.workspaceId);
+
+  final String workspaceId;
+
+  @override
+  String get op => 'delete_workspace';
+
+  @override
+  String? get targetId => null;
+
+  @override
+  Map<String, Object?> toJson() => {'op': op, 'workspace_id': workspaceId};
+}
+
+/// 把条目加入工作区（= UI「加入工作区」/ MCP add_to_workspace）。
+///
+/// 重复加入幂等（主键冲突忽略）。Vault 条目对 AI actor 不可见——
+/// 工作区不得成为隐私隔离的后门。
+final class AddToWorkspaceCommand extends ItemCommand {
+  const AddToWorkspaceCommand(this.workspaceId, this.itemId,
+      {super.expectedVersion});
+
+  final String workspaceId;
+  final String itemId;
+
+  @override
+  String get op => 'add_to_workspace';
+
+  @override
+  String? get targetId => itemId;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'workspace_id': workspaceId,
+        'id': itemId,
+        if (expectedVersion != null) 'expected_version': expectedVersion,
+      };
+}
+
+/// 把条目移出工作区（= MCP remove_from_workspace）。
+final class RemoveFromWorkspaceCommand extends ItemCommand {
+  const RemoveFromWorkspaceCommand(this.workspaceId, this.itemId);
+
+  final String workspaceId;
+  final String itemId;
+
+  @override
+  String get op => 'remove_from_workspace';
+
+  @override
+  String? get targetId => itemId;
+
+  @override
+  Map<String, Object?> toJson() =>
+      {'op': op, 'workspace_id': workspaceId, 'id': itemId};
+}
+
 // ───────────────────────────── 解析小工具 ─────────────────────────────
 // AI 输出的 JSON 形状不总规矩（bool 可能写成 "true"、数字写成字符串），
 // 这里统一做「宽容读取 + 明确报错」，不做静默兜底。
+
+/// 读取必填字符串字段（工作区类命令用；明确报错，不做静默兜底）。
+String _reqField(Map<String, Object?> json, String field, String op) {
+  final v = _str(json[field]);
+  if (v == null || v.trim().isEmpty) {
+    throw ActionException(
+      '命令 $op 缺少 $field 字段',
+      code: ActionErrorCode.invalidRequest,
+    );
+  }
+  return v.trim();
+}
 
 String _reqId(Map<String, Object?> json, String op) {
   final id = _str(json['id']);

@@ -16,7 +16,7 @@ class Db {
     final dir = await getDatabasesPath();
     final db = await openDatabase(
       _pathOverride ?? p.join(dir, 'goodshare.db'),
-      version: 11,
+      version: 14,
       onCreate: (db, version) => _createAll(db),
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -48,6 +48,8 @@ class Db {
         await _ensureDocMetaColumn(db);
         // 幂等补齐 inbox_items.attach_state（v12→v13 文件引用状态机）
         await _ensureAttachStateColumn(db);
+        // 幂等补齐工作区两表（v13→v14 条目集合容器，多对多）
+        await _ensureWorkspaceTables(db);
       },
       onOpen: (db) async {
         // ai_task_queue 的外键级联依赖此开关，sqflite 默认关闭
@@ -91,6 +93,24 @@ class Db {
         todo_state_json TEXT,                       -- 待办勾选状态 [{hash,done,ts}]（V2）
         created_at INTEGER NOT NULL,                -- 毫秒时间戳
         version INTEGER NOT NULL DEFAULT 0          -- 乐观锁版本号：任何写 +1，CAS 校验用（2026-09-28 v5）
+      )
+    ''');
+    // 工作区（2026-09-30 v14）：条目集合容器，与条目多对多。
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS workspaces (
+        id TEXT NOT NULL UNIQUE,          -- uuid
+        name TEXT NOT NULL,
+        created_at INTEGER NOT NULL       -- 毫秒时间戳
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS workspace_items (
+        workspace_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        added_at INTEGER NOT NULL,
+        PRIMARY KEY (workspace_id, item_id),
+        FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+        FOREIGN KEY (item_id) REFERENCES inbox_items(id) ON DELETE CASCADE
       )
     ''');
     await db.execute('CREATE INDEX IF NOT EXISTS idx_inbox_created ON inbox_items(created_at DESC)');
@@ -245,6 +265,30 @@ class Db {
         "ALTER TABLE inbox_items ADD COLUMN attach_state TEXT NOT NULL DEFAULT 'owned'",
       );
     }
+  }
+
+  /// 幂等补齐工作区两表（v13→v14，2026-09-30）。
+  ///
+  /// 条目集合容器，与条目多对多；关系行外键级联清理
+  /// （`PRAGMA foreign_keys = ON` 在 onOpen 打开，升级路径同样生效）。
+  static Future<void> _ensureWorkspaceTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS workspaces (
+        id TEXT NOT NULL UNIQUE,          -- uuid
+        name TEXT NOT NULL,
+        created_at INTEGER NOT NULL       -- 毫秒时间戳
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS workspace_items (
+        workspace_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        added_at INTEGER NOT NULL,
+        PRIMARY KEY (workspace_id, item_id),
+        FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+        FOREIGN KEY (item_id) REFERENCES inbox_items(id) ON DELETE CASCADE
+      )
+    ''');
   }
 
   /// 幂等补齐 inbox_items.clips_json（v9→v10 视频切片，2026-09-29）。

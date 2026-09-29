@@ -6,6 +6,7 @@ import 'package:sqflite/sqflite.dart';
 
 import '../ai/video_clips.dart';
 import '../models/item.dart';
+import '../models/workspace.dart';
 import 'db.dart';
 
 /// 列表排序（2026-09-30：时光机降为主列表的「排序维度」后新增）。
@@ -221,6 +222,117 @@ class Repository extends ChangeNotifier {
   }
 
   /// 「最近删除」（保留期内可恢复）。
+  // ───────── 工作区（2026-09-30：条目集合容器，多对多） ─────────
+  //
+  // 与「AI 分类标签（facets）」的区别：标签是 AI 产出的属性（扁平、只可筛选），
+  // 工作区是容器（用户可创建 / 命名 / 增删条目）。见 ui-spec §4.11。
+
+  Future<Workspace> createWorkspace(String name) async {
+    final db = await _database();
+    final ws = Workspace(
+      id: InboxItem.newId(),
+      name: name.trim(),
+      createdAt: DateTime.now().millisecondsSinceEpoch,
+    );
+    await db.insert('workspaces', ws.toMap());
+    notifyListeners();
+    return ws;
+  }
+
+  Future<void> renameWorkspace(String id, String name) async {
+    final db = await _database();
+    await db.update(
+      'workspaces',
+      {'name': name.trim()},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    notifyListeners();
+  }
+
+  /// 删除工作区；关系行由外键级联清理（`PRAGMA foreign_keys = ON` 已开）。
+  Future<void> deleteWorkspace(String id) async {
+    final db = await _database();
+    await db.delete('workspaces', where: 'id = ?', whereArgs: [id]);
+    notifyListeners();
+  }
+
+  Future<List<Workspace>> listWorkspaces() async {
+    final db = await _database();
+    final rows = await db.query('workspaces', orderBy: 'created_at DESC');
+    return rows.map(Workspace.fromMap).toList();
+  }
+
+  /// 单个工作区（不存在返回 null）。
+  Future<Workspace?> byIdWorkspace(String id, {Transaction? txn}) async {
+    final db = txn ?? await _database();
+    final rows = await db.query(
+      'workspaces',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : Workspace.fromMap(rows.first);
+  }
+
+  /// 加入工作区；重复加入**幂等**（主键冲突忽略，不报错）。
+  Future<void> addToWorkspace(
+    String workspaceId,
+    String itemId, {
+    Transaction? txn,
+  }) async {
+    final db = txn ?? await _database();
+    await db.insert(
+      'workspace_items',
+      {
+        'workspace_id': workspaceId,
+        'item_id': itemId,
+        'added_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    notifyListeners();
+  }
+
+  Future<void> removeFromWorkspace(String workspaceId, String itemId) async {
+    final db = await _database();
+    await db.delete(
+      'workspace_items',
+      where: 'workspace_id = ? AND item_id = ?',
+      whereArgs: [workspaceId, itemId],
+    );
+    notifyListeners();
+  }
+
+  /// 某工作区内的条目——**与 [list] 同口径**：默认排除 Vault 与已删，
+  /// 工作区不得成为隐私隔离的后门。
+  Future<List<InboxItem>> listWorkspaceItems(
+    String workspaceId, {
+    bool vault = false,
+  }) async {
+    final db = await _database();
+    final rows = await db.rawQuery(
+      'SELECT i.* FROM inbox_items AS i '
+      'JOIN workspace_items AS wi ON wi.item_id = i.id '
+      'WHERE wi.workspace_id = ? AND i.is_vault = ? AND i.is_deleted = 0 '
+      'ORDER BY i.created_at DESC',
+      [workspaceId, vault ? 1 : 0],
+    );
+    return rows.map(InboxItem.fromMap).toList();
+  }
+
+  /// 某条目所属的工作区（详情页展示「在哪些工作区」）。
+  Future<List<Workspace>> listItemWorkspaces(String itemId) async {
+    final db = await _database();
+    final rows = await db.rawQuery(
+      'SELECT w.* FROM workspaces AS w '
+      'JOIN workspace_items AS wi ON wi.workspace_id = w.id '
+      'WHERE wi.item_id = ? ORDER BY w.created_at DESC',
+      [itemId],
+    );
+    return rows.map(Workspace.fromMap).toList();
+  }
+
   Future<List<InboxItem>> listDeleted({int limit = 200}) async {
     final db = await _database();
     final rows = await db.query(
