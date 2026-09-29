@@ -1,7 +1,7 @@
 name: goodshare
 description: "A new Flutter project."
 publish_to: 'none'
-version: 1.2.0+2005 # 真机已有 CI release 2004，本地 debug 构建保持高于它以便覆盖安装
+version: 1.2.0+4006 # 真机已有 CI release 4005，本地 debug 需 4006 覆盖安装（2026-09-29 INSTALL_FAILED_VERSION_DOWNGRADE）
 
 environment:
   sdk: ^3.13.4

@@ -64,7 +64,9 @@ class LlmModelManager extends ChangeNotifier {
   final Set<String> _stale = {};
   final Map<String, double> _progress = {};
   SendPort? _isoSend; // 下载 worker isolate 的 SendPort（懒启动）
-  ReceivePort? _isoRecv;
+  Completer<SendPort>? _isoHandshake; // isolate 启动握手（首个 SendPort 消息）
+  StreamSubscription<dynamic>? _isoSub; // 常驻唯一 listener（ReceivePort 不可重复 listen）
+  StreamSubscription<dynamic>? _isoExitSub; // isolate 死亡监听（扇出+复位，防任务悬挂）
   final Map<String, _DlTask> _dlTasks = {}; // 进行中任务 id → 完成器+上下文
   static const MethodChannel _chan = MethodChannel('goodshare/llm'); // 与原生 LlmBridge 同通道，publish 模型绝对路径
   final Set<String> _paused = {}; // 用户主动暂停（.part 保留，可续传）
@@ -317,15 +319,77 @@ class LlmModelManager extends ChangeNotifier {
   /// 进行中的下载任务上下文见文件末尾顶层类 [_DlTask]。
 
   /// 启动常驻下载 worker isolate（懒加载）；main 侧只收发消息，不碰字节 I/O。
+  ///
+  /// **单 listener 原则**：ReceivePort 是单订阅流，`.first` 消费握手消息会取消订阅
+  /// 并使端口死亡，随后 `listen` 丢失所有回传（progress/done 永不到达 → 永不 finalize
+  /// → 文件停在 `.part` → 原生扫不到模型 →「引擎不可用」）。这里用一个常驻
+  /// subscription 分流：首个 SendPort 消息完成握手，其余交给 [_onIsoMessage]。
   Future<void> _ensureIsolate() async {
     if (_isoSend != null) return;
-    _isoRecv = ReceivePort();
-    await Isolate.spawn(downloaderEntry, _isoRecv!.sendPort);
-    _isoSend = await _isoRecv!.first as SendPort;
-    _isoRecv!.listen(_onIsoMessage);
+    if (_isoSub != null) {
+      // 上一次启动仍在握手期（并发下载首调）：等握手完成即可
+      await _isoHandshake?.future;
+      return;
+    }
+    final recv = ReceivePort();
+    final exitPort = ReceivePort();
+    _isoHandshake = Completer<SendPort>();
+    _isoSub = recv.listen((msg) {
+      if (msg is SendPort) {
+        _isoSend = msg;
+        _isoHandshake?.complete(msg);
+        return;
+      }
+      _onIsoMessage(msg);
+    }, onError: (Object e) {
+      // isolate 崩溃不能静默：把错误扇出给所有在等任务，否则 UI 永远转圈
+      _fanOutIsoFailure(Exception('下载线程异常：$e'));
+    }, cancelOnError: true);
+    // isolate 死亡（未捕获异常/被杀）只触发 onExit、不走 onError——没有这路扇出，
+    // 在等任务的 completer 永远挂起，进度条冻死、下载按钮消失
+    _isoExitSub = exitPort.listen((_) {
+      _fanOutIsoFailure(Exception('下载线程已退出'));
+      exitPort.close();
+    });
+    try {
+      await Isolate.spawn(downloaderEntry, recv.sendPort, onExit: exitPort.sendPort);
+      await _isoHandshake!.future;
+    } on Object {
+      // spawn 失败 / 握手失败都必须全量复位：否则 _isoSub 残留，下一次 download
+      // 走「等握手」分支但握手永远完不成 → 永挂（冻死变体）
+      _fanOutIsoFailure(Exception('下载线程启动失败'));
+      rethrow;
+    }
+  }
+
+  /// isolate 失败统一处置：错误扇出给所有在等任务 + 全量复位（下次 download 自动重启线程）。
+  void _fanOutIsoFailure(Exception e) {
+    for (final t in _dlTasks.values) {
+      if (!t.completer.isCompleted) t.completer.completeError(e);
+    }
+    _dlTasks.clear();
+    // 握手可能仍有等待者（isolate 早死、SendPort 未送达）：必须 completeError 解除，
+    // 否则 await _ensureIsolate 永挂。先挂兜底 listener 防无等待时的未处理异常。
+    final h = _isoHandshake;
+    if (h != null && !h.isCompleted) {
+      unawaited(h.future.then<void>(
+        (_) {},
+        onError: (Object err, StackTrace st) {}, // 兜底吞错：真实等待者走原始 future
+      ));
+      h.completeError(e);
+    }
+    _isoHandshake = null;
+    _isoSend = null;
+    _isoSub = null;
+    _isoExitSub?.cancel();
+    _isoExitSub = null;
   }
 
   /// 处理 isolate 回传：进度刷新、完成（main 侧 finalize）、取消、错误。
+  ///
+  /// **迟到消息守卫**：取消/失败后 isolate 可能仍在途发送 progress/done——
+  /// 任务已从 [_dlTasks] 移除时一律忽略，否则迟到 progress 会复活占位
+  /// （幽灵进度再次吃掉下载按钮，冻死变体）。终态回执均带 isCompleted 防重。
   void _onIsoMessage(dynamic msg) {
     if (msg is! Map) return;
     final id = msg['id'] as String?;
@@ -333,65 +397,78 @@ class LlmModelManager extends ChangeNotifier {
     final task = _dlTasks[id];
     switch (msg['type']) {
       case 'progress':
+        if (task == null) return; // 迟到进度：任务已结束，不得复活占位
         _progress[id] = (msg['value'] as num).toDouble();
         notifyListeners();
       case 'done':
+        if (task == null) return;
         // finalize 在 main isolate 执行（写 meta、更新就绪态），完成后再解 await
-        if (task != null) {
-          _finalize(task.m, task.part, task.file)
-              .then((_) => task.completer.complete())
-              .catchError((e) => task.completer.completeError(e));
-        }
-      case 'cancelled': // 用户取消：静默结束，.part 保留供续传
-        task?.completer.complete();
+        _finalize(task.m, task.part, task.file).then((_) {
+          if (!task.completer.isCompleted) task.completer.complete();
+        }).catchError((Object e) {
+          if (!task.completer.isCompleted) {
+            task.completer.completeError(Exception('落盘失败：$e'));
+          }
+        });
+      case 'cancelled':
+        if (task != null && !task.completer.isCompleted) task.completer.complete();
       case 'error':
-        task?.completer.completeError(
-            Exception(msg['message'] as String? ?? '下载失败'));
+        // 可观测性：isolate 侧只有 log()（developer log，logcat 不可见），错误必须
+        // 在 main 侧留痕，否则「下载失败」只剩 SnackBar 一瞬，事后无从取证
+        debugPrint('[LlmModelManager] download error ($id): ${msg['message']}');
+        if (task != null && !task.completer.isCompleted) {
+          task.completer.completeError(Exception(msg['message'] as String? ?? '下载失败'));
+        }
     }
   }
 
   /// 下载模型（已就绪幂等返回；stale 允许更新到新文件）。
   /// 轻量后台：字节拉取委托给 downloader isolate，main isolate 仅收进度、做 finalize 与 UI 通知，UI 不卡。
+  ///
+  /// **进度占位全程受 finally 保护**（冻死根因修复）：占位在入口先置（进度条立即出现），
+  /// 无论成功/失败/取消/线程崩溃，finally 必清占位——此前 `_ensureIsolate` 抛错发生在
+  /// try 之前，占位永久残留，下载按钮被幽灵进度吃掉（「点了没反应」的真凶）。
   Future<void> download(LlmModel m) async {
     if ((isReady(m) && !isStale(m)) || _progress.containsKey(m.id)) return;
-    final file = await _fileFor(m);
-    await file.parent.create(recursive: true);
-    final part = File('${file.path}.part');
-
-    // 断点完成态：上次已下完整但未落盘（片段恰好齐 size）
-    if (await part.exists()) {
-      final len = await part.length();
-      if (len == m.sizeBytes) {
-        await _finalize(m, part, file);
-        return;
-      }
-      if (len > m.sizeBytes) await part.delete(); // 旧版本更大/损坏片段，丢弃重来
-    }
-
-    _paused.remove(m.id); // 进入下载即脱离暂停态
     _progress[m.id] = 0;
     notifyListeners();
-
-    await _ensureIsolate();
-    final completer = Completer<void>();
-    _dlTasks[m.id] = _DlTask(completer, m, part, file);
-
-    final existing = await part.exists() ? await part.length() : 0;
-    _isoSend!.send({
-      'cmd': 'download',
-      'id': m.id,
-      'url': m.urlFor(llmModelBase),
-      'partPath': part.path,
-      'sizeBytes': m.sizeBytes,
-      'existingBytes': existing,
-      'resume': existing > 0,
-    });
-
     try {
+      final file = await _fileFor(m);
+      await file.parent.create(recursive: true);
+      final part = File('${file.path}.part');
+
+      // 断点完成态：上次已下完整但未落盘（片段恰好齐 size）
+      if (await part.exists()) {
+        final len = await part.length();
+        if (len == m.sizeBytes) {
+          await _finalize(m, part, file);
+          return;
+        }
+        if (len > m.sizeBytes) await part.delete(); // 旧版本更大/损坏片段，丢弃重来
+      }
+
+      _paused.remove(m.id); // 进入下载即脱离暂停态
+
+      await _ensureIsolate();
+      final completer = Completer<void>();
+      _dlTasks[m.id] = _DlTask(completer, m, part, file);
+
+      final existing = await part.exists() ? await part.length() : 0;
+      _isoSend!.send({
+        'cmd': 'download',
+        'id': m.id,
+        'url': m.urlFor(llmModelBase),
+        'partPath': part.path,
+        'sizeBytes': m.sizeBytes,
+        'existingBytes': existing,
+        'resume': existing > 0,
+      });
+
       await completer.future;
     } finally {
       _progress.remove(m.id);
       _dlTasks.remove(m.id);
+      // 注意：_paused 不在此清除——cancelDownload 依赖它存续以显示「继续」
       notifyListeners();
     }
   }
@@ -437,9 +514,16 @@ class LlmModelManager extends ChangeNotifier {
 
   /// 取消下载：向 worker isolate 发取消指令，`.part` 片段保留，可再次 [download] 断点续传；
   /// 标记暂停态供 UI 显示「继续」。仅在确有进行中任务时生效，避免对已就绪模型误标暂停。
+  ///
+  /// **本地立即解除等待**（冻死修复）：不等 isolate 的 'cancelled' 回执——若回执丢失
+  /// （线程恰死/消息丢失），download() 将永远 await 挂起。迟到回执按无任务忽略；
+  /// 若 cancel 指令本身丢失，isolate 下完发 'done' 同样被忽略，.part 完整留存，
+  /// 下次 [download] 走「断点完成态」自动转正（自愈）。
   Future<void> cancelDownload(String id) async {
-    if (!_dlTasks.containsKey(id)) return; // 未在下载，无需暂停标记
+    final task = _dlTasks[id];
+    if (task == null) return;
     _isoSend?.send({'cmd': 'cancel', 'id': id});
+    if (!task.completer.isCompleted) task.completer.complete();
     _paused.add(id);
     notifyListeners();
   }
