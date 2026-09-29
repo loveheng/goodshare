@@ -8,6 +8,7 @@ import '../action/item_action_handler.dart';
 import '../ai/capabilities.dart';
 import '../app/lifecycle_manager.dart';
 import '../data/repository.dart';
+import '../doc/attach.dart';
 import '../models/draft_store.dart';
 import '../models/item.dart';
 import '../service/secure_window.dart';
@@ -363,6 +364,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
           ItemViewTemplate(item: _item, machineMode: _machineMode),
           // 类型专属处理动作：正文末尾一行 chips，不占正文主线
           _typeActions(),
+          _attachStatusLine(),
           // 派生内容为正文末尾「附录章节」（小标题 + 内容），不叠卡片边框
           if (_item.summaryMd != null && _item.summaryMd!.trim().isNotEmpty)
             _appendix('摘要', _item.summaryMd!),
@@ -632,6 +634,49 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     return Padding(
       padding: const EdgeInsets.only(top: Insets.md),
       child: Wrap(children: chips),
+    );
+  }
+
+  /// 附件引用状态（content-pipeline §7）：引用中 / 失效都**明示**，
+  /// 不能只给一个破图图标了事（R1：降级与失效必须被用户感知）。
+  ///
+  /// 可达性是文件 stat IO，走异步且不进列表滚动路径（只在详情页查一次）。
+  Widget _attachStatusLine() {
+    if (!_item.hasAttachment) return const SizedBox.shrink();
+    return FutureBuilder<bool>(
+      future: Attach.reachable(_item),
+      builder: (context, snap) {
+        final reachable = snap.data ?? true;
+        final state = Attach.resolveState(_item.attachState, reachable);
+        final text = Attach.statusText(state);
+        if (text == null) return const SizedBox.shrink();
+        final scheme = Theme.of(context).colorScheme;
+        return Padding(
+          padding: const EdgeInsets.only(top: Insets.md),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                state == InboxItem.attachLost
+                    ? Icons.broken_image_outlined
+                    : Icons.link_off,
+                size: 18,
+                color: scheme.error,
+              ),
+              const SizedBox(width: Insets.sm),
+              Expanded(
+                child: Text(
+                  text,
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(color: scheme.error),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
