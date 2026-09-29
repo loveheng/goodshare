@@ -44,6 +44,10 @@ class Db {
         await _ensureClipsColumn(db);
         // 幂等补齐 inbox_items.video_whole_marked（v10→v11 整片标记=备份 opt-in）
         await _ensureWholeMarkedColumn(db);
+        // 幂等补齐 inbox_items.doc_meta_json（v11→v12 归一化覆盖率与确认状态）
+        await _ensureDocMetaColumn(db);
+        // 幂等补齐 inbox_items.attach_state（v12→v13 文件引用状态机）
+        await _ensureAttachStateColumn(db);
       },
       onOpen: (db) async {
         // ai_task_queue 的外键级联依赖此开关，sqflite 默认关闭
@@ -73,6 +77,8 @@ class Db {
         summary_md TEXT,                            -- 端侧 LLM 摘要（与 human_md 并列不覆盖，2026-09-28 v8）
         clips_json TEXT,                            -- 视频切片（关键区间）附属记录（2026-09-29 v10，lib/ai/video_clips.dart）
         video_whole_marked INTEGER NOT NULL DEFAULT 0, -- 整片标记：1=用户认为整个视频重要，备份时携带源文件（2026-09-29 v11）
+        doc_meta_json TEXT,                         -- 归一化覆盖率与确认状态（2026-09-30 v12，content-pipeline §7）
+        attach_state TEXT NOT NULL DEFAULT 'owned', -- 文件引用状态 ref/owned/lost（2026-09-30 v13）
         tags TEXT,                                  -- JSON Array: ["前端","团建"]
         facets_json TEXT,                           -- JSON: 视角→标签数组，AI 分类页消费（V2）
         is_vault INTEGER NOT NULL DEFAULT 0,        -- 0 公开 / 1 私密保险箱
@@ -210,6 +216,34 @@ class Db {
     final has = cols.any((c) => (c['name'] as String?) == 'video_whole_marked');
     if (!has) {
       await db.execute('ALTER TABLE inbox_items ADD COLUMN video_whole_marked INTEGER NOT NULL DEFAULT 0');
+    }
+  }
+
+  /// 幂等补齐 inbox_items.doc_meta_json（v11→v12，2026-09-30）。
+  ///
+  /// 文档归一化**是有损的**（PDF 结构靠启发式、表格降级），故每次转换都记录
+  /// 覆盖率指标（字数 / 降级块数 / 是否截断）与用户确认状态，供 UI 明示
+  /// （content-pipeline.md §7：降级必须被感知，不允许静默成功）。
+  static Future<void> _ensureDocMetaColumn(Database db) async {
+    final cols = await db.rawQuery('PRAGMA table_info(inbox_items)');
+    final has = cols.any((c) => (c['name'] as String?) == 'doc_meta_json');
+    if (!has) {
+      await db.execute('ALTER TABLE inbox_items ADD COLUMN doc_meta_json TEXT');
+    }
+  }
+
+  /// 幂等补齐 inbox_items.attach_state（v12→v13，2026-09-30）。
+  ///
+  /// 引用模式：`ref`=引用原件未复制（app 不持有，不给用户存储添麻烦）、
+  /// `owned`=已持有副本、`lost`=原件不可访问。
+  /// **存量默认 owned**——它们确实是复制进私有目录的，语义不能倒填。
+  static Future<void> _ensureAttachStateColumn(Database db) async {
+    final cols = await db.rawQuery('PRAGMA table_info(inbox_items)');
+    final has = cols.any((c) => (c['name'] as String?) == 'attach_state');
+    if (!has) {
+      await db.execute(
+        "ALTER TABLE inbox_items ADD COLUMN attach_state TEXT NOT NULL DEFAULT 'owned'",
+      );
     }
   }
 

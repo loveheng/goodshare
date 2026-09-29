@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
 import '../data/repository.dart';
+import '../doc/html_to_md.dart';
 import 'reconstructor.dart';
 import 'url_extract.dart';
 
@@ -63,6 +65,19 @@ class OcrReconstructor implements AiReconstructor {
       }
       final url = firstUrl(input.rawContent ?? '');
       if (url != null) {
+        // 保结构路径（2026-09-30）：取原始 HTML 走 htmlToMarkdown，
+        // 保留标题层级 / 列表 / 引用 / 代码块——旧 `fetchReadable` 会把结构全剥掉，
+        // 富文本渲染器无米下锅。抓取失败再回退旧的纯文本路径。
+        final html = await fetchHtml(url);
+        if (html != null) {
+          final doc = htmlToMarkdown(html);
+          if (!doc.isEmpty) {
+            return ReconstructResult(
+              humanMd: doc.markdown,
+              docMetaJson: jsonEncode(doc.meta.toJson()),
+            );
+          }
+        }
         final content = await fetchReadable(url);
         if (content != null) return ReconstructResult(humanMd: content);
       }

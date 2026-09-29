@@ -19,6 +19,12 @@ class InboxItem {
   static const modeScatter = 'scatter';
   static const modeMerge = 'merge';
 
+  // attach_state（2026-09-30 引用模式，content-pipeline §7）：
+  // app 不复制原件，不给用户存储添麻烦（复制 = 两份，视频是重灾区）。
+  static const attachRef = 'ref'; // 引用原件，未复制
+  static const attachOwned = 'owned'; // 已持有副本（app 私有目录）
+  static const attachLost = 'lost'; // 原件不可访问（已删或授权失效）
+
   InboxItem({
     this.id,
     required this.itemType,
@@ -35,6 +41,8 @@ class InboxItem {
     this.summaryMd,
     this.clipsJson,
     this.videoWholeMarked = false,
+    this.docMetaJson,
+    this.attachState = attachOwned,
     List<String> tags = const [],
     Map<String, List<String>>? facets,
     this.isVault = false,
@@ -83,6 +91,14 @@ class InboxItem {
   /// 防止人类慢速编辑与 AI 瞬时写入互相静默覆盖（2026-09-28 v5）。
   final int version;
 
+  /// 文档归一化覆盖率与确认状态 JSON（schema v12，2026-09-30）。
+  /// 归一化是有损的，记 {chars, degraded_blocks, truncated, confirmed} 供 UI 明示。
+  final String? docMetaJson;
+
+  /// 文件引用状态（schema v13，2026-09-30）：ref / owned / lost。
+  /// app 不复制原件——复制一份等于让用户存储翻倍（视频是重灾区）。
+  final String attachState;
+
   bool get isImage => itemType == typeImage;
   bool get hasAttachment => rawFilePath != null && rawFilePath!.isNotEmpty;
 
@@ -99,6 +115,21 @@ class InboxItem {
 
   /// 详情正文：人类态优先，缺省回退原文。
   String get bodyText => (humanMd?.isNotEmpty ?? false) ? humanMd! : (rawContent ?? '');
+
+  /// 是否引用原件（未复制）——app 不持有，原件失效即不可访问。
+  bool get isRef => attachState == attachRef;
+
+  /// 归一化元信息（坏 JSON 返回 null，不抛——防御与 facets 同口径）。
+  Map<String, Object?>? get docMeta {
+    final raw = docMetaJson;
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      return decoded is Map ? decoded.cast<String, Object?>() : null;
+    } catch (_) {
+      return null;
+    }
+  }
 
   /// 是否已有译文（详情页「译文」区与 MCP 回传的显隐依据）。
   bool get hasTranslation => translatedMd != null && translatedMd!.trim().isNotEmpty;
@@ -119,6 +150,8 @@ class InboxItem {
         'summary_md': summaryMd,
         'clips_json': clipsJson,
         'video_whole_marked': videoWholeMarked ? 1 : 0,
+        if (docMetaJson != null) 'doc_meta_json': docMetaJson,
+        'attach_state': attachState,
         'tags': jsonEncode(tags),
         'facets_json': facets == null ? null : jsonEncode(facets),
         'is_vault': isVault ? 1 : 0,
@@ -187,6 +220,8 @@ class InboxItem {
       summaryMd: map['summary_md'] as String?,
       clipsJson: map['clips_json'] as String?,
       videoWholeMarked: (map['video_whole_marked'] as int? ?? 0) == 1,
+      docMetaJson: map['doc_meta_json'] as String?,
+      attachState: (map['attach_state'] as String?) ?? attachOwned,
       tags: tagsOf(map['tags']),
       facets: facetsOf(map['facets_json']),
       isVault: (map['is_vault'] as int? ?? 0) == 1,
@@ -218,6 +253,8 @@ class InboxItem {
     String? summaryMd,
     String? clipsJson,
     bool? videoWholeMarked,
+    String? docMetaJson,
+    String? attachState,
     List<String>? tags,
     Map<String, List<String>>? facets,
     bool? isVault,
@@ -247,6 +284,8 @@ class InboxItem {
         summaryMd: summaryMd ?? this.summaryMd,
         clipsJson: clipsJson ?? this.clipsJson,
         videoWholeMarked: videoWholeMarked ?? this.videoWholeMarked,
+        docMetaJson: docMetaJson ?? this.docMetaJson,
+        attachState: attachState ?? this.attachState,
         tags: tags ?? this.tags,
         facets: facets ?? this.facets,
         isVault: isVault ?? this.isVault,

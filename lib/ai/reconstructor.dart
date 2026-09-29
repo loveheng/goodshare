@@ -45,10 +45,15 @@ class ReconstructResult {
     this.summaryMd,
     this.note,
     this.clip,
+    this.docMetaJson,
   });
 
   final String humanMd;
   final Map<String, Object?>? machineJson;
+
+  /// 文档归一化元信息 JSON（2026-09-30）：覆盖率 + 降级 + 用户确认状态。
+  /// 由归一化转换器产出，落 `inbox_items.doc_meta_json`（content-pipeline §7）。
+  final String? docMetaJson;
   final List<String> tags;
 
   /// 译文（翻译层产出；与 humanMd 并列存储，不覆盖原文）。null = 无译文。

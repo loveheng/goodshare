@@ -13,7 +13,31 @@ String? firstUrl(String raw) {
   return match?.group(0);
 }
 
+/// 拉取网页**原始 HTML**（供保结构归一化用）。
+///
+/// 背景：既有 [fetchReadable] 直接把标签剥成纯文本，标题层级 / 列表 / 引用 /
+/// 代码块**全部丢失**，富文本渲染器无米下锅。保结构转换需要拿到原始 HTML。
+Future<String?> fetchHtml(String url) async {
+  final client = HttpClient();
+  client.connectionTimeout = const Duration(seconds: 15);
+  try {
+    final request = await client.getUrl(Uri.parse(url));
+    final response = await request.close();
+    if (response.statusCode != 200) return null;
+    final html = await utf8.decodeStream(response);
+    return html.isEmpty ? null : html;
+  } catch (e) {
+    debugPrint('[UrlExtract] fetch html failed: $e');
+    return null;
+  } finally {
+    client.close();
+  }
+}
+
 /// 拉取网页并提取可读文本；失败返回 null（调用方回退占位行为）。
+///
+/// 注：本函数**丢结构**（剥成纯文本），仅用于不需要富文本结构的场景；
+/// 保结构路径请用 [fetchHtml] + `htmlToMarkdown`。
 Future<String?> fetchReadable(String url) async {
   final client = HttpClient();
   client.connectionTimeout = const Duration(seconds: 15);

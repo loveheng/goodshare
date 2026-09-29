@@ -809,6 +809,11 @@ class ItemActionHandler {
     if (r.summaryMd != null) {
       values['summary_md'] = r.summaryMd;
     }
+    // 文档归一化元信息（2026-09-30）：覆盖率 / 降级 / 确认状态，供 UI 明示
+    // 「提取了多少、哪些降级了」——降级不允许静默成功（content-pipeline §7）。
+    if (r.docMetaJson != null) {
+      values['doc_meta_json'] = r.docMetaJson;
+    }
     await _write('apply_ai_result', cmd.id, values, expectedVersion: cmd.expectedVersion, txn: txn);
     return _result('apply_ai_result', cmd.id, seeVault: seeVault, txn: txn, note: '已回写 AI 产出');
   }
