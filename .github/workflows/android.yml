@@ -40,14 +40,15 @@ jobs:
           channel: stable
           cache: true
 
-      # 专门的 Android SDK action：自带【最新】cmdline-tools，仓库元数据能正确识别
-      # compileSdk 37 平台（flutter-action 自带的 sdkmanager 元数据过旧，找不到
-      # platforms;android-37，导致云端构建失败）。与本地 ~/android-sdk 口径一致：
-      # platforms;android-37 + build-tools;36.0.0。该 action 会自动设 ANDROID_HOME。
+      # 专门的 Android SDK action：自带【最新】cmdline-tools，仓库元数据完整。
+      # 注意包名是 platforms;android-37.0（带 .0，因该 API 37 平台含 ExtensionLevel，
+      # sdkmanager 列表里就是 android-37.0；写 android-37 会报「找不到包」）。
+      # 与本地 ~/android-sdk 口径一致：platforms;android-37.0 + build-tools;36.0.0。
+      # 该 action 会自动设 ANDROID_HOME。
       - name: 安装 Android SDK（compileSdk 37 / build-tools 36.0.0）
         uses: android-actions/setup-android@v3
         with:
-          packages: 'platforms;android-37 build-tools;36.0.0 platform-tools'
+          packages: 'platforms;android-37.0 build-tools;36.0.0 platform-tools'
 
       - name: 依赖
         run: flutter pub get
