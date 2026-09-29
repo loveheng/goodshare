@@ -6,7 +6,8 @@
       "desc": "中文原生，摘要/关键词质量优先（约 1.5GB，4096 上下文）。Apache-2.0，直连可下",
       "file": "Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm",
       "size": 1597931520,
-      "repo": "litert-community/Qwen2.5-1.5B-Instruct"
+      "repo": "litert-community/Qwen2.5-1.5B-Instruct",
+      "url": "https://hf-mirror.com/litert-community/Qwen2.5-1.5B-Instruct/resolve/main/Qwen2.5-1.5B-Instruct_multi-prefill-seq_q8_ekv4096.litertlm"
     },
     {
       "id": "gemma3-1b-npu-sm8750",
@@ -15,6 +16,7 @@
       "file": "Gemma3-1B-IT_q4_ekv1280_sm8750.litertlm",
       "size": 690000000,
       "repo": "litert-community/Gemma3-1B-IT",
+      "url": "https://hf-mirror.com/litert-community/Gemma3-1B-IT/resolve/main/Gemma3-1B-IT_q4_ekv1280_sm8750.litertlm",
       "socModel": "SM8750"
     },
     {
@@ -24,6 +26,7 @@
       "file": "Gemma3-1B-IT_q4_ekv1280_mt6991.litertlm",
       "size": 1034000000,
       "repo": "litert-community/Gemma3-1B-IT",
+      "url": "https://hf-mirror.com/litert-community/Gemma3-1B-IT/resolve/main/Gemma3-1B-IT_q4_ekv1280_mt6991.litertlm",
       "socModel": "MT6991"
     }
   ]
