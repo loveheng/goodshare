@@ -14,7 +14,6 @@ dependencies:
     sdk: flutter
   flutter_foreground_task: ^11.0.3
   battery_plus: ^7.1.1
-  flutter_markdown_plus: ^1.0.12
   google_mlkit_text_recognition: ^0.17.1
   image_picker: ^1.2.3
   just_audio: ^0.10.6

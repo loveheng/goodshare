@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
@@ -13,6 +12,7 @@ import '../ai/video_clips.dart';
 import '../ai/subtitle.dart';
 import '../models/item.dart';
 import 'image_annotator.dart';
+import 'rich_text_view.dart';
 import 'tokens.dart';
 
 /// 详情查看模板 + 按类型注册表（设计 §4.3/§6）。
@@ -119,11 +119,7 @@ Widget _textView(BuildContext context, InboxItem item) {
   if (body.isEmpty) {
     return const _EmptyView();
   }
-  return MarkdownBody(
-    data: body,
-    selectable: true,
-    styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)),
-  );
+  return RichTextView(markdown: body);
 }
 
 /// 文档类型：显示落盘文件信息（结构化字段表单随 V2 machine_json 驱动）。
@@ -132,11 +128,7 @@ Widget _documentView(BuildContext context, InboxItem item) {
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       if (item.bodyText.isNotEmpty) ...[
-        MarkdownBody(
-          data: item.bodyText,
-          selectable: true,
-          styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)),
-        ),
+        RichTextView(markdown: item.bodyText),
         const SizedBox(height: Insets.sm),
       ],
       _FileTile(path: item.rawFilePath),

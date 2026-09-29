@@ -27,7 +27,7 @@ updated: 2026-09-29
 ### 2.2 字体与排版
 
 - 默认 Roboto / 系统字体。标题 T20/B，正文 B14，TL;DR 摘要行强调。
-- **富文本排版令牌**（2026-09-29，自建渲染器，见 §8 与 [content-pipeline.md](content-pipeline.md) §5）：正文 15.5–16px / 行高 1.65 / 段间距 14；h1 22 w600、h2 18 w600、h3 16 w600；引用左侧 3px 竖线 + 次级色；代码块 `surfaceContainerHighest` + 等宽 + 12 内边距；列表缩进 20；待办为可勾选行（完成态加删除线）。
+- **富文本排版令牌**（2026-09-29，自建渲染器，见 §8 与 [content-pipeline.md](content-pipeline.md) §5）：正文 15.5–16px / 行高 1.65 / 段间距 12（`Insets.md`，守 tokens 刻度不引入 14）；**标题一律映射 M3 `textTheme`（架构 R7 禁裸 fontSize 字面量）**：h1 `headlineSmall`(24) / h2 `titleLarge`(22) / h3 `titleMedium`(16) / h4-h6 `titleSmall`(14)，均 w600、行高 1.35；引用左侧 3px 竖线 + 次级色；代码块 `surfaceContainerHighest` + 等宽 + 12 内边距；列表缩进 20；待办为可勾选行（完成态加删除线）。
 - 富文本载体为 **Markdown 子集**（块级：标题/段落/引用/列表/代码块/分隔/待办；行内：粗体/斜体/行内码/链接）。不认识的块降级为纯文本段落——**宁可样式平，不可吞内容**。
 - **文青风口号（首页空态欢迎 / 类型空态引导 / 关于 / 详情底栏）**：沿用 M3 动态表面，不硬编码底色；排版层用系统衬线兜底（`fontFamily: 'serif'`）+ Light 字重 + 1.5 字间距 + `onSurfaceVariant` 文字色。文案走远端配置 `config.slogans`（见自更新文档），本地默认值兜底，零字体体积。无独立闪屏遮罩，口号自然融入主界面空态。
 
