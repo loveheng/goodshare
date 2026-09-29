@@ -42,73 +42,81 @@ class ItemViewRegistry {
       _views[itemType] ?? _fallbackView;
 }
 
-/// 详情页模板：双态呈现 + 类型专属区。
-class ItemViewTemplate extends StatefulWidget {
-  const ItemViewTemplate({super.key, required this.item});
+/// 详情页模板：**文档形态**（2026-09-30 改版，SSOT ui-spec §4.3）。
+///
+/// 结构：标题（`headlineSmall` w600）→ 导语块（原 TL;DR）→ 正文 / 类型专属区。
+/// 机器态改为**受控**（由页面 AppBar `⋯` 菜单切换），不再在正文流里常驻开关——
+/// 双态是架构灵魂，入口保留但降权，不占正文的视觉主线。
+class ItemViewTemplate extends StatelessWidget {
+  const ItemViewTemplate({
+    super.key,
+    required this.item,
+    this.machineMode = false,
+  });
 
   final InboxItem item;
 
-  @override
-  State<ItemViewTemplate> createState() => _ItemViewTemplateState();
-}
-
-class _ItemViewTemplateState extends State<ItemViewTemplate> {
-  bool _machineMode = false;
+  /// 机器态开关（双态呈现：需显式切换）。由页面控制。
+  final bool machineMode;
 
   @override
   Widget build(BuildContext context) {
-    final item = widget.item;
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // 顶部固定 TL;DR（人类态摘要）
-        if (item.humanTldr?.isNotEmpty ?? false)
-          Padding(
-            padding: const EdgeInsets.only(bottom: Insets.sm),
-            child: Text(
-              item.humanTldr!,
-              style: theme.textTheme.bodyMedium
-                  ?.copyWith(color: theme.colorScheme.primary),
-            ),
-          ),
+        // ① 标题置顶
         if (item.humanTitle?.isNotEmpty ?? false)
           Padding(
             padding: const EdgeInsets.only(bottom: Insets.sm),
-            child: Text(item.humanTitle!, style: theme.textTheme.titleLarge),
+            child: Text(
+              item.humanTitle!,
+              style: theme.textTheme.headlineSmall
+                  ?.copyWith(fontWeight: FontWeight.w600),
+            ),
           ),
-        // 机器态切换（双态呈现：机器态需显式切换；空态明示 V1 基础模式）
-        Padding(
-          padding: const EdgeInsets.only(bottom: Insets.sm),
-          child: Row(
-            children: [
-              Text('机器态', style: theme.textTheme.labelLarge),
-              Switch(
-                value: _machineMode,
-                onChanged: (_) => setState(() => _machineMode = !_machineMode),
-              ),
-              if (_machineMode && (item.machineJson == null || item.machineJson!.isEmpty))
-                Text('暂无机器态（基础模式）', style: theme.textTheme.bodySmall),
-            ],
-          ),
-        ),
-        if (_machineMode && (item.machineJson?.isNotEmpty ?? false))
+        // ② 导语块（原 TL;DR）：次级色 + 左侧细线，不再是顶部彩色文本
+        if (item.humanTldr?.isNotEmpty ?? false)
           Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(Insets.md),
             margin: const EdgeInsets.only(bottom: Insets.md),
+            padding: const EdgeInsets.only(left: Insets.md),
             decoration: BoxDecoration(
-              color: theme.colorScheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(Radii.md),
+              border: Border(
+                left: BorderSide(width: 3, color: scheme.outlineVariant),
+              ),
             ),
-            child: SelectableText(
-              const JsonEncoder.withIndent('  ').convert(jsonDecode(item.machineJson!)),
-              style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+            child: Text(
+              item.humanTldr!,
+              style: theme.textTheme.bodyMedium
+                  ?.copyWith(color: scheme.onSurfaceVariant),
             ),
-          )
+          ),
+        // ③ 正文：机器态 / 人类态（类型专属区）
+        if (machineMode)
+          _machineView(context, item)
         else
           ItemViewRegistry.resolve(item.itemType)(context, item),
       ],
+    );
+  }
+
+  Widget _machineView(BuildContext context, InboxItem item) {
+    final theme = Theme.of(context);
+    if (item.machineJson == null || item.machineJson!.isEmpty) {
+      return Text('暂无机器态（基础模式）', style: theme.textTheme.bodySmall);
+    }
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(Insets.md),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(Radii.md),
+      ),
+      child: SelectableText(
+        const JsonEncoder.withIndent('  ').convert(jsonDecode(item.machineJson!)),
+        style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+      ),
     );
   }
 }
