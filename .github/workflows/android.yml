@@ -40,6 +40,18 @@ jobs:
           channel: stable
           cache: true
 
+      # subosito/flutter-action 仅装基础 Android SDK，本项目强依赖 compileSdk 37 /
+      # build-tools;36.0.0（与本地 ~/android-sdk 同款），须显式补装对应 platform 与
+      # build-tools，否则 flutter build apk 在 checkAarMetadata / 编译期失败，等于「没编译」。
+      # 同时导出 ANDROID_HOME（本地 build 依赖，云端不设置会找不到 SDK）。
+      - name: 安装 Android SDK（compileSdk 37 / build-tools 36.0.0）
+        run: |
+          export ANDROID_HOME="$ANDROID_SDK_ROOT"
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platform-tools" "platforms;android-37" "build-tools;36.0.0"
+
       - name: 依赖
         run: flutter pub get
 
