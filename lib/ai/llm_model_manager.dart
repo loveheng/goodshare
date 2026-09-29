@@ -7,13 +7,17 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/services.dart';
 
 import '../update/remote_config_store.dart';
+import 'dart:isolate';
 import 'llm.dart';
+import 'llm_download_isolate.dart';
 import 'llm_model.dart';
 
-/// 端侧 LLM 模型包下载管理（2026-09-28）：与 ASR `ModelManager` 同构但极简——
-/// 单文件 `.litertlm`（自带 tokenizer），无断点续传（单文件整下）。
+/// 端侧 LLM 模型包下载管理：与 ASR `ModelManager` 同构——
+/// 单文件 `.litertlm`（自带 tokenizer），支持断点续传（`.part` 留痕 +
+/// `Range` 头续拉，落盘按 manifest `sizeBytes` 校验防翻倍/截断）。
 ///
 /// 落盘约定与 Android `LlmBridge.selectedModelFile` 对齐：
 /// `documents/llm_models/{modelId}/model.litertlm`；选中档持久化 pref
@@ -24,6 +28,12 @@ enum _DiskState {
   ready, // 与 manifest 同版本（或存量无 meta，兼容放行）
   stale, // 有文件但 size 与 manifest 不一致（同 id 换了文件/量化）
 }
+
+/// 内置默认 manifest 地址（2026-09-29 嵌入，用户提供的 GitHub raw 代理镜像，国内可达；
+/// 直连 raw.githubusercontent.com 实测超时）。清单内容=仓库 `updates/llm-manifest.json`。
+/// 更换地址无需发版：update.json 的 `flags.llmManifestUrl` 覆盖本默认值。
+const String defaultLlmManifestUrl =
+    'https://gh.927223.xyz/https://raw.githubusercontent.com/loveheng/goodshare/refs/heads/main/updates/llm-manifest.json';
 
 class LlmModelManager extends ChangeNotifier {
   static const _prefSelected = 'llm_selected_model';
@@ -53,7 +63,11 @@ class LlmModelManager extends ChangeNotifier {
   final Set<String> _ready = {};
   final Set<String> _stale = {};
   final Map<String, double> _progress = {};
-  final Map<String, CancelToken> _cancels = {};
+  SendPort? _isoSend; // 下载 worker isolate 的 SendPort（懒启动）
+  ReceivePort? _isoRecv;
+  final Map<String, _DlTask> _dlTasks = {}; // 进行中任务 id → 完成器+上下文
+  static const MethodChannel _chan = MethodChannel('goodshare/llm'); // 与原生 LlmBridge 同通道，publish 模型绝对路径
+  final Set<String> _paused = {}; // 用户主动暂停（.part 保留，可续传）
 
   /// 当前生效目录：远端 manifest（last-good 缓存）> 内置默认。
   /// 本地缓存文件不存在时为 null，`catalog` 落回 [llmModels]。
@@ -66,7 +80,14 @@ class LlmModelManager extends ChangeNotifier {
   /// 当前生效的模型目录（设置页渲染与可见性过滤的数据源）＝ manifest 目录 + 本机残留。
   List<LlmModel> get catalog => [..._catalog, ..._orphans];
 
-  String get selectedId => _selectedId ?? _catalog.first.id;
+  /// 当前选中 id：显式选过用 [_selectedId]；未显式选过时**优先已下载模型**
+  /// （照着真实可用走），其次目录首条（最新记录）。与 LlmBridge 回退扫描语义对齐，
+  /// 避免「自动跟首条却没下载 → 原生找不到文件 → 引擎不可用」的静默失败。
+  String get selectedId {
+    if (_selectedId != null) return _selectedId!;
+    final downloaded = _catalog.where((m) => _ready.contains(m.id)).toList();
+    return (downloaded.isNotEmpty ? downloaded.first : _catalog.first).id;
+  }
 
   LlmModel? get selected => modelById(selectedId);
 
@@ -78,6 +99,9 @@ class LlmModelManager extends ChangeNotifier {
   bool isStale(LlmModel m) => _stale.contains(m.id);
 
   double? progressOf(LlmModel m) => _progress[m.id];
+
+  /// 用户是否已暂停该模型下载（`.part` 仍在，可继续）。
+  bool isPaused(LlmModel m) => _paused.contains(m.id);
 
   /// 本机可见模型（SoC 感知：NPU 专包仅对应机型可见，通用包恒可见；残留条目恒可见）。
   Future<List<LlmModel>> visibleModels() async {
@@ -99,6 +123,7 @@ class LlmModelManager extends ChangeNotifier {
     await _realignSelection(prefs);
     _syncReadyFlags();
     notifyListeners();
+    unawaited(_publishReadyIfAny()); // 把已就绪模型路径告知原生（路径对齐）
     // 远端刷新异步跑：失败静默留 last-good，不打断首帧
     unawaited(refreshCatalog());
   }
@@ -187,12 +212,14 @@ class LlmModelManager extends ChangeNotifier {
 
   /// 拉取远端 manifest 并替换目录（成功才写 last-good，全失败保持现状）。
   ///
-  /// URL 来源（优先级）：构造参数 > RemoteConfigStore.flags['llmManifestUrl']。
+  /// URL 优先级：构造参数 > RemoteConfigStore.flags['llmManifestUrl'] > 内置默认
+  /// [defaultLlmManifestUrl]（2026-09-29 嵌入，开箱即热更，无需先配 update.json）。
   /// 供「检查更新成功后」与设置页下拉刷新调用；返回是否替换成功。
   Future<bool> refreshCatalog() async {
-    final url = _manifestUrl?.call() ??
+    final viaFlags =
         RemoteConfigStore.instance.current.flags['llmManifestUrl'] as String?;
-    if (url == null || url.isEmpty) return false;
+    final url = _manifestUrl?.call() ??
+        (viaFlags != null && viaFlags.isNotEmpty ? viaFlags : defaultLlmManifestUrl);
     try {
       final res = await _dio.get<String>(url);
       final parsed = llmModelsFromJson(
@@ -284,64 +311,159 @@ class LlmModelManager extends ChangeNotifier {
     await _persistSelection(prefs, m);
     await prefs.setBool(_prefExplicit, true);
     notifyListeners();
+    if (isReady(m)) await _publish(m); // 选中且已就绪则立即告知原生路径
   }
 
-  /// 下载选中模型；进度经 [notifyListeners] 通知设置页。已就绪则幂等返回；
-  /// **stale（云端有新版本）不跳过**——允许更新到新文件（更新前后旧文件都可用）。
+  /// 进行中的下载任务上下文见文件末尾顶层类 [_DlTask]。
+
+  /// 启动常驻下载 worker isolate（懒加载）；main 侧只收发消息，不碰字节 I/O。
+  Future<void> _ensureIsolate() async {
+    if (_isoSend != null) return;
+    _isoRecv = ReceivePort();
+    await Isolate.spawn(downloaderEntry, _isoRecv!.sendPort);
+    _isoSend = await _isoRecv!.first as SendPort;
+    _isoRecv!.listen(_onIsoMessage);
+  }
+
+  /// 处理 isolate 回传：进度刷新、完成（main 侧 finalize）、取消、错误。
+  void _onIsoMessage(dynamic msg) {
+    if (msg is! Map) return;
+    final id = msg['id'] as String?;
+    if (id == null) return;
+    final task = _dlTasks[id];
+    switch (msg['type']) {
+      case 'progress':
+        _progress[id] = (msg['value'] as num).toDouble();
+        notifyListeners();
+      case 'done':
+        // finalize 在 main isolate 执行（写 meta、更新就绪态），完成后再解 await
+        if (task != null) {
+          _finalize(task.m, task.part, task.file)
+              .then((_) => task.completer.complete())
+              .catchError((e) => task.completer.completeError(e));
+        }
+      case 'cancelled': // 用户取消：静默结束，.part 保留供续传
+        task?.completer.complete();
+      case 'error':
+        task?.completer.completeError(
+            Exception(msg['message'] as String? ?? '下载失败'));
+    }
+  }
+
+  /// 下载模型（已就绪幂等返回；stale 允许更新到新文件）。
+  /// 轻量后台：字节拉取委托给 downloader isolate，main isolate 仅收进度、做 finalize 与 UI 通知，UI 不卡。
   Future<void> download(LlmModel m) async {
     if ((isReady(m) && !isStale(m)) || _progress.containsKey(m.id)) return;
     final file = await _fileFor(m);
     await file.parent.create(recursive: true);
     final part = File('${file.path}.part');
+
+    // 断点完成态：上次已下完整但未落盘（片段恰好齐 size）
+    if (await part.exists()) {
+      final len = await part.length();
+      if (len == m.sizeBytes) {
+        await _finalize(m, part, file);
+        return;
+      }
+      if (len > m.sizeBytes) await part.delete(); // 旧版本更大/损坏片段，丢弃重来
+    }
+
+    _paused.remove(m.id); // 进入下载即脱离暂停态
     _progress[m.id] = 0;
     notifyListeners();
+
+    await _ensureIsolate();
+    final completer = Completer<void>();
+    _dlTasks[m.id] = _DlTask(completer, m, part, file);
+
+    final existing = await part.exists() ? await part.length() : 0;
+    _isoSend!.send({
+      'cmd': 'download',
+      'id': m.id,
+      'url': m.urlFor(llmModelBase),
+      'partPath': part.path,
+      'sizeBytes': m.sizeBytes,
+      'existingBytes': existing,
+      'resume': existing > 0,
+    });
+
     try {
-      await _dio.download(
-        m.urlFor(llmModelBase),
-        part.path,
-        onReceiveProgress: (c, t) {
-          if (t > 0) {
-            _progress[m.id] = c / t;
-            notifyListeners();
-          }
-        },
-        cancelToken: _cancels[m.id],
-      );
-      await part.rename(file.path);
-      // 落版本快照：此后 manifest 同 id 换文件（size 变化）即可被 _diskState 识别为 stale
-      await File(p.join(file.parent.path, 'meta.json')).writeAsString(
-        jsonEncode({'id': m.id, 'file': m.file, 'size': m.sizeBytes, 'ts': DateTime.now().millisecondsSinceEpoch}),
-        flush: true,
-      );
-      _ready.add(m.id);
-      _stale.remove(m.id);
-    } on DioException catch (e) {
-      // gated 仓库（Gemma 系，需在 HuggingFace 网页接受许可条款）经 hf-mirror 会 403/401——
-      // 必须给出可行动的原因，不让用户对着一个状态码猜（R1：错误要被感知且明说）。
-      final code = e.response?.statusCode;
-      if (code == 403 || code == 401) {
-        throw Exception('该模型在 gated 仓库（需先在 huggingface.co 模型页登录并接受 Gemma 条款），'
-            '直连与镜像都无法下载；二阶段将经自托管 R2 中转');
-      }
-      rethrow;
-    } catch (e) {
-      // DEGRADE: 下载失败属用户可重试动作，状态复位即可；不静默吞——设置页展示错误。
-      debugPrint('[LlmModelManager] download failed (${m.id}): $e');
-      rethrow;
+      await completer.future;
     } finally {
       _progress.remove(m.id);
-      _cancels.remove(m.id);
+      _dlTasks.remove(m.id);
       notifyListeners();
     }
+  }
+
+  /// 落盘：`.part` → `model.litertlm` 并写版本快照 `meta.json`，标记就绪/清 stale。
+  Future<void> _finalize(LlmModel m, File part, File file) async {
+    await part.rename(file.path);
+    // 版本快照：此后 manifest 同 id 换文件（size 变化）即可被 _diskState 识别为 stale
+    await File(p.join(file.parent.path, 'meta.json')).writeAsString(
+      jsonEncode({'id': m.id, 'file': m.file, 'size': m.sizeBytes, 'ts': DateTime.now().millisecondsSinceEpoch}),
+      flush: true,
+    );
+    _ready.add(m.id);
+    _stale.remove(m.id);
+    _paused.remove(m.id);
+    notifyListeners();
+    await _publish(m); // 落盘即告知原生真实路径，下次摘要无需重启
+  }
+
+  /// 把已就绪模型的真实绝对路径 publish 给原生，消除 path_provider 与原生 getDir 的路径差异。
+  Future<void> _publish(LlmModel m) async {
+    if (!isReady(m)) return;
+    try {
+      final file = await _fileFor(m);
+      if (await file.exists()) {
+        await _chan.invokeMethod('setModelPath', file.absolute.path);
+      }
+    } catch (e) {
+      debugPrint('[LlmModelManager] publish model path failed: $e');
+    }
+  }
+
+  /// 启动时把任一就绪模型路径告知原生（无需重新下载即可用）。
+  Future<void> _publishReadyIfAny() async {
+    final ordered = [modelById(selectedId), ...catalog.where((m) => _ready.contains(m.id))];
+    for (final m in ordered) {
+      if (m != null) {
+        await _publish(m);
+        break;
+      }
+    }
+  }
+
+  /// 取消下载：向 worker isolate 发取消指令，`.part` 片段保留，可再次 [download] 断点续传；
+  /// 标记暂停态供 UI 显示「继续」。仅在确有进行中任务时生效，避免对已就绪模型误标暂停。
+  Future<void> cancelDownload(String id) async {
+    if (!_dlTasks.containsKey(id)) return; // 未在下载，无需暂停标记
+    _isoSend?.send({'cmd': 'cancel', 'id': id});
+    _paused.add(id);
+    notifyListeners();
   }
 
   /// 清除已下载模型（腾空间；不撤历史产物）。删除孤儿条目后重扫，列表即时收敛。
   Future<void> remove(LlmModel m) async {
     final file = await _fileFor(m);
     if (await file.exists()) await file.delete();
+    // 连带清理未完成的 .part 片段与暂停标记，避免残留占用空间 / 误显「继续」
+    final part = File('${file.path}.part');
+    if (await part.exists()) await part.delete();
     _ready.remove(m.id);
     _stale.remove(m.id);
+    _paused.remove(m.id);
     if (m.localOnly) await _syncOrphans();
     notifyListeners();
   }
+}
+
+/// 进行中的下载任务上下文（id → 完成器 + 模型/路径），供 isolate 回传后 main 侧 finalize。
+class _DlTask {
+  final Completer<void> completer;
+  final LlmModel m;
+  final File part;
+  final File file;
+  _DlTask(this.completer, this.m, this.part, this.file);
 }

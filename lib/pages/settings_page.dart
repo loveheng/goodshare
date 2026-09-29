@@ -86,7 +86,12 @@ class _SettingsPageState extends State<SettingsPage> {
     try {
       await widget.llmModels.download(m);
       messenger.hideCurrentSnackBar();
-      messenger.showSnackBar(SnackBar(content: Text('${m.name} 已就绪')));
+      // 基于真实就绪态反馈：取消/未完成时不误报「已就绪」，可重试续传
+      messenger.showSnackBar(SnackBar(
+        content: Text(widget.llmModels.isReady(m)
+            ? '${m.name} 已就绪'
+            : '${m.name} 下载已取消/未完成，可重试续传'),
+      ));
     } catch (e) {
       messenger.hideCurrentSnackBar();
       messenger.showSnackBar(SnackBar(content: Text('下载失败：$e（可重试或换网络环境）')));
@@ -573,6 +578,7 @@ class _LlmModelTile extends StatelessWidget {
     final ready = manager.isReady(model);
     final stale = manager.isStale(model);
     final progress = manager.progressOf(model);
+    final paused = manager.isPaused(model);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -627,6 +633,32 @@ class _LlmModelTile extends StatelessWidget {
                       ),
                       const SizedBox(width: 10),
                       Text('${(progress * 100).round()}%'),
+                      IconButton(
+                        icon: const Icon(Icons.pause, size: 18),
+                        tooltip: '暂停',
+                        onPressed: () => manager.cancelDownload(model.id),
+                      ),
+                    ],
+                  )
+                else if (paused)
+                  // 用户暂停：.part 片段保留，点「继续」从断点续传
+                  Row(
+                    children: [
+                      Icon(Icons.pause_circle, size: 16, color: scheme.onSurfaceVariant),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          '已暂停（可继续）',
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                      TextButton.icon(
+                        icon: const Icon(Icons.play_arrow, size: 18),
+                        label: const Text('继续'),
+                        onPressed: () => onDownload(model),
+                      ),
+                      TextButton(onPressed: () => onRemove(model), child: const Text('删除')),
                     ],
                   )
                 else if (ready && stale)
