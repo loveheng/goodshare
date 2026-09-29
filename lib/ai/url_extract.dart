@@ -37,7 +37,7 @@ String? extractReadableText(String html) {
   final titleMatch =
       RegExp(r'<title[^>]*>(.*?)</title>', dotAll: true, caseSensitive: false).firstMatch(html);
   if (titleMatch != null) {
-    title = _decodeEntities(titleMatch.group(1) ?? '').trim();
+    title = decodeEntities(titleMatch.group(1) ?? '').trim();
   }
   var body = html
       .replaceAll(
@@ -48,7 +48,7 @@ String? extractReadableText(String html) {
       .replaceAll(
           RegExp(r'<(br|/p|/div|/li|/h[1-6]|/tr)[^>]*>', caseSensitive: false), '\n')
       .replaceAll(RegExp(r'<[^>]+>'), ' ');
-  body = _decodeEntities(body);
+  body = decodeEntities(body);
   body = body
       .replaceAll(RegExp(r'[ \t\r\f]+'), ' ')
       .replaceAll(RegExp(r'\n\s*\n+'), '\n')
@@ -58,7 +58,7 @@ String? extractReadableText(String html) {
   return title.isEmpty ? body : '# $title\n\n$body';
 }
 
-String _decodeEntities(String s) => s
+String decodeEntities(String s) => s
     .replaceAll('&nbsp;', ' ')
     .replaceAll('&amp;', '&')
     .replaceAll('&lt;', '<')

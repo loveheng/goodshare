@@ -273,22 +273,47 @@ class InboxItem {
   }
 }
 
-/// 合并模式的段级附加记录（appendix_json）。
+/// 段级附加记录（appendix_json）。
+///
+/// 两种用途同构，共用一套结构：
+/// - 合并模式：同来源 App + 5 分钟窗内自动追加的各段
+/// - **速记混合录入**（2026-09-29）：用户主动组装的文本段 + 语音段
 class AppendixEntry {
-  const AppendixEntry({required this.ts, required this.text, this.source});
+  const AppendixEntry({required this.ts, required this.text, this.source, this.path});
 
   final int ts;
   final String text;
+
+  /// 段来源：合并模式为来源 App；速记混合为 `kSegmentText` / `kSegmentVoice`。
   final String? source;
 
-  Map<String, Object?> toJson() => {'ts': ts, 'text': text, if (source != null) 'source': source};
+  /// 段级附件路径（语音段的音频文件）。
+  ///
+  /// 混合录入下一条速记可含多个语音段，而 `rawFilePath` 仅能承载一个——
+  /// 故段级音频走本字段，首个语音段另作主附件。`appendix_json` 是 JSON 列，
+  /// 加字段**无需 schema 迁移**。
+  final String? path;
+
+  bool get isVoice => source == kSegmentVoice;
+
+  Map<String, Object?> toJson() => {
+        'ts': ts,
+        'text': text,
+        if (source != null) 'source': source,
+        if (path != null) 'path': path,
+      };
 
   static AppendixEntry fromJson(Map<String, Object?> j) => AppendixEntry(
         ts: j['ts'] as int? ?? 0,
         text: j['text'] as String? ?? '',
         source: j['source'] as String?,
+        path: j['path'] as String?,
       );
 }
+
+/// 速记段来源标记（与合并模式的「来源 App」取值区分）。
+const String kSegmentText = 'text';
+const String kSegmentVoice = 'voice';
 
 /// 待办勾选状态（todo_state_json）：按 human_md 待办行内容 hash 关联，
 /// 不回写 human_md；AI 重构后按 hash 重挂、失效项丢弃。
