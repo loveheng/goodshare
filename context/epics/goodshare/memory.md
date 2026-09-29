@@ -84,9 +84,12 @@ last-merge: 2026-09-29
 - [2026-09-29] face/object/pose 预留占位定档（`ml_capability.dart` 的 `ExecutionMode.placeholder` 已定义）：不实现、不引依赖，由系统相册承担，MlCapability 已留插槽；本轮 ML 体系 = 4 落地（图片分类 / 条码 / 文本分析 = backgroundQueue，文档扫描 = foregroundUi）+ 3 预留（人脸 / 物体 / 姿势 = placeholder）
 
 ## 断点
-- [断点] 内容管线收尾三块（引用模式落地 / 备份携带工作区两表 / PDF 文本提取 pdfrx）已落地全绿待提交（analyze 0 / test 全绿，详见 devlog 2026-09-30 收尾条目）；提交后真机验收——①引用模式 SAF 持久化权限（takePersistableUriPermission）与 content:// 可达性，本机无设备阻塞，摄入默认走 ref 但需真机验证持久化是否生效 ②PDF 文本提取对文本型 PDF 的覆盖（pdfrx loadText），扫描件返回空、UI 已据 note 明示 ③备份恢复 workspaces/workspace_items 两表闭环。遗留：待办勾选写路径（V2，TodoMark 生产侧未实现）、文档类型支持矩阵、iOS/鸿蒙适配
+- [断点] 内容管线收尾三块（引用模式落地 / 备份携带工作区两表 / PDF 文本提取 pdfrx）已落地全绿待提交（analyze 0 / test 全绿，详见 devlog 2026-09-30 收尾条目）；提交后真机验收——①引用模式 SAF 持久化权限（takePersistableUriPermission）与 content:// 可达性，本机无设备阻塞，摄入默认走 ref 但需真机验证持久化是否生效 ②PDF 文本提取对文本型 PDF 的覆盖（pdfrx loadText），扫描件返回空、UI 已据 note 明示 ③备份恢复 workspaces/workspace_items 两表闭环。超长文本 Phase 0+1（去截断全量存储 + 渲染虚拟化）已落地（见下追加 5）；剩余：待办勾选写路径（V2，TodoMark 生产侧未实现）、文档类型支持矩阵、iOS/鸿蒙适配、超长文本 Phase 2/3/4（归一化分块 / Isolate 异步解析 / 向量引擎+RAG·Map-Reduce 摘要）
 
 ## 进度（追加 4）
 - [2026-09-30] 引用模式落地（断点①推进）：`ShareIntake` 新增 `referenceMode`（默认 true——不复制、存源 URI、标 `attachRef`）+ `CollectCommand.attachState`（appendix_json 段标 `attachState` 状态机）+ handler 生效 + `Attach.reachable` 兼容 `content://` URI。⚠️ SAF `takePersistableUriPermission` 与 content URI 跨会话可达性**仍需真机验证**（本机无设备，阻塞项），故摄入默认 ref 但持久化成败未实测。
 - [2026-09-30] 备份携带工作区两表（断点②拍板+落地）：`restoreFrom` 恢复表由 4 张扩到 6 张（新增 workspaces / workspace_items），属用户事实数据非派生，按用户拍板进备份；snapshotTo 侧不变（Vault 仍排除、派生向量仍清空）。
 - [2026-09-30] PDF 文本提取（`pdfx`→`pdfrx`）：`pdfx` 2.x 实测仅渲染无文本 API、`pdf_text` 在本项目 Dart 3.13 下 `http ^0.13.0` 与 `package_info_plus` 拉 `http ^1.6.0` 冲突且旧版无 null safety、`pdf_render` 仅渲染不适用——选定 `pdfrx ^2.6.5`（底层 PDFium，当前版本唯一既活跃又支持文本提取的库）。新增 `lib/doc/pdf_to_md.dart`（`PdfNormalizer` 调 `loadDocumentFile`+`page.loadText()`→`fullText`，启发式按行特征判标题）+ 注册进 `DocumentNormalizers`；docs/design ui-spec 与 content-pipeline 的 `pdfx` 提法已同步更正为 `pdfrx`。analyze 0 / 全测绿。
+
+## 进度（追加 5）
+- [2026-09-30] 超长文本 Phase 0+1（去截断全量存储 + 渲染虚拟化）：`kNormalizeMaxChars` 20000→1<<26（实际不触发截断），html/plain/pdf 三处 normalizer 截断逻辑随之失效，human_md 存全量、内容不再丢失；`RichTextView` 内部 `Column`→`ListView.builder`（解析缓存保留），并抽出 `richBlocksOf`/`buildRichBlock` 复用；`ItemViewTemplate` 视图函数改返回 `List<Widget>`（sliver 兼容），文本正文走 `SliverList`、媒体走 `SliverToBoxAdapter`；`item_detail_page` 主体 `ListView(children)`→`CustomScrollView(slivers)`，让正文 block 成为 sliver items——数万字长文只构建可视区，真正虚拟化（非嵌套 shrinkWrap 伪虚拟化）；顺手修原详情页 `_typeActions()` 重复调用 bug。docs/design content-pipeline.md 3 处「截断」更正为全量存储+虚拟化。analyze 0 / 全测绿。剩余超长文本瓶颈在 AI/向量化侧（Context 溢出），待 Phase 2 归一化分块 / Phase 3 Isolate 异步 / Phase 4 向量引擎+RAG·Map-Reduce 摘要。

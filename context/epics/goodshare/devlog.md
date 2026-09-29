@@ -210,3 +210,20 @@ last-merge: 2026-09-29
 
 ## 断点
 - [断点] 三块已落地全绿待提交（analyze 0 / test 全绿）；提交后真机验收——①引用模式 SAF 持久化与 content URI 可达性（本机无设备，阻塞项）②PDF 文本提取对文本型 PDF 覆盖（扫描件返回空、UI 已据 note 明示）③备份恢复 workspaces/workspace_items 两表闭环。遗留：待办勾选写路径（V2，TodoMark 生产侧未实现）、文档类型支持矩阵、iOS/鸿蒙适配
+
+---
+
+# 2026-09-30 · 超长文本处理 Phase 0+1：去截断全量存储 + 渲染虚拟化
+
+[落点] lib/doc/normalizer.dart（kNormalizeMaxChars 20000→1<<26）/ lib/ui/rich_text_view.dart（Column→ListView.builder + richBlocksOf/buildRichBlock 抽出）/ lib/ui/item_view_template.dart（视图函数返回 List<Widget> sliver + bodySlivers）/ lib/pages/item_detail_page.dart（ListView→CustomScrollView + SliverList 真虚拟化 + 顺手修重复 _typeActions）/ docs/design/content-pipeline.md（3 处「截断」更正为全量存储+虚拟化）
+
+## 做法
+- **Phase 0 去截断**：`kNormalizeMaxChars` 由 20000 改为 1<<26（≈6700 万字符，实际不触发）；html/plain/pdf 三处 normalizer 的 `s.length > maxChars` 截断逻辑因常量放大而永不触发，human_md 现在存全量。写库层 `ItemDocNormalizer.fieldsFor` 直接写 `doc.markdown`，无二次截断，内容不再丢失。
+- **Phase 1 渲染虚拟化**：`RichTextView` 内部由 `Column` 改为 `ListView.builder`（解析结果缓存保留，避免重解析掉帧）；抽出 `richBlocksOf` / `buildRichBlock` 供复用。详情页 `ItemViewTemplate` 视图函数由返回单 Widget 改为返回 `List<Widget>`（sliver 兼容），文本类正文走 `SliverList`、媒体类走 `SliverToBoxAdapter`；`item_detail_page` 主体由 `ListView(children)` 改为 `CustomScrollView(slivers)`，让正文 block 成为 sliver items——数万字长文只构建可视区 widget，真正虚拟化（非嵌套 shrinkWrap 伪虚拟化）。`_appendix` 内的 RichTextView 因嵌在 Column 传 `shrinkWrap:true`。顺手修了原详情页 `_typeActions()` 被调用两次的重复 bug。
+
+## 备注
+- Phase 0/1 是用户超长文本方案（Chunking / Async / Virtualization）的前两步；后端 AI/向量化瓶颈（Context 溢出）尚未触及：向量分块（item_embeddings.chunk_index 已留结构）与嵌入引擎、Isolate 异步解析、Map-Reduce 摘要/RAG 属 Phase 2/3/4，仍待做。
+- 截断移除后，`NormalizeMeta.truncated` 字段及 `ItemDocNormalizer.coverageText` 的「超出上限已截断」分支实际不再触发，保留为极端兜底（常量仍有上限语义）。
+
+## 断点
+- [断点] Phase 0+1 已落地全绿（analyze 0 / test 全绿）；超长文本「渲染不卡、内容不丢」达标。剩余：Phase 2 归一化分块（标题层级/500-token 窗口，消费侧按需切）、Phase 3 Isolate 异步解析、Phase 4 向量引擎落地 + RAG/Map-Reduce 摘要。遗留：待办勾选写路径（V2）、文档类型支持矩阵、iOS/鸿蒙适配。

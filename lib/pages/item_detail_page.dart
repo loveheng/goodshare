@@ -358,23 +358,30 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
         // 低频 / 危险操作收进 `⋯` 菜单（ui-spec §4.3：不做按钮矩阵）
         actions: [_overflowMenu()],
       ),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(Insets.xl, Insets.md, Insets.xl, Insets.xxl),
-        children: [
-          ItemViewTemplate(item: _item, machineMode: _machineMode),
+      // Phase 1：主体改 CustomScrollView，正文 block 经 ItemViewTemplate.bodySlivers
+      // 以 SliverList 虚拟化，数万字长文只构建可视区 widget。
+      body: CustomScrollView(
+        slivers: [
+          const SliverPadding(
+              padding: EdgeInsets.fromLTRB(Insets.xl, Insets.md, Insets.xl, 0)),
+          ...ItemViewTemplate(item: _item, machineMode: _machineMode)
+              .bodySlivers(context),
           // 类型专属处理动作：正文末尾一行 chips，不占正文主线
-          _typeActions(),
-          _attachStatusLine(),
+          SliverToBoxAdapter(child: _typeActions()),
+          SliverToBoxAdapter(child: _attachStatusLine()),
           // 派生内容为正文末尾「附录章节」（小标题 + 内容），不叠卡片边框
           if (_item.summaryMd != null && _item.summaryMd!.trim().isNotEmpty)
-            _appendix('摘要', _item.summaryMd!),
-          if (_item.hasTranslation) _appendix('译文', _item.translatedMd!),
-          _AiTaskStatusLine(repo: widget.repo, item: _item),
-          _sourceLine(),
-          _typeActions(),
-          const SizedBox(height: 24),
-          PoeticText(sloganFor(SloganKeys.detailFooter),
-              large: false, align: TextAlign.center),
+            SliverToBoxAdapter(child: _appendix('摘要', _item.summaryMd!)),
+          if (_item.hasTranslation)
+            SliverToBoxAdapter(child: _appendix('译文', _item.translatedMd!)),
+          SliverToBoxAdapter(
+              child: _AiTaskStatusLine(repo: widget.repo, item: _item)),
+          SliverToBoxAdapter(child: _sourceLine()),
+          const SliverToBoxAdapter(child: SizedBox(height: 24)),
+          SliverToBoxAdapter(
+            child: PoeticText(sloganFor(SloganKeys.detailFooter),
+                large: false, align: TextAlign.center),
+          ),
         ],
       ),
       // 基本操作条（5 项，全类型固定）：摘要 / 标签 / 工作区 / 分享 / 删除
@@ -694,7 +701,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                 ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
           ),
           const SizedBox(height: Insets.xs),
-          RichTextView(markdown: body),
+          RichTextView(markdown: body, shrinkWrap: true),
         ],
       ),
     );

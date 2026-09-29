@@ -14,11 +14,15 @@ import 'plain_to_md.dart';
 /// [NormalizeMeta]：UI 据此向用户明示覆盖率与降级情况（R1：降级必须被感知，
 /// 不允许静默成功）。
 
-/// 富文本长度上限：超过即截断。
+/// 归一化产出长度上限。
 ///
-/// 依据：网页抓取正文上限 20000 字（`url_extract.dart`），且长文一次性构建
-/// 全部 widget 必掉帧——渲染侧同样需要门控。
-const int kNormalizeMaxChars = 20000;
+/// **历史**：早期为防渲染/向量化对 2 万字设硬截断，超阈值直接砍掉后续内容。
+/// **已放开为全量存储**（2026-09-30 Phase 0）：超长文本不再丢内容，human_md 存全文；
+/// 渲染虚拟化（`RichTextView` 的 `ListView.builder` / 详情页 `SliverList`）与向量分块
+/// （`item_embeddings.chunk_index`，Phase 2）在消费侧处理，而非在此截断。
+///
+/// 该值仅作极端兜底（数十 M 字符级），正常长文不会触及、不应触发截断。
+const int kNormalizeMaxChars = 1 << 26; // ≈ 6700 万字符，实际不触发截断
 
 /// 归一化覆盖率与降级信息。
 class NormalizeMeta {
