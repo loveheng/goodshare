@@ -14,10 +14,15 @@ class AddSheet extends StatefulWidget {
     super.key,
     required this.handler,
     required this.collector,
+    this.initialType,
   });
 
   final ItemActionHandler handler;
   final TextCollector collector;
+
+  /// 预选类型：非空则跳过类型网格直接进该类型的录入 UI
+  /// （2026-09-30：顶部 `＋` 菜单的「拍照」等单项入口需要一步直达）。
+  final String? initialType;
 
   @override
   State<AddSheet> createState() => _AddSheetState();
@@ -25,6 +30,12 @@ class AddSheet extends StatefulWidget {
 
 class _AddSheetState extends State<AddSheet> {
   String? _selected;
+
+  @override
+  void initState() {
+    super.initState();
+    _selected = widget.initialType;
+  }
 
   @override
   Widget build(BuildContext context) {

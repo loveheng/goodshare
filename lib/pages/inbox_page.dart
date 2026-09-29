@@ -1,36 +1,51 @@
 import 'package:flutter/material.dart';
 
-import '../action/item_action_handler.dart';
 import '../action/commands.dart';
+import '../action/item_action_handler.dart';
 import '../ai/capabilities.dart';
 import '../ai/reconstructor.dart';
 import '../data/repository.dart';
-import '../ui/drawer_menu_button.dart';
 import '../models/item.dart';
 import '../share/attachments.dart';
+import '../share/text_collector.dart';
 import '../ui/content_card.dart';
-import '../ui/slogans.dart';
+import '../ui/drawer_menu_button.dart';
 import '../ui/repo_auto_reload.dart';
+import '../ui/slogans.dart';
+import 'add_sheet.dart';
 import 'item_detail_page.dart';
 
-/// 全部（首页，2026-09-27 改版）：顶部固定搜索 + 类型 chips，条目区可**横滑切换类型**。
-/// 第 0 页为「全部」（按 item_type 分组带计数），其后每页一个类型（可滑动切换，
-/// chips 与页双向同步；切换后 chips 行自动滚动，选中 chip 完整可见）。
-/// 添加入口统一为悬浮球（2026-09-27：页内各分类 ＋ 已移除）。
-/// 时间轴视图随 V3 与时光机分化后再加入（F5 决策，MVP/V2 仅分类视图）。
+/// 全部 · 主列表（2026-09-30 改版：唯一内容列表页）。
+///
+/// 收敛结果：原「横滑切换类型」的 `PageView` **取消**（类型降为筛选维度后，
+/// 横滑翻页与 chips 两套并存是重复交互）；时光机降为**排序维度**，AI 分类降为
+/// **标签维度**，保险箱降为**筛选条件**（其入口在侧边栏，视图仍由本页承载）。
+///
+/// 顶部 `＋` 只管「把外部资源拿进来」（拍照 / 扫描文档 / 导入），
+/// 速记归底部常驻条（ui-spec §4.6 的分工）。
 class InboxPage extends StatefulWidget {
   const InboxPage({
     super.key,
     required this.repo,
     required this.handler,
+    required this.collector,
     required this.caps,
     this.onOpenDrawer,
+    this.vaultOnly = false,
+    this.onVaultOnlyChanged,
   });
 
   final Repository repo;
   final ItemActionHandler handler;
-  final AiCapabilities caps; // 详情页翻译预检用（引擎/开关可用性）
+  final TextCollector collector;
+  final AiCapabilities caps; // 详情页翻译预检 / 文档扫描能力
   final VoidCallback? onOpenDrawer;
+
+  /// 仅显示保险箱条目（安全域视图）。由侧边栏入口或本页「保险箱」chip 切换。
+  final bool vaultOnly;
+
+  /// 保险箱视图切换回调：home_shell 据此同步 `SecureWindow`（FLAG_SECURE）。
+  final ValueChanged<bool>? onVaultOnlyChanged;
 
   @override
   State<InboxPage> createState() => _InboxPageState();
@@ -38,28 +53,11 @@ class InboxPage extends StatefulWidget {
 
 class _InboxPageState extends State<InboxPage> with RepoAutoReload {
   final _searchCtrl = TextEditingController();
-  final _pageCtrl = PageController();
-  /// 各 chip 的 key：切换 tab 后据此定位选中 chip 并自动滚动 chips 行
-  final _chipKeys = List<GlobalKey>.generate(_typeTabs.length, (_) => GlobalKey());
   String? _query = '';
+  String? _type; // null = 全部
+  ItemSort _sort = ItemSort.newest;
   List<InboxItem> _items = [];
-  List<InboxItem> _all = [];
   bool _loading = true;
-  int _pageIndex = 0;
-
-  /// 页 ↔ 类型映射：index 0 = 全部(null)，1..n = allTypes
-  static const _typeTabs = [
-    null,
-    InboxItem.typeNote,
-    InboxItem.typeUrl,
-    InboxItem.typeImage,
-    InboxItem.typeVideo,
-    InboxItem.typeAudio,
-    InboxItem.typeChatlog,
-    InboxItem.typeDocument,
-  ];
-
-  static String? typeAt(int i) => _typeTabs[i];
 
   @override
   Repository get repo => widget.repo;
@@ -74,63 +72,45 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
   }
 
   @override
+  void didUpdateWidget(InboxPage old) {
+    super.didUpdateWidget(old);
+    if (old.vaultOnly != widget.vaultOnly) _reload();
+  }
+
+  @override
   void dispose() {
     _searchCtrl.dispose();
-    _pageCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _reload() async {
-    final items = await widget.repo.list(query: _query, limit: 500);
+    final items = await widget.repo.list(
+      query: _query,
+      type: _type,
+      vault: widget.vaultOnly,
+      sort: _sort,
+      limit: 500,
+    );
     if (!mounted) return;
     setState(() {
-      _all = items;
-      _items = _filtered(typeAt(_pageIndex));
+      _items = items;
       _loading = false;
     });
   }
-
-  List<InboxItem> _filtered(String? type) =>
-      type == null ? _all : _all.where((it) => it.itemType == type).toList();
 
   void _onSearchChanged(String q) {
     _query = q;
     _reload();
   }
 
-  /// 横滑切页：更新页 + 当前页数据
-  void _onPageChanged(int i) {
-    setState(() {
-      _pageIndex = i;
-      _items = _filtered(typeAt(i));
-    });
-    _scrollChipsTo(i);
+  void _setType(String? t) {
+    setState(() => _type = t);
+    _reload();
   }
 
-  /// 切换 tab 后 chips 行自动滚动，保证选中 chip 完整可见（设计 §4.2）
-  void _scrollChipsTo(int i) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      final ctx = _chipKeys[i].currentContext;
-      if (ctx == null) return;
-      Scrollable.ensureVisible(
-        ctx,
-        alignment: 0.5,
-        duration: const Duration(milliseconds: 200),
-        curve: Curves.easeOut,
-      );
-    });
-  }
-
-  /// chips 点选：滑动到对应页（双向同步）
-  void _jumpTo(String? type) {
-    final i = _typeTabs.indexOf(type);
-    if (i < 0 || i == _pageIndex) return;
-    _pageCtrl.animateToPage(
-      i,
-      duration: const Duration(milliseconds: 240),
-      curve: Curves.easeOut,
-    );
+  void _toggleSort() {
+    setState(() => _sort = _sort == ItemSort.newest ? ItemSort.oldest : ItemSort.newest);
+    _reload();
   }
 
   void _open(InboxItem it) {
@@ -138,11 +118,11 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
       context,
       MaterialPageRoute<void>(
         builder: (_) => ItemDetailPage(
-              repo: widget.repo,
-              handler: widget.handler,
-              item: it,
-              caps: widget.caps,
-            ),
+          repo: widget.repo,
+          handler: widget.handler,
+          item: it,
+          caps: widget.caps,
+        ),
       ),
     );
   }
@@ -152,72 +132,197 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
     return Scaffold(
       appBar: AppBar(
         leading: drawerMenuLeading(widget.onOpenDrawer),
-        title: const Text('全部'),
-        actions: [
-          // 文档扫描（2026-09-29）：前台相机流，仅 GMS 设备可用；无 GMS 在点击时
-          // 运行时优雅降级并提示原因（不做脆性预检以免国内无 GMS 设备误关入口）。
-          IconButton(
-            icon: const Icon(Icons.document_scanner_outlined),
-            tooltip: '扫描文档',
-            onPressed: _scanDocument,
-          ),
-        ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(92),
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: TextField(
-                  controller: _searchCtrl,
-                  onChanged: _onSearchChanged,
-                  decoration: InputDecoration(
-                    hintText: '搜索标题 / 正文 / 标签',
-                    prefixIcon: const Icon(Icons.search),
-                    isDense: true,
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(28)),
-                  ),
-                ),
-              ),
-              SizedBox(
-                height: 40,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  children: [
-                    for (final (i, t) in _typeTabs.indexed)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: FilterChip(
-                          key: _chipKeys[i],
-                          avatar: t == null ? null : Icon(ContentCard.iconOf(t), size: 16),
-                          label: Text(t == null ? '全部' : ContentCard.labelOf(t)),
-                          selected: _pageIndex == i,
-                          onSelected: (_) => _jumpTo(t),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ],
+        title: TextField(
+          controller: _searchCtrl,
+          onChanged: _onSearchChanged,
+          decoration: const InputDecoration(
+            hintText: '搜索标题 / 正文 / 标签',
+            isDense: true,
+            border: InputBorder.none,
           ),
         ),
+        actions: [
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.add),
+            tooltip: '添加',
+            onSelected: _onAddMenu,
+            itemBuilder: (_) => const [
+              PopupMenuItem<String>(value: 'camera', child: Text('拍照')),
+              PopupMenuItem<String>(value: 'scan', child: Text('扫描文档')),
+              PopupMenuItem<String>(value: 'import', child: Text('导入资源')),
+            ],
+          ),
+        ],
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : PageView(
-              controller: _pageCtrl,
-              onPageChanged: _onPageChanged,
-              children: [
-                _allPage(),
-                for (final t in _typeTabs.skip(1)) _typePage(t as String),
-              ],
-            ),
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _filterBar(),
+          const Divider(height: 1),
+          Expanded(child: _body()),
+        ],
+      ),
     );
   }
 
-  /// 文档扫描（前台相机流，2026-09-29）：经 [AiCapabilities.documentScan] 调起系统扫描，
-  /// 产出直接新建条目（每页一张图片，或整本 PDF）。无 GMS → 运行时降级并提示原因。
+  /// 筛选 / 排序维度（一行 chips，可横滑）。
+  Widget _filterBar() {
+    return SizedBox(
+      height: 44,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        children: [
+          _chip(
+            label: '全部',
+            selected: _type == null && !widget.vaultOnly,
+            onSelected: (_) => _setType(null),
+          ),
+          for (final t in InboxItem.allTypes)
+            _chip(
+              label: ContentCard.labelOf(t),
+              avatar: Icon(ContentCard.iconOf(t), size: 16),
+              selected: _type == t,
+              onSelected: (_) => _setType(_type == t ? null : t),
+            ),
+          _chip(
+            label: '保险箱',
+            avatar: const Icon(Icons.lock_outline, size: 16),
+            selected: widget.vaultOnly,
+            onSelected: (v) => widget.onVaultOnlyChanged?.call(v),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(left: 8),
+            child: ActionChip(
+              label: const Text('标签'),
+              onPressed: () {
+                // facets 由 AI 打标产出（V2）；无数据时不给假入口
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('标签随离线 AI 打标生效后开放')),
+                );
+              },
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(left: 8),
+            child: ActionChip(
+              avatar: Icon(
+                _sort == ItemSort.newest
+                    ? Icons.arrow_downward
+                    : Icons.arrow_upward,
+                size: 16,
+              ),
+              label: Text(_sort == ItemSort.newest ? '最新' : '最早'),
+              onPressed: _toggleSort,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _chip({
+    required String label,
+    required bool selected,
+    required ValueChanged<bool> onSelected,
+    Widget? avatar,
+  }) =>
+      Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: FilterChip(
+          label: Text(label),
+          avatar: avatar,
+          selected: selected,
+          onSelected: onSelected,
+        ),
+      );
+
+  Widget _body() {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_items.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            PoeticText(
+              sloganFor(widget.vaultOnly ? SloganKeys.empty : SloganKeys.splash),
+              large: false,
+              align: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            Icon(
+              widget.vaultOnly ? Icons.lock_outline : Icons.note_add_outlined,
+              size: 48,
+              color: Theme.of(context).colorScheme.outlineVariant,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              _emptyTitle(),
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              widget.vaultOnly ? '把条目移入保险箱后会出现在这里' : '用底部输入条记下第一条',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+      );
+    }
+    return RefreshIndicator(
+      onRefresh: _reload,
+      child: ListView.builder(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.only(bottom: 96),
+        itemCount: _items.length,
+        itemBuilder: (context, i) =>
+            ContentCard(item: _items[i], onTap: () => _open(_items[i])),
+      ),
+    );
+  }
+
+  String _emptyTitle() {
+    if (widget.vaultOnly) return '保险箱是空的';
+    if (_type != null) return '还没有${ContentCard.labelOf(_type!)}';
+    if ((_query ?? '').isNotEmpty) return '没有匹配的条目';
+    return '还没有任何收集';
+  }
+
+  Future<void> _onAddMenu(String v) async {
+    switch (v) {
+      case 'camera':
+        await _openAddSheet(initialType: InboxItem.typeImage);
+      case 'scan':
+        await _scanDocument();
+      case 'import':
+        await _openAddSheet();
+    }
+  }
+
+  Future<void> _openAddSheet({String? initialType}) async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => DraggableScrollableSheet(
+        initialChildSize: 0.6,
+        minChildSize: 0.4,
+        maxChildSize: 1.0,
+        builder: (context, scrollController) => SingleChildScrollView(
+          controller: scrollController,
+          child: AddSheet(
+            handler: widget.handler,
+            collector: widget.collector,
+            initialType: initialType,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 文档扫描（前台相机流）：经 [AiCapabilities.documentScan] 调起系统扫描，
+  /// 产出直接新建条目（每页一张图片，或整本 PDF）。无 GMS 时运行时降级并提示原因
+  /// （不做脆性预检，以免国内无 GMS 设备误关入口）。
   Future<void> _scanDocument() async {
     final cap = widget.caps.documentScan;
     if (cap == null) return;
@@ -230,14 +335,14 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
       }
       return;
     }
-    Map<String, Object?>? scan;
     try {
-      final result = await cap.reconstruct(ReconstructInput(
-        itemId: '_docscan',
-        itemType: InboxItem.typeDocument,
-        rawContent: '',
-        taskAction: Repository.taskScanDocument,
-      ));
+      final result = await cap.reconstruct(
+        ReconstructInput(
+          itemId: '_docscan',
+          itemType: InboxItem.typeDocument,
+          rawContent: '',
+        ),
+      );
       final raw = result.machineJson?['document_scan'];
       if (raw == null) {
         if (mounted) {
@@ -247,184 +352,50 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
         }
         return;
       }
-      scan = raw as Map<String, Object?>;
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('文档扫描失败：$e')),
+      final scan = raw as Map<String, Object?>;
+      final images = (scan['images'] as List? ?? const []).cast<String>();
+      var n = 0;
+      var failed = 0;
+      // 入库前先落 app 私有目录：扫描器返回的路径可能被系统清理
+      Future<void> import(String itemType, String path) async {
+        final saved = await copyToAppDir(path);
+        if (saved == null) {
+          failed++;
+          return;
+        }
+        await widget.handler.execute(
+          CollectCommand(
+            itemType: itemType,
+            sourceApp: 'goodshare.docscan',
+            rawFilePath: saved,
+            humanTitle: '扫描文档',
+          ),
         );
+        n++;
       }
-      return;
-    }
-    int n = 0;
-    int failed = 0;
-    final images = (scan['images'] as List? ?? const []).cast<String>();
-    // 入库前先落 app 私有目录：扫描器返回的路径可能被系统清理（与分享摄入同口径）
-    Future<void> import(String itemType, String path) async {
-      final saved = await copyToAppDir(path);
-      if (saved == null) {
-        failed++;
-        return;
-      }
-      await widget.handler.execute(CollectCommand(
-        itemType: itemType,
-        sourceApp: 'goodshare.docscan',
-        rawFilePath: saved,
-        humanTitle: '扫描文档',
-      ));
-      n++;
-    }
 
-    try {
       for (final p in images) {
         await import(InboxItem.typeImage, p);
       }
       if (images.isEmpty && scan['pdf'] != null) {
         await import(InboxItem.typeDocument, scan['pdf'] as String);
       }
-    } catch (e) {
-      // CollectCommand 校验/入库失败：报告部分完成，不让异常逃逸
       if (mounted) {
+        reload();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('文档入库中断：已添加 $n 个，失败 ${failed + 1} 个（$e）')),
-        );
-      }
-      if (n > 0 && mounted) reload();
-      return;
-    }
-    if (mounted) {
-      reload();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+          SnackBar(
             content: Text(failed > 0
                 ? '已添加 $n 个扫描页，$failed 个保存失败'
-                : '已添加 $n 个扫描页')),
-      );
-    }
-  }
-
-  /// 第 0 页：全部（按类型分组带计数）
-  Widget _allPage() {
-    if (_all.isEmpty) {
-      // 首页空态：口号 1 作欢迎语（原为独立闪屏，已融入主界面空态，不占常驻空间）
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            PoeticText(sloganFor(SloganKeys.splash), align: TextAlign.center),
-            const SizedBox(height: 16),
-            Icon(ContentCard.iconOf(InboxItem.typeNote),
-                size: 48, color: Theme.of(context).colorScheme.outlineVariant),
-            const SizedBox(height: 12),
-            Text('还没有任何收集', style: Theme.of(context).textTheme.bodyMedium),
-            const SizedBox(height: 4),
-            Text('点屏幕 + 添加第一条',
-                style: Theme.of(context).textTheme.bodySmall),
-          ],
-        ),
-      );
-    }
-    final groups = <String, List<InboxItem>>{};
-    for (final it in _all) {
-      (groups[it.itemType] ??= []).add(it);
-    }
-    final keys = groups.keys.toList()
-      ..sort((a, b) => groups[b]!.length.compareTo(groups[a]!.length));
-
-    return RefreshIndicator(
-      onRefresh: _reload,
-      child: ListView.builder(
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.only(bottom: 96),
-        itemCount: keys.length,
-        itemBuilder: (context, i) {
-          final type = keys[i];
-          final list = groups[type]!;
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                child: Row(
-                  children: [
-                    Icon(ContentCard.iconOf(type), size: 18),
-                    const SizedBox(width: 6),
-                    Text(ContentCard.labelOf(type),
-                        style: Theme.of(context)
-                            .textTheme
-                            .titleMedium
-                            ?.copyWith(fontWeight: FontWeight.bold)),
-                    const SizedBox(width: 8),
-                    Text('${list.length}',
-                        style: Theme.of(context).textTheme.bodySmall),
-                  ],
-                ),
-              ),
-              const Divider(height: 1, indent: 16, endIndent: 16),
-              for (final it in list) ContentCard(item: it, onTap: () => _open(it)),
-            ],
-          );
-        },
-      ),
-    );
-  }
-
-  /// 类型页（index ≥ 1）：单类型条目流（添加入口统一为悬浮球）
-  Widget _typePage(String type) {
-    final list = _items; // 当前页数据（已按 type 过滤）
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-          child: Row(
-            children: [
-              Icon(ContentCard.iconOf(type), size: 18),
-              const SizedBox(width: 6),
-              Text(ContentCard.labelOf(type),
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleMedium
-                      ?.copyWith(fontWeight: FontWeight.bold)),
-              const SizedBox(width: 8),
-              Text('${list.length}', style: Theme.of(context).textTheme.bodySmall),
-            ],
+                : '已添加 $n 个扫描页'),
           ),
-        ),
-        const Divider(height: 1, indent: 16, endIndent: 16),
-        Expanded(
-          child: list.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      PoeticText(sloganFor(SloganKeys.empty),
-                          large: false, align: TextAlign.center),
-                      const SizedBox(height: 16),
-                      Icon(ContentCard.iconOf(type),
-                          size: 48,
-                          color: Theme.of(context).colorScheme.outlineVariant),
-                      const SizedBox(height: 12),
-                      Text('还没有${ContentCard.labelOf(type)}',
-                          style: Theme.of(context).textTheme.bodyMedium),
-                      const SizedBox(height: 4),
-                      Text('点屏幕 + 添加第一条',
-                          style: Theme.of(context).textTheme.bodySmall),
-                    ],
-                  ),
-                )
-              : RefreshIndicator(
-                  onRefresh: _reload,
-                  child: ListView.builder(
-                    physics: const AlwaysScrollableScrollPhysics(),
-                    padding: const EdgeInsets.only(bottom: 96),
-                    itemCount: list.length,
-                    itemBuilder: (context, i) =>
-                        ContentCard(item: list[i], onTap: () => _open(list[i])),
-                  ),
-                ),
-        ),
-      ],
-    );
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('文档入库中断：$e')),
+        );
+      }
+    }
   }
 }

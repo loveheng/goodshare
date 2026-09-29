@@ -8,23 +8,22 @@ import '../ai/capabilities.dart';
 import '../ai/llm_model_manager.dart';
 import '../ai/model_manager.dart';
 import '../data/repository.dart';
-import '../share/text_collector.dart';
 import '../service/mcp_controller.dart';
 import '../service/secure_window.dart';
+import '../share/text_collector.dart';
 import '../sync/backup_service.dart';
-import '../ui/floating_ball.dart';
-import 'add_sheet.dart';
-import 'ai_tags_page.dart';
+import '../ui/quick_note_bar.dart';
 import 'inbox_page.dart';
 import 'recent_deleted_page.dart';
 import 'settings_page.dart';
 import 'task_queue_page.dart';
-import 'timeline_page.dart';
-import 'vault_page.dart';
+import 'workspace_page.dart';
 
-/// 主壳：底部 5 tab（全部/时光机/AI 分类/保险箱/设置）+ 悬浮球「添加」
-/// （2026-09-27 改版：「全部」与「时光机」交换、首页落点为全部；悬浮球由
-/// 速记升级为全类型通用添加入口；设计 §3 导航架构同步回写 ui-spec）。
+/// 主壳（2026-09-30 改版）：底部 3 tab（全部 / 工作区 / 设置）+ 底部常驻速记条
+/// + 侧边栏（低频 / 隐私入口）。
+///
+/// 收敛说明（ui-spec §3）：时光机降为主列表排序维度、AI 分类降为标签筛选维度、
+/// 保险箱移入侧边栏（安全域，视图仍由「全部」页承载），悬浮球已删除。
 class HomeShell extends StatefulWidget {
   const HomeShell({
     super.key,
@@ -56,38 +55,45 @@ class HomeShell extends StatefulWidget {
 class _HomeShellState extends State<HomeShell> {
   final _scaffoldKey = GlobalKey<ScaffoldState>();
 
-  /// 「保险箱」tab 在底部导航中的索引（与安全窗开关对应）。
-  static const int _vaultIndex = 3;
-
   int _index = 0; // 首页落点：全部
+
+  /// 保险箱视图（安全域）：由侧边栏入口或主列表「保险箱」chip 切换。
+  bool _vaultOnly = false;
 
   @override
   void initState() {
     super.initState();
-    // 初始落点在「全部」(index 0)，保险箱不可见：确保启动时 FLAG_SECURE 关闭，
-    // 普通页面可截图分享。仅在切到保险箱 tab 时才开启安全窗。
-    unawaited(SecureWindow.setVaultTabVisible(_index == _vaultIndex));
+    // 启动时处于普通视图：确保 FLAG_SECURE 关闭，普通页面可截图分享。
+    unawaited(SecureWindow.setVaultTabVisible(false));
   }
+
+  /// 保险箱视图切换 → 同步防截图（FLAG_SECURE）。
+  ///
+  /// 原实现绑定 tab 索引（`_vaultIndex`），保险箱不再占 tab 后改为按「当前是否
+  /// 处于保险箱视图」判定——这是本次改版的连带改动。
+  void _setVaultOnly(bool v) {
+    setState(() => _vaultOnly = v);
+    unawaited(SecureWindow.setVaultTabVisible(v));
+  }
+
+  void _openVault() {
+    Navigator.of(context).pop(); // 关抽屉
+    setState(() => _index = 0);
+    _setVaultOnly(true);
+  }
+
   late final List<Widget> _pages = [
     InboxPage(
+      key: ValueKey<bool>(_vaultOnly),
       repo: widget.repo,
       handler: widget.handler,
+      collector: widget.collector,
       caps: widget.caps,
       onOpenDrawer: () => _scaffoldKey.currentState?.openDrawer(),
+      vaultOnly: _vaultOnly,
+      onVaultOnlyChanged: _setVaultOnly,
     ),
-    TimelinePage(
-      repo: widget.repo,
-      handler: widget.handler,
-      caps: widget.caps,
-      onOpenDrawer: () => _scaffoldKey.currentState?.openDrawer(),
-    ),
-    AiTagsPage(onOpenDrawer: () => _scaffoldKey.currentState?.openDrawer()),
-    VaultPage(
-      repo: widget.repo,
-      handler: widget.handler,
-      caps: widget.caps,
-      onOpenDrawer: () => _scaffoldKey.currentState?.openDrawer(),
-    ),
+    WorkspacePage(onOpenDrawer: () => _scaffoldKey.currentState?.openDrawer()),
     SettingsPage(
       handler: widget.handler,
       repo: widget.repo,
@@ -107,61 +113,43 @@ class _HomeShellState extends State<HomeShell> {
     return Scaffold(
       key: _scaffoldKey,
       drawer: _buildDrawer(),
-      // 悬浮球贴边（速记入口，可拖拽吸附左右边），取代原中央 FAB
       body: Stack(
         children: [
           IndexedStack(index: _index, children: _pages),
-          FloatingBall(onTap: _showAdd),
+          // 速记条：仅内容页显示（设置页不显示），详情页是 push 出去的新页面
+          // 故天然不显示，不会与详情底部操作条并存。
+          if (_index != 2)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: QuickNoteBar(collector: widget.collector),
+            ),
         ],
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
-        onDestinationSelected: (i) {
-          setState(() => _index = i);
-          // 切换 tab 时同步安全窗：只有「保险箱」tab 才开启 FLAG_SECURE，
-          // 离开即恢复普通页面可截图（与 vault 详情维度叠加，互不干扰）。
-          unawaited(SecureWindow.setVaultTabVisible(i == _vaultIndex));
-        },
+        onDestinationSelected: (i) => setState(() => _index = i),
         destinations: const [
           NavigationDestination(icon: Icon(Icons.inbox_outlined), label: '全部'),
-          NavigationDestination(icon: Icon(Icons.timeline_outlined), label: '时光机'),
-          NavigationDestination(icon: Icon(Icons.auto_awesome_motion_outlined), label: 'AI 分类'),
-          NavigationDestination(icon: Icon(Icons.lock_outline), label: '保险箱'),
+          NavigationDestination(
+              icon: Icon(Icons.workspaces_outlined), label: '工作区'),
           NavigationDestination(icon: Icon(Icons.settings_outlined), label: '设置'),
         ],
       ),
     );
   }
 
-  Future<void> _showAdd() async {
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.5,
-        minChildSize: 0.5,
-        maxChildSize: 1.0,
-        builder: (context, scrollController) => SingleChildScrollView(
-          controller: scrollController,
-          child:           AddSheet(
-            handler: widget.handler,
-            collector: widget.collector,
-          ),
-        ),
-      ),
-    );
-  }
-
-  /// 侧边抽屉：已开发功能的简易聚合入口（不内嵌任何业务逻辑，仅导航）。
+  /// 侧边栏：低频 / 隐私入口（不再承担分类导航，分类已并入主列表筛选 chips）。
   Drawer _buildDrawer() {
-    final scheme = Theme.of(context).colorScheme;
     return Drawer(
       child: ListView(
         padding: EdgeInsets.zero,
         children: [
           DrawerHeader(
-            decoration: BoxDecoration(color: scheme.primaryContainer),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.primaryContainer,
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisAlignment: MainAxisAlignment.end,
@@ -169,11 +157,19 @@ class _HomeShellState extends State<HomeShell> {
                 Text('拾贝 goodshare',
                     style: Theme.of(context).textTheme.titleLarge),
                 const SizedBox(height: 4),
-                Text('已开发功能入口',
+                Text('低频与隐私入口',
                     style: Theme.of(context).textTheme.bodySmall),
               ],
             ),
           ),
+          // 安全域：带锁图标，与普通入口视觉区分
+          ListTile(
+            leading: const Icon(Icons.lock_outline),
+            title: const Text('保险箱'),
+            subtitle: const Text('不进备份、MCP 不可见'),
+            onTap: _openVault,
+          ),
+          const Divider(),
           ListTile(
             leading: const Icon(Icons.delete_sweep_outlined),
             title: const Text('最近删除'),
@@ -182,58 +178,13 @@ class _HomeShellState extends State<HomeShell> {
               final nav = Navigator.of(context);
               nav.pop();
               nav.push(MaterialPageRoute<void>(
-                builder: (_) => RecentDeletedPage(handler: widget.handler, repo: widget.repo),
+                builder: (_) => RecentDeletedPage(
+                  handler: widget.handler,
+                  repo: widget.repo,
+                ),
               ));
             },
           ),
-          const Divider(),
-          ListTile(
-            leading: const Icon(Icons.auto_awesome_motion_outlined),
-            title: const Text('AI 分类'),
-            onTap: () {
-              Navigator.of(context).pop();
-              setState(() => _index = 2);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.brush_outlined),
-            title: const Text('图片标注'),
-            subtitle: const Text('在图片详情页点「标注图片」'),
-            onTap: () {
-              Navigator.of(context).pop();
-              setState(() => _index = 0);
-            },
-          ),
-          const Divider(),
-          ListTile(
-            leading: const Icon(Icons.document_scanner_outlined),
-            title: const Text('OCR 图片转写'),
-            subtitle: const Text('设置 → 开关'),
-            onTap: () {
-              Navigator.of(context).pop();
-              setState(() => _index = 4);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.graphic_eq_outlined),
-            title: const Text('录音/音频转写'),
-            subtitle: const Text('设置 → 模型下载'),
-            onTap: () {
-              Navigator.of(context).pop();
-              setState(() => _index = 4);
-            },
-          ),
-          ListTile(
-            leading: const Icon(Icons.link_outlined),
-            title: const Text('链接离线抓取'),
-            subtitle: const Text('设置 → 开关'),
-            onTap: () {
-              Navigator.of(context).pop();
-              setState(() => _index = 4);
-            },
-          ),
-          const Divider(),
-          // AI 处理「看起来没反应」时的排查入口：看清任务是没入队 / 卡处理中 / 已完成
           ListTile(
             leading: const Icon(Icons.list_alt_outlined),
             title: const Text('AI 任务队列'),
@@ -241,11 +192,13 @@ class _HomeShellState extends State<HomeShell> {
             onTap: () {
               final nav = Navigator.of(context);
               nav.pop();
-              nav.push(MaterialPageRoute(
+              nav.push(MaterialPageRoute<void>(
                 builder: (_) => TaskQueuePage(repo: widget.repo),
               ));
             },
           ),
+          // 占位入口保留：AI 分类已降为标签维度，暂由主列表 chips 承载，
+          // 此处不再重复给入口（ui-spec §4.7）。
         ],
       ),
     );

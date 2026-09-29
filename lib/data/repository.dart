@@ -8,6 +8,23 @@ import '../ai/video_clips.dart';
 import '../models/item.dart';
 import 'db.dart';
 
+/// 列表排序（2026-09-30：时光机降为主列表的「排序维度」后新增）。
+///
+/// 原实现把 `created_at DESC` 硬编码在 `list()` 里，时间维度的正序 / 倒序
+/// 无从表达。排序值只在此处定义，避免 SQL 片段散落调用方。
+enum ItemSort {
+  /// 最新在前（默认，与历史行为一致）。
+  newest('created_at DESC, rowid DESC'),
+
+  /// 最早在前（时光机的「从头看」）。
+  oldest('created_at ASC, rowid ASC');
+
+  const ItemSort(this.orderBy);
+
+  /// 直接用于 sqflite `orderBy` 的片段（唯一定义处）。
+  final String orderBy;
+}
+
 /// 收集数据仓库：UI 与 MCP 工具共用的唯一入口。
 /// 查询默认排除 Vault 与已删条目（PRD §7 隐私硬约束：
 /// Machine-Readable 侧等价于 WHERE is_vault=0 AND is_deleted=0）。
@@ -142,11 +159,14 @@ class Repository extends ChangeNotifier {
 
   /// 列表/搜索：默认仅公开（非 Vault）且未删除条目。
   /// 关键词命中标题 / 原文 / 标签 / 人类态；type 为空则不过滤。
+  ///
+  /// [sort] 排序（2026-09-30：时光机降为主列表的排序维度后，排序不再是硬编码）。
   Future<List<InboxItem>> list({
     String? query,
     String? type,
     bool vault = false,
     bool includeDeleted = false,
+    ItemSort sort = ItemSort.newest,
     int limit = 50,
     int offset = 0,
   }) async {
@@ -161,7 +181,7 @@ class Repository extends ChangeNotifier {
       'inbox_items',
       where: where,
       whereArgs: args.isEmpty ? null : args,
-      orderBy: 'created_at DESC, rowid DESC',
+      orderBy: sort.orderBy,
       limit: limit,
       offset: offset,
     );
