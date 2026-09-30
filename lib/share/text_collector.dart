@@ -42,11 +42,13 @@ class TextCollector {
     await prefs.setString(_prefMode, _mode);
   }
 
-  /// 收集一段文本（分享 / 粘贴 / FAB 速记共用入口）。
+  /// 收集一段文本（分享 / 粘贴 / 速记便签共用入口）。
   /// 返回落库条目；空文本返回 null。
   /// 边界：纯 URL 段不参与合并、始终独立成条（否则无法被 summarize_url 单独处理）；
   /// 仅 note 段进合并链（2026-09-27 实现期收窄，F6 精神内）。
-  Future<InboxItem?> collectText(String text, {String? sourceApp}) async {
+  /// [tags]：速记便签「标签」按钮挂的标签，随条目落库（分享路径不传）。
+  Future<InboxItem?> collectText(String text,
+      {String? sourceApp, List<String>? tags}) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return null;
 
@@ -65,6 +67,7 @@ class TextCollector {
         sourceApp: src,
         rawContent: parsed.text,
         humanTitle: parsed.title,
+        tags: (tags == null || tags.isEmpty) ? null : tags,
         collectMode: merging ? InboxItem.modeMerge : InboxItem.modeScatter,
       ),
     );

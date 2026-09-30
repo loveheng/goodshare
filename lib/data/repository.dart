@@ -85,6 +85,9 @@ class Repository extends ChangeNotifier {
   // 文本分析（ML Kit Language ID + Entity Extraction，2026-09-29）：仅笔记手动触发，
   // 产出写入 facets['语言'] 与 facets['实体']
   static const taskAnalyzeText = 'analyze_text';
+  // 图片主色提取（palette_generator，2026-09-30 V3）：摄入自动入队（唯一自动跑的
+  // 图片任务——非模型推理，64px 降采样量化，毫秒级），hex 落 machine_json color.v1
+  static const taskExtractPalette = 'extract_palette';
   // 文档扫描（ML Kit Document Scanner，2026-09-29）：前台相机流，不经队列，
   // 产出直接新建条目；仅作 handles 契约占位与 UI taskAction 对齐用
   static const taskScanDocument = 'scan_document';
@@ -142,9 +145,10 @@ class Repository extends ChangeNotifier {
   static String? taskActionFor(String itemType) => switch (itemType) {
         InboxItem.typeUrl => taskSummarizeUrl,
         InboxItem.typeChatlog => taskParseChatlog,
-        // 音频与图片**都不自动跑模型**（2026-09-28 用户拍板：分享摄入只存文件，
-        // 不默认转写 / OCR，一律手动触发）——录音转写由 TranscribeCommand 入队
+        // 图片摄入自动跑主色提取（V3，非模型推理毫秒级）；OCR 保持手动
+        // （2026-09-28 拍板只存文件）——录音转写由 TranscribeCommand 入队
         // taskTranscribeAudio，图片 OCR 由 OcrCommand 入队 taskOcrAndExtract。
+        InboxItem.typeImage => taskExtractPalette,
         _ => null,
       };
 

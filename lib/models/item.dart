@@ -43,6 +43,7 @@ class InboxItem {
     this.videoWholeMarked = false,
     this.docMetaJson,
     this.attachState = attachOwned,
+    this.aspectRatio,
     List<String> tags = const [],
     Map<String, List<String>>? facets,
     this.isVault = false,
@@ -99,6 +100,10 @@ class InboxItem {
   /// app 不复制原件——复制一份等于让用户存储翻倍（视频是重灾区）。
   final String attachState;
 
+  /// 图片宽高比（宽/高，schema v15，2026-09-30）：摄入时解码图片头探测，
+  /// 渲染处 AspectRatio 占位消灭加载抖动。null=未探测（存量条目/探测失败）。
+  final double? aspectRatio;
+
   bool get isImage => itemType == typeImage;
   bool get hasAttachment => rawFilePath != null && rawFilePath!.isNotEmpty;
 
@@ -152,6 +157,7 @@ class InboxItem {
         'video_whole_marked': videoWholeMarked ? 1 : 0,
         if (docMetaJson != null) 'doc_meta_json': docMetaJson,
         'attach_state': attachState,
+        'aspect_ratio': aspectRatio,
         'tags': jsonEncode(tags),
         'facets_json': facets == null ? null : jsonEncode(facets),
         'is_vault': isVault ? 1 : 0,
@@ -222,6 +228,7 @@ class InboxItem {
       videoWholeMarked: (map['video_whole_marked'] as int? ?? 0) == 1,
       docMetaJson: map['doc_meta_json'] as String?,
       attachState: (map['attach_state'] as String?) ?? attachOwned,
+      aspectRatio: (map['aspect_ratio'] as num?)?.toDouble(),
       tags: tagsOf(map['tags']),
       facets: facetsOf(map['facets_json']),
       isVault: (map['is_vault'] as int? ?? 0) == 1,
@@ -255,6 +262,7 @@ class InboxItem {
     bool? videoWholeMarked,
     String? docMetaJson,
     String? attachState,
+    double? aspectRatio,
     List<String>? tags,
     Map<String, List<String>>? facets,
     bool? isVault,
@@ -286,6 +294,7 @@ class InboxItem {
         videoWholeMarked: videoWholeMarked ?? this.videoWholeMarked,
         docMetaJson: docMetaJson ?? this.docMetaJson,
         attachState: attachState ?? this.attachState,
+        aspectRatio: aspectRatio ?? this.aspectRatio,
         tags: tags ?? this.tags,
         facets: facets ?? this.facets,
         isVault: isVault ?? this.isVault,

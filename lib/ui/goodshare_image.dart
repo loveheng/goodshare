@@ -15,6 +15,7 @@ class GoodshareImage extends StatelessWidget {
     this.cacheWidth,
     this.cacheHeight,
     this.errorBuilder,
+    this.placeholderColor,
   });
 
   final File file;
@@ -22,6 +23,10 @@ class GoodshareImage extends StatelessWidget {
   final int? cacheWidth;
   final int? cacheHeight;
   final ImageErrorWidgetBuilder? errorBuilder;
+
+  /// 加载完成前的占位底色（V3 主色调，rich-text-component.md §6.1）：
+  /// 传入摄入探测的图片主色，消灭白闪；需外层给定界约束（如 AspectRatio）。
+  final Color? placeholderColor;
 
   @override
   Widget build(BuildContext context) {
@@ -31,6 +36,11 @@ class GoodshareImage extends StatelessWidget {
       cacheWidth: cacheWidth,
       cacheHeight: cacheHeight,
       gaplessPlayback: true,
+      // 首帧解码完成前用主色占位（配合外层 AspectRatio 即整块色底）
+      frameBuilder: placeholderColor == null
+          ? null
+          : (context, child, frame, wasSynchronouslyLoaded) =>
+              frame == null ? Container(color: placeholderColor) : child,
       errorBuilder: errorBuilder ??
           (_, _, _) => const Icon(Icons.broken_image_outlined),
     );

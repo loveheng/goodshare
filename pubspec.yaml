@@ -1,7 +1,7 @@
 name: goodshare
 description: "A new Flutter project."
 publish_to: 'none'
-version: 1.2.0+4006 # 真机已有 CI release 4005，本地 debug 需 4006 覆盖安装（2026-09-29 INSTALL_FAILED_VERSION_DOWNGRADE）
+version: 1.2.0+6007 # 真机已有 6006（设备 dumpsys 实测，来源待溯），本地覆盖安装需 6007（2026-09-30 INSTALL_FAILED_VERSION_DOWNGRADE）
 
 environment:
   sdk: ^3.13.4
@@ -19,6 +19,7 @@ dependencies:
   just_audio: ^0.10.6
   open_filex: ^4.7.0
   package_info_plus: ^10.2.1
+  palette_generator: ^0.3.3+7
   path: ^1.9.1
   path_provider: ^2.1.6
   receive_sharing_intent: ^1.9.0
@@ -36,6 +37,7 @@ dependencies:
   google_mlkit_entity_extraction: ^0.17.1
   google_mlkit_document_scanner: ^0.6.1
   pdfrx: ^2.6.5
+  flutter_staggered_grid_view: ^0.7.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

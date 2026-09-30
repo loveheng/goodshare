@@ -2,8 +2,8 @@
 dev-loop: devlog
 format: v1
 epic: goodshare
-total-merged: 5
-last-merge: 2026-09-29
+total-merged: 8
+last-merge: 2026-09-30
 ---
 
 # 2026-09-29 · 启动崩溃修复：androidx.work WorkDatabase 初始化失败
@@ -227,3 +227,48 @@ last-merge: 2026-09-29
 
 ## 断点
 - [断点] Phase 0+1 已落地全绿（analyze 0 / test 全绿）；超长文本「渲染不卡、内容不丢」达标。剩余：Phase 2 归一化分块（标题层级/500-token 窗口，消费侧按需切）、Phase 3 Isolate 异步解析、Phase 4 向量引擎落地 + RAG/Map-Reduce 摘要。遗留：待办勾选写路径（V2）、文档类型支持矩阵、iOS/鸿蒙适配。
+- [2026-09-30] [变更] 全部页顶栏自动隐显 + 工作区卡片化（D1/D2 台账确认后落地）：①D1——inbox 主列表 AppBar 拆入滚动流（SliverAppBar floating+snap 非 pinned 非 overlay），CustomScrollView + SliverMasonryGrid.count(itemBuilder+childCount)，向下滚内容隐藏/向上滚轻微反向即弹回/顶部恒显示；一体块抽 _topBarRow 与保险箱视图共用，空态/加载态改 SliverFillRemaining 保底顶栏可达；保险箱视图与搜索页不参与（D1 范围）②D2——工作区两层卡片化：列表层 GridView.count 2 列（卡=工作区：名字+条目数+封面拼贴最多 3 图等宽裁切 cacheWidth 480，无图退首条 preview，空区图标；_WsEntry/_WsPreview 逐工作区取条目），条目层 MasonryGridView.count 双列与全部页同语言；顺手修空态文案「右上角」→「右下角」③ui-spec §4.2 补 D1 两条并清搜索页改版前残留（chips 固定区/旧缩略图行/重复片段）、§4.11 补 D2 页面形态、frontmatter updated=2026-09-30。
+- [2026-09-30] [验证] flutter analyze → No issues found (8.5s)；flutter test → 213 全绿；bash scripts/agent-tools/docs-lint.sh → OK。
+- [2026-09-30] [变更] 修「点开便利贴整个功能消失」：根因=home_shell 的 Positioned 仅 bottom 锚点、Stack 未收紧高度约束，展开态 Column+Expanded 触发 unbounded flex layout 异常整树渲染失败（release 下无提示，analyze/单测全绿拦不住）；修法=Positioned 四边拉满给有界紧约束（键盘让位仍由 Scaffold resize 承担、零高度手算），收合态 52px 拉手经 Align 拿松约束（紧约束下 Container 固定高会被 clamp 成整屏）；新增 test/quick_note_bar_test.dart 复刻挂载结构 pump 展开态防回归。顺带修 workspace_test 潜伏 flake：同毫秒 createdAt 打平致严格倒序断言随机炸，造数跨毫秒。
+- [2026-09-30] [验证] flutter analyze → No issues found (9.3s)；flutter test → 215 全绿（新增便利贴布局回归 2 条）。
+- [2026-09-30] [变更]: 全部页下拉刷新动画位移：RefreshIndicator displacement=状态栏+kToolbarHeight+lg，spinner 落到搜索条以下内容区上缘（方案1 拍板）
+- [2026-09-30] [验证]: flutter analyze lib/pages/inbox_page.dart → 0 issue；flutter test test/workspace_test.dart → 10 全过
+- [2026-09-30] [变更]: 便利贴三改：①写作区幻影滚动修复（工具层让位改视口级 Padding，不再算进滚动内容）②收合拉手上滑跟手拽出（TweenAnimationBuilder 拖动零时长跟随+松手回弹/过阈值展开）③工具层新增格式行（标题 ## 切换 + 粗体 ** 包裹，Markdown 子集语法，不做高亮）
+- [2026-09-30] [验证]: flutter analyze (quick_note_bar + test) → 0 issue；flutter test test/quick_note_bar_test.dart → 5 全过（新增上滑拽出/标题/粗体 3 个回归用例）
+
+## [2026-09-30] 便利贴「跟手渐展」重构（方案 A，用户拍板）
+- 现象：上滑拽出时只有 52px 拉手跟手上移（Transform.translate 平移），松手后整屏面板瞬跳出现——头部先走、身体后到。
+- 根因：拖动期只平移收合拉手，展开是 false→true 状态突跳，两形态间无连续形变。
+- 修法（quick_note_bar.dart）：拖动从「平移」改「控高度」——`_progress ∈[0,1]` 连续进度，高度 = peek + progress×(可用高−peek)，头部+身体同一容器一起长出；`_morphSheet` 三分支：静止 0=纯拉手、静止 1=满幅面板（无 Opacity 包裹，命中区与单态一致），中间态高度增长+内容淡入（_contentFadeStart=0.35 起）+24px 上移且 IgnorePointer 防幽灵点按；TweenAnimationBuilder 双态复用（拖动 Duration.zero 跟手 / 松手 260ms easeOutCubic 补间），行程 `_travel` 按可用高动态算，`_peekMaxDrag` 平移上限废除。
+- 连带修「点工具按钮面板坍缩」：外层 GestureDetector 的 onVerticalDragCancel 无展开态门控，点面板内按钮时拖拽识别器竞技场落败触发 cancel→_progress=0→面板被拽回收合；补 `if (expandedNow) return` 门控。定位手段：单测试内「点按展开→点保存」最小复现 + 各状态变更点 DBG 日志锁定 dragCancel 触发链。
+- 连带修「态开形未开」：initState 静态恢复时 `_progress` 与 `_expanded` 同源恢复（否则 Activity 重建后 `_expanded=true` 而 `_progress=0`，面板态与形变态不一致）。
+- 测试影响：quick_note_bar_test 原有用例全过；收合静止态不再渲染隐形展开内容（旧版 opacity 0 的幽灵树是屏外溢出告警根源）。
+- 交付：analyze 0 / test 218 全绿。真机手感（跟手灵敏度/淡入阈值/补间时长）待侧载验证。
+
+## [2026-09-30] 修「首页内容区不能点击和滑动」
+- 现象：收合态下整个首页列表不可点、不可滑。
+- 根因：QuickNoteBar 顶层 `Material(color: Colors.transparent)`——带颜色的 Material 即使全透明，其 RenderMaterial 在整个边界内仍不透明地吸收命中测试；Positioned 四边拉满使其覆盖整屏，列表点击/滑动全被挡。二分定位：纯 Container 52px 挡（CASE2-4 失败）→ 拆层后定位到 Material 层（CASE5/6 过、CASE7/8 挡，唯一变量即 Material 颜色 vs type:transparency）。
+- 修法：改 `Material(type: MaterialType.transparency)`（透传命中的正确姿势），一行修复。
+- 验证：新增命中探针测试（40 条列表，收合态点「条目0」tapped=true、拖「条目2」滚动位移 296→16）通过后删除；全量 analyze 0 / test 218 绿。
+- 注意：此 bug 自速记条替换悬浮球起就存在（非本轮渐展引入），属命中测试盲区。
+
+## [2026-09-30] B1：展开态面板头部固定在搜索框水平带（修顶栏被状态栏遮挡）
+- 现象：便利贴展开后顶栏（收起箭头/日期/保存）顶进状态栏（用户复述「头部被顶部遮挡」，拍板 B1：头部固定在搜索框位置）。
+- 根因：QuickNoteBar 挂在 Scaffold body 内，body 的 MediaQuery.padding.top 已被 Scaffold 消费（=0），`media.padding.top` 避让形同虚设——探针实测顶栏 y=21.5 < 状态栏 40。
+- 修法（quick_note_bar.dart 两处）：①状态栏高度改取 `MediaQueryData.fromView(View.of(context)).padding.top`（未消费的原始值），`topInset = statusBar + Insets.sm`，`available = body高 − topInset`；②_morphSheet 静止展开分支补显式 `height: available`（省略会吃满 Positioned 整屏约束，修复无效的连带坑）。
+- 验证：探针顶栏 y=69.5 ≥ 40 不再遮挡；转常驻回归 test/quick_note_topbar_test.dart；analyze 0 / test 219 绿。真机侧载待确认头部与搜索条水平带对齐的观感。
+
+## [2026-09-30] 修「便签头部跟着搜索条一起隐藏」+ 解耦回归
+- 现象（真机）：展开态面板头部不可见，用户复述「搜索框会隐藏连带便签头部也隐藏；便签头部不应隐藏」。
+- 根因：B1 首版用 `MediaQuery.of().size.height`（整屏高）算面板最大高，但面板在 Scaffold body 内、底部有 NavigationBar——面板比 body 高出「底栏高 − topInset」，Align(bottomCenter) 把超出部分顶到 body 上沿之上，头部被推到状态栏外（视觉=头部消失，恰似跟着搜索条隐藏）。测试未抓到因测试脚手架无底栏。
+- 修法：build 顶层移除屏高手算，改 LayoutBuilder 取 body 实际约束：`available = constraints.maxHeight − topInset`；静止展开/中间态高度随之前移正确，顶缘精确锚在搜索框水平带。
+- 解耦取证：便签面板在 HomeShell Stack 第 2 子节点（页面之上）、锚点为屏幕静态位置，与搜索条（InboxPage 自身 CustomScrollView 内 SliverAppBar floating+snap）零数据耦合——搜索条隐显不会盖住或移动便签头部；quick_note_topbar_test 增补「滚动列表（搜索条隐藏）后头部位置不变」回归断言。
+- 交付：analyze 0 / test 219 绿。真机侧载确认头部恒显于搜索条水平带。
+
+## [2026-09-30] 拍板更新：展开态面板顶到状态栏（B1 小间距取消）
+- 用户看真机后拍板「完全展开后要顶到状态栏」；搜索框样式不改（首页顶栏本就是 mymind 同款：☰ 嵌入搜索长条 + 右侧橘红 ＋ 块，inbox_page._topBarRow）。
+- 修法：quick_note_bar.dart `topInset = statusBar`（去掉 B1 的 `+ Insets.sm`），顶缘 = 状态栏下沿贴满；LayoutBuilder 约束与渐展行程随动，动画连续性不变。
+- 交付：analyze 0 / test 219 绿（含 quick_note_topbar_test 顶栏不进状态栏 + 滚动解耦断言）。真机侧载确认贴满观感。
+- [2026-09-30] [变更]: 真机侧载验收行内媒体块 MVP 五项全绿（用户逐项确认：图片首帧定版、双音频块互斥切换、.amr 降级文件卡、行内视频全屏浮层、滚动零跳动）。验收环境：桌面自建回环媒体服务器（python http.server:8766 + adb reverse，零外网依赖）+ 分享 intent 注入 markdown 验收条目；配套环境变更——pubspec 6006→6007（真机已有 6006 需覆盖安装）、AndroidManifest 挂 network_security_config（仅放行 127.0.0.1 回环明文，验收/桌面联调专用，外网仍强制 TLS）
+- [2026-09-30] [变更]: 修 firstUrl 尾部括号剥离（真机验收发现的真 bug）：url_extract 的 https?://\S+ 贪婪匹配把 markdown [a](url) 的结尾 ) 吃进 URL，OG 预取 404；改剥不配对尾部 )（配对括号的合法 URL 如维基词条不受影响），og_metadata_test 新增 firstUrl 3 例
+- [2026-09-30] [验证]: 真机人工五项确认全绿；flutter analyze → 0 issue；flutter test 全量 1 例闪失（long_text_phase Isolate 时序，单跑 11/11 绿排除回归）、og_metadata 13/13 绿（含新增 firstUrl 3 例）

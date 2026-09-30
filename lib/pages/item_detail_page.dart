@@ -14,6 +14,7 @@ import '../models/item.dart';
 import '../service/secure_window.dart';
 import '../ui/content_card.dart';
 import '../ui/clip_editor_sheet.dart';
+import '../ui/block_editor_dialog.dart';
 import '../ui/draft_controller.dart';
 import '../ui/item_view_template.dart';
 import '../ui/repo_auto_reload.dart';
@@ -236,41 +237,21 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
       return;
     }
 
-    final saved = await showModalBottomSheet<bool>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.fromLTRB(Insets.lg, 0, Insets.lg, Insets.lg + MediaQuery.of(ctx).viewInsets.bottom),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            TextField(
-              controller: _editDraft!.title.text,
-              decoration: const InputDecoration(labelText: '标题'),
-            ),
-            const SizedBox(height: Insets.sm),
-            TextField(
-              controller: _editDraft!.tldr.text,
-              decoration: const InputDecoration(labelText: 'TL;DR'),
-            ),
-            const SizedBox(height: Insets.sm),
-            TextField(
-              controller: _editDraft!.body.text,
-              maxLines: 6,
-              decoration: const InputDecoration(labelText: '内容（Markdown）'),
-            ),
-            const SizedBox(height: Insets.md),
-            FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('保存'),
-            ),
-          ],
-        ),
-      ),
+    // 批 B：正文编辑从 BottomSheet 源码 TextField 改为 fullscreen 结构化块编辑器
+    // （SSOT：docs/design/rich-text-component.md §4）。标题/TL;DR 沿用草稿控制器。
+    final originalBody = _editDraft!.body.text.text;
+    final saved = await showBlockEditorDialog(
+      context,
+      title: '编辑',
+      markdown: originalBody,
+      titleField: _editDraft!.title.text,
+      tldrField: _editDraft!.tldr.text,
+      // 过程草稿同步：块变更即回写 body 草稿（退后台 flush 已由页面生命周期承担）
+      onChanged: (md) => _editDraft!.body.text.text = md,
     );
     if (saved != true) {
+      // 取消：还原正文草稿到打开前状态（过程草稿同步产生的变更作废）
+      _editDraft!.body.text.text = originalBody;
       _editDraft!.dispose();
       _editDraft = null;
       return;
@@ -360,29 +341,33 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
       ),
       // Phase 1：主体改 CustomScrollView，正文 block 经 ItemViewTemplate.bodySlivers
       // 以 SliverList 虚拟化，数万字长文只构建可视区 widget。
-      body: CustomScrollView(
-        slivers: [
-          const SliverPadding(
-              padding: EdgeInsets.fromLTRB(Insets.xl, Insets.md, Insets.xl, 0)),
-          ...ItemViewTemplate(item: _item, machineMode: _machineMode)
-              .bodySlivers(context),
-          // 类型专属处理动作：正文末尾一行 chips，不占正文主线
-          SliverToBoxAdapter(child: _typeActions()),
-          SliverToBoxAdapter(child: _attachStatusLine()),
-          // 派生内容为正文末尾「附录章节」（小标题 + 内容），不叠卡片边框
-          if (_item.summaryMd != null && _item.summaryMd!.trim().isNotEmpty)
-            SliverToBoxAdapter(child: _appendix('摘要', _item.summaryMd!)),
-          if (_item.hasTranslation)
-            SliverToBoxAdapter(child: _appendix('译文', _item.translatedMd!)),
-          SliverToBoxAdapter(
-              child: _AiTaskStatusLine(repo: widget.repo, item: _item)),
-          SliverToBoxAdapter(child: _sourceLine()),
-          const SliverToBoxAdapter(child: SizedBox(height: 24)),
-          SliverToBoxAdapter(
-            child: PoeticText(sloganFor(SloganKeys.detailFooter),
-                large: false, align: TextAlign.center),
-          ),
-        ],
+      // 跨块文本选择：正文区统一包 SelectionArea（rich-text-component.md §3），
+      // 块内为普通 Text，长按拖拽即可跨块复制。
+      body: SelectionArea(
+        child: CustomScrollView(
+          slivers: [
+            const SliverPadding(
+                padding: EdgeInsets.fromLTRB(Insets.xl, Insets.md, Insets.xl, 0)),
+            ...ItemViewTemplate(item: _item, machineMode: _machineMode)
+                .bodySlivers(context),
+            // 类型专属处理动作：正文末尾一行 chips，不占正文主线
+            SliverToBoxAdapter(child: _typeActions()),
+            SliverToBoxAdapter(child: _attachStatusLine()),
+            // 派生内容为正文末尾「附录章节」（小标题 + 内容），不叠卡片边框
+            if (_item.summaryMd != null && _item.summaryMd!.trim().isNotEmpty)
+              SliverToBoxAdapter(child: _appendix('摘要', _item.summaryMd!)),
+            if (_item.hasTranslation)
+              SliverToBoxAdapter(child: _appendix('译文', _item.translatedMd!)),
+            SliverToBoxAdapter(
+                child: _AiTaskStatusLine(repo: widget.repo, item: _item)),
+            SliverToBoxAdapter(child: _sourceLine()),
+            const SliverToBoxAdapter(child: SizedBox(height: 24)),
+            SliverToBoxAdapter(
+              child: PoeticText(sloganFor(SloganKeys.detailFooter),
+                  large: false, align: TextAlign.center),
+            ),
+          ],
+        ),
       ),
       // 基本操作条（5 项，全类型固定）：摘要 / 标签 / 工作区 / 分享 / 删除
       bottomNavigationBar: _actionBar(),

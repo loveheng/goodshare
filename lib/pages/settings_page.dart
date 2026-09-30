@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../action/item_action_handler.dart';
 import '../data/repository.dart';
-import '../ui/drawer_menu_button.dart';
 import '../ui/slogans.dart';
 import '../ai/ai_queue_service.dart';
 import '../ai/asr_model.dart';
@@ -35,7 +34,6 @@ class SettingsPage extends StatefulWidget {
     required this.llmModels,
     required this.aiQueue,
     required this.backup,
-    this.onOpenDrawer,
   });
 
   final ItemActionHandler handler;
@@ -47,7 +45,6 @@ class SettingsPage extends StatefulWidget {
   final LlmModelManager llmModels;
   final AiQueueService aiQueue;
   final BackupService backup;
-  final VoidCallback? onOpenDrawer;
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -206,7 +203,9 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget build(BuildContext context) {
     final caps = widget.caps;
     return Scaffold(
-      appBar: AppBar(leading: drawerMenuLeading(widget.onOpenDrawer), title: const Text('设置')),
+      // ☰ 只保留在「全部」页（2026-09-30 用户拍板）；设置页顶栏纯标题，
+      // 抽屉从「全部」页开。
+      appBar: AppBar(title: const Text('设置')),
       body: ListView(
         children: [
           const _SectionHeader('MCP 网关'),

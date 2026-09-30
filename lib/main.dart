@@ -14,6 +14,7 @@ import 'ai/llm_reconstructor.dart';
 import 'ai/clip_reconstructor.dart';
 import 'ai/model_manager.dart';
 import 'ai/ocr_reconstructor.dart';
+import 'ai/palette_reconstructor.dart';
 import 'ai/image_label_reconstructor.dart';
 import 'ai/barcode_reconstructor.dart';
 import 'ai/text_analysis_capability.dart';
@@ -91,6 +92,8 @@ Future<void> main() async {
       ),
       // 图片分类（ML Kit Image Labeling，2026-09-29）：仅手动触发，base 模型离线可用
       ImageLabelCapability(),
+      // 图片主色提取（palette_generator，2026-09-30 V3）：摄入自动入队（非模型推理）
+      const PaletteReconstructor(),
       BarcodeReconstructor(),
       // 文本分析（ML Kit Language ID + Entity Extraction，2026-09-29）：仅笔记，离线
       TextAnalysisCapability(),
@@ -174,18 +177,37 @@ class GoodShareApp extends StatelessWidget {
           child: PrivacyBlurOverlay(child: child!),
         );
       },
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF00897B)),
-      ),
+      // 2026-09-30 mymind 视觉基准（ui-spec §2.1）：恒定暗色 + 三阶色阶分层
+      // （底 / 卡 / 浮）+ 单一橘红强调色。dynamic_color / 明暗跟随已废弃；
+      // 亮色模式不做。ColorScheme.dark 全量 override，M3 seed 派生色不再露出。
       darkTheme: ThemeData(
         useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF00897B),
-          brightness: Brightness.dark,
+        colorScheme: const ColorScheme.dark(
+          // 色阶三层：底（最深）→ 卡片 → 浮层（sheet/dialog）。
+          surface: Color(0xFF15171E),
+          surfaceContainerLowest: Color(0xFF101218),
+          surfaceContainerLow: Color(0xFF1C1F27),
+          surfaceContainer: Color(0xFF1C1F27),
+          surfaceContainerHigh: Color(0xFF242833),
+          surfaceContainerHighest: Color(0xFF2A2F3B),
+          // 单一强调色：橘红仅用于动作与选中（ui-spec §2.1）。
+          primary: Color(0xFFFF5A1E),
+          onPrimary: Color(0xFFFFFFFF),
+          primaryContainer: Color(0xFF3D1D0E),
+          onPrimaryContainer: Color(0xFFFFB59A),
+          secondary: Color(0xFFFF5A1E),
+          onSecondary: Color(0xFFFFFFFF),
+          // 文字色阶：暖白正文（非纯白），次级灰阶递减。
+          onSurface: Color(0xFFE8E4DC),
+          onSurfaceVariant: Color(0xFF9BA0AC),
+          outline: Color(0xFF3A3F4C),
+          error: Color(0xFFFF5370),
+          onError: Color(0xFFFFFFFF),
         ),
+        scaffoldBackgroundColor: const Color(0xFF15171E),
       ),
-      themeMode: ThemeMode.system,
+      // 恒定暗色：不跟随系统（ui-spec §2.1 拍板）。
+      themeMode: ThemeMode.dark,
       home: HomeShell(
         repo: repo,
         handler: handler,

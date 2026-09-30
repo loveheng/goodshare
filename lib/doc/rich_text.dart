@@ -138,6 +138,52 @@ String blockToPlain(RichBlock block) => switch (block) {
       DividerBlock() => '',
     };
 
+// ---------- 序列化 ----------
+
+/// 行内纯文本需转义的字符：`\` 本身与子集语法标记（`*` `_` `[` `` ` ``）。
+final RegExp _escapeInlineRe = RegExp(r'[\\*_[`]');
+
+String _escapeText(String s) =>
+    s.replaceAllMapped(_escapeInlineRe, (m) => '\\${m[0]}');
+
+/// 行内节点 → Markdown 子集串。与 [MarkdownSubsetParser.parseInline] 互逆：
+/// 纯文本中的语法标记一律转义，保证「字面内容」往返不变形。
+String serializeInline(List<InlineNode> nodes) => nodes.map((n) => switch (n) {
+      InlineText(:final text) => _escapeText(text),
+      InlineStrong(:final children) => '**${serializeInline(children)}**',
+      InlineEm(:final children) => '*${serializeInline(children)}*',
+      InlineCode(:final code) => '`$code`',
+      InlineLink(:final label, :final url) =>
+        '[${_escapeText(label)}]($url)',
+    }).join();
+
+/// 块 → Markdown 子集串。与 [MarkdownSubsetParser.parse] 互逆（三出口护栏
+/// 之 serialize，SSOT：docs/design/rich-text-component.md §5）。
+String serializeBlock(RichBlock block) => switch (block) {
+      HeadingBlock(:final level, :final inline) =>
+        '${'#' * level} ${serializeInline(inline)}',
+      ParagraphBlock(:final inline) => serializeInline(inline),
+      QuoteBlock(:final children) => children
+          .map(serializeBlock)
+          .map((md) => md.split('\n').map((l) => '> $l').join('\n'))
+          // 子块间补空引用行（`>`），否则重解析时相邻段落会并段
+          .join('\n>\n'),
+      ListBlock(:final ordered, :final items) =>
+        items.asMap().entries.map((e) {
+          final text = serializeInline(e.value.inline);
+          final done = e.value.done;
+          if (done != null) return '- [${done ? 'x' : ' '}] $text';
+          return ordered ? '${e.key + 1}. $text' : '- $text';
+        }).join('\n'),
+      CodeBlock(:final code, :final language) =>
+        '```${language ?? ''}\n$code\n```',
+      DividerBlock() => '---',
+    };
+
+/// 块列表 → Markdown 子集串（块间空行分隔；编辑器回写唯一出口）。
+String serializeBlocks(List<RichBlock> blocks) =>
+    blocks.map(serializeBlock).join('\n\n');
+
 // ---------- 解析 ----------
 
 /// 富文本解析器接口。
@@ -282,18 +328,21 @@ class MarkdownSubsetParser implements RichTextParser {
     return ListItem(parseInline(content));
   }
 
-  /// 行内解析：粗体 / 斜体 / 行内码 / 链接，其余为纯文本。
+  /// 行内解析：转义 / 粗体 / 斜体 / 行内码 / 链接，其余为纯文本。
   ///
-  /// 匹配顺序即优先级：`**` 先于 `*`，避免 `**粗**` 被拆成两个斜体。
+  /// 匹配顺序即优先级：`\X` 转义最先（serialize 的字面出口），`**` 先于 `*`，
+  /// 避免 `**粗**` 被拆成两个斜体。返回前合并相邻纯文本节点（规范形，
+  /// 保证 parse→serialize→parse 块树逐节点相等）。
   @override
   List<InlineNode> parseInline(String text) {
     if (text.isEmpty) return const <InlineNode>[];
 
     final pattern = RegExp(
-      r'(\*\*|__)(.+?)\1' // 1,2 粗体
-      r'|(\*|_)(.+?)\3' // 3,4 斜体
-      r'|`([^`]+)`' // 5 行内码
-      r'|\[([^\]]*)\]\(([^)]*)\)', // 6,7 链接
+      r'\\([\\`*_\[])' // 1 转义：`\X` → 字面 X
+      r'|(\*\*|__)(.+?)\2' // 2,3 粗体
+      r'|(\*|_)(.+?)\4' // 4,5 斜体
+      r'|`([^`]+)`' // 6 行内码
+      r'|\[([^\]]*)\]\(([^)]*)\)', // 7,8 链接
       dotAll: true,
     );
 
@@ -303,20 +352,39 @@ class MarkdownSubsetParser implements RichTextParser {
       if (m.start > pos) {
         out.add(InlineText(text.substring(pos, m.start)));
       }
-      if (m.group(2) != null) {
-        out.add(InlineStrong(parseInline(m.group(2)!)));
-      } else if (m.group(4) != null) {
-        out.add(InlineEm(parseInline(m.group(4)!)));
+      if (m.group(1) != null) {
+        out.add(InlineText(m.group(1)!));
+      } else if (m.group(3) != null) {
+        out.add(InlineStrong(parseInline(m.group(3)!)));
       } else if (m.group(5) != null) {
-        out.add(InlineCode(m.group(5)!));
+        out.add(InlineEm(parseInline(m.group(5)!)));
       } else if (m.group(6) != null) {
-        out.add(InlineLink(label: m.group(6)!, url: m.group(7) ?? ''));
+        out.add(InlineCode(m.group(6)!));
+      } else if (m.group(7) != null) {
+        out.add(InlineLink(label: _unescape(m.group(7)!), url: m.group(8) ?? ''));
       }
       pos = m.end;
     }
     if (pos < text.length) {
       out.add(InlineText(text.substring(pos)));
     }
-    return out.isEmpty ? [InlineText(text)] : out;
+    return out.isEmpty ? [InlineText(text)] : _mergeText(out);
   }
+
+  /// 合并相邻 [InlineText]（转义会产生碎片节点，合并为规范形）。
+  static List<InlineNode> _mergeText(List<InlineNode> nodes) {
+    final out = <InlineNode>[];
+    for (final n in nodes) {
+      final last = out.isEmpty ? null : out.last;
+      if (n is InlineText && last is InlineText) {
+        out[out.length - 1] = InlineText(last.text + n.text);
+      } else {
+        out.add(n);
+      }
+    }
+    return out;
+  }
+
+  static String _unescape(String s) =>
+      s.replaceAllMapped(RegExp(r'\\([\\`*_\[\]])'), (m) => m.group(1)!);
 }

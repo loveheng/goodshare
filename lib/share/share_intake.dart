@@ -5,6 +5,7 @@ import '../action/commands.dart';
 import '../action/item_action_handler.dart';
 import '../models/item.dart';
 import 'attachments.dart';
+import 'image_aspect.dart';
 import 'text_collector.dart';
 import 'text_parse.dart';
 
@@ -61,6 +62,9 @@ class ShareIntake {
 
       for (final f in files) {
         final t = _typeOfMedia(f);
+        // 尺寸前置（rich-text-component.md §6.1 V1）：图片摄入时解码头取宽高比，
+        // 渲染处占位消灭加载抖动；探测失败为 null 不挡摄入。
+        final aspect = t == InboxItem.typeImage ? await probeImageAspect(f.path) : null;
         if (referenceMode) {
           // 引用模式：不复制，直接引用源 URI（content:// 或 file://），
           // 标记 ref——app 不占用户存储（content-pipeline §6）。
@@ -70,6 +74,7 @@ class ShareIntake {
             humanTitle: _baseName(f.path),
             rawFilePath: f.path,
             attachState: InboxItem.attachRef,
+            aspectRatio: aspect,
           ));
         } else {
           final saved = await copyToAppDir(f.path);
@@ -79,6 +84,7 @@ class ShareIntake {
             sourceApp: _sourceApp,
             humanTitle: _baseName(f.path),
             rawFilePath: saved,
+            aspectRatio: aspect,
           ));
         }
       }

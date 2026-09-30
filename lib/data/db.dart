@@ -16,7 +16,7 @@ class Db {
     final dir = await getDatabasesPath();
     final db = await openDatabase(
       _pathOverride ?? p.join(dir, 'goodshare.db'),
-      version: 14,
+      version: 15,
       onCreate: (db, version) => _createAll(db),
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -50,6 +50,8 @@ class Db {
         await _ensureAttachStateColumn(db);
         // 幂等补齐工作区两表（v13→v14 条目集合容器，多对多）
         await _ensureWorkspaceTables(db);
+        // 幂等补齐 inbox_items.aspect_ratio（v14→v15 图片尺寸前置，渲染免抖动）
+        await _ensureAspectRatioColumn(db);
       },
       onOpen: (db) async {
         // ai_task_queue 的外键级联依赖此开关，sqflite 默认关闭
@@ -81,6 +83,7 @@ class Db {
         video_whole_marked INTEGER NOT NULL DEFAULT 0, -- 整片标记：1=用户认为整个视频重要，备份时携带源文件（2026-09-29 v11）
         doc_meta_json TEXT,                         -- 归一化覆盖率与确认状态（2026-09-30 v12，content-pipeline §7）
         attach_state TEXT NOT NULL DEFAULT 'owned', -- 文件引用状态 ref/owned/lost（2026-09-30 v13）
+        aspect_ratio REAL,                          -- 图片宽高比（宽/高，摄入时解码图片头探测；null=未探测）（2026-09-30 v15）
         tags TEXT,                                  -- JSON Array: ["前端","团建"]
         facets_json TEXT,                           -- JSON: 视角→标签数组，AI 分类页消费（V2）
         is_vault INTEGER NOT NULL DEFAULT 0,        -- 0 公开 / 1 私密保险箱
@@ -264,6 +267,19 @@ class Db {
       await db.execute(
         "ALTER TABLE inbox_items ADD COLUMN attach_state TEXT NOT NULL DEFAULT 'owned'",
       );
+    }
+  }
+
+  /// 幂等补齐 inbox_items.aspect_ratio（v14→v15，2026-09-30）。
+  ///
+  /// 图片尺寸前置（rich-text-component.md §6.1 V1）：摄入时解码图片头取宽高比，
+  /// 渲染处 AspectRatio + 占位底色包图，消灭列表/详情加载抖动。专用列而非
+  /// machine_json/facets_json——AI 回写对两者整替，摄入元数据会被冲掉。
+  static Future<void> _ensureAspectRatioColumn(Database db) async {
+    final cols = await db.rawQuery('PRAGMA table_info(inbox_items)');
+    final has = cols.any((c) => (c['name'] as String?) == 'aspect_ratio');
+    if (!has) {
+      await db.execute('ALTER TABLE inbox_items ADD COLUMN aspect_ratio REAL');
     }
   }
 

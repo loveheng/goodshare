@@ -110,10 +110,12 @@ Widget buildRichBlock(
   final scheme = theme.colorScheme;
 
   return switch (block) {
-    HeadingBlock(:final level, :final inline) => SelectableText.rich(
+    // 块内用普通 Text/RichText：跨块选择由外层 SelectionArea 统一提供
+    // （rich-text-component.md §3 阅读态选择能力约束）
+    HeadingBlock(:final level, :final inline) => Text.rich(
         _spans(context, inline, _headingStyle(theme, level)),
       ),
-    ParagraphBlock(:final inline) => SelectableText.rich(
+    ParagraphBlock(:final inline) => Text.rich(
         _spans(context, inline, _bodyStyle(theme)),
       ),
     QuoteBlock(:final children) => Container(
@@ -137,7 +139,7 @@ Widget buildRichBlock(
           color: scheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(Radii.md),
         ),
-        child: SelectableText(
+        child: Text(
           code,
           style: theme.textTheme.bodySmall?.copyWith(
             fontFamily: 'monospace',
@@ -201,7 +203,7 @@ Widget _buildListItem(
             ),
             const SizedBox(width: Insets.sm),
             Expanded(
-              child: SelectableText.rich(
+              child: Text.rich(
                 _spans(
                   context,
                   item.inline,
@@ -229,7 +231,7 @@ Widget _buildListItem(
         ),
       ),
       Expanded(
-        child: SelectableText.rich(
+        child: Text.rich(
           _spans(context, item.inline, _bodyStyle(theme)),
         ),
       ),

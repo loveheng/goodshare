@@ -743,6 +743,7 @@ final class CollectCommand extends ItemCommand {
     this.tags,
     this.collectMode = InboxItem.modeScatter,
     this.attachState = InboxItem.attachOwned,
+    this.aspectRatio,
   });
 
   final String itemType;
@@ -755,6 +756,10 @@ final class CollectCommand extends ItemCommand {
   /// 附件持有方式（content-pipeline §7）：默认 owned（已复制副本）；
   /// 引用模式摄入传 [InboxItem.attachRef]（不复制原件）。
   final String attachState;
+
+  /// 图片宽高比（宽/高，rich-text-component.md §6.1 V1 尺寸前置）：
+  /// 摄入时解码图片头探测，渲染处 AspectRatio 占位消灭加载抖动；非图片为 null。
+  final double? aspectRatio;
 
   bool get isMerge => collectMode == InboxItem.modeMerge;
 
@@ -775,6 +780,7 @@ final class CollectCommand extends ItemCommand {
         if (tags != null) 'tags': tags,
         'collect_mode': collectMode,
         'attach_state': attachState,
+        if (aspectRatio != null) 'aspect_ratio': aspectRatio,
         };
 }
 

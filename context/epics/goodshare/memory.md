@@ -83,8 +83,25 @@ last-merge: 2026-09-29
 
 - [2026-09-29] face/object/pose 预留占位定档（`ml_capability.dart` 的 `ExecutionMode.placeholder` 已定义）：不实现、不引依赖，由系统相册承担，MlCapability 已留插槽；本轮 ML 体系 = 4 落地（图片分类 / 条码 / 文本分析 = backgroundQueue，文档扫描 = foregroundUi）+ 3 预留（人脸 / 物体 / 姿势 = placeholder）
 
+## 进度（追加 6）
+- [2026-09-30] 速记条两轮改版（用户拍板）：①显示范围收敛为**仅首页**（`_index == 0`，工作区/设置不显示；ui-spec §3/§4.6 同步）②视觉改版参考 mymind——胶囊输入条张开态**原地长高**（1→5 行 AnimatedContainer + primary 边框亮起，焦点即张开态单一状态源）；**去发送按钮**，改**失焦自动保存**（焦点监听有内容即提交 + dispose 兜底落库），回车=结束输入触发保存。analyze 0 / test 213 绿。
+- [2026-09-30] 速记条形态三改（用户否决胶囊，拍板「便利贴」）：收合态=**只露顶边的便签拉手**（52px、顶圆角、底边沉入底栏后），**上滑/点按拽出**，下滑收回；收回即自动保存（onTapOutside + dispose 兜底）。展开高度**不设上限**（用户拍板「长度无限不给局促感」）=可用空间（屏高-键盘-状态栏-底栏），键盘弹起自动压缩；multiline 回车换行不收键盘。analyze 0 / test 213 绿。
+- [2026-09-30] 首页改瀑布流卡片（用户拍板参考 mymind；「页面底部功能找不到」问题用户说先跳过）：引入 flutter_staggered_grid_view 0.7.0（新依赖经用户确认），InboxPage 列表 → MasonryGridView.count 双列；ContentCard 重写为瀑布流卡（图片真图铺顶自适应高度 cacheWidth 1080、文本预览 4 行主体、元信息收底）。工作区页内条目列表仍复用 ContentCard 但未改瀑布流（保持列表）。analyze 0 / test 213 绿。
+- [2026-09-30] 便利贴展开态全屏改版（用户逐项拍板）：点拉手自动张开近整屏面板，左右仅小边距见层次；顶栏=收起箭头·**今日日期标题**·保存按钮；工具行=**拍照/录音/标签/待办**四按钮（拍照/录音直接出卡片，标签挂本条随保存落库——TextCollector.collectText 加 tags 参数，待办模式=保存时逐行转 `- [ ]`）；**保存语义=生成卡片并清空内容区（面板不关连续记），不点保存内容留存**（static 草稿跨 tab 切换/销毁存活，收合不清）。analyze 0 / test 213 绿。
+- [2026-09-30] 搜索改全屏页（用户拍板参考 mymind，四点确认：标签=便签类型、六类入口无聊天无保险箱、无排序切换固定最新、点空白回首页且清除筛选）：新建 `search_page.dart`（搜索框 ×清空/空时关闭 + 六类 chips + 实时瀑布流结果）；首页删筛选条改**假搜索框**点击进入，保险箱视图加 AppBar 返回箭头退出（原 chip 已删）；保险箱不进搜索（`vault: false`，与 MCP 隔离同口径）。analyze 0 / test 213 绿。
+- [2026-09-30] 顶栏一体块 + 键盘修复 + 无返回箭头（用户三项拍板）：①首页 AppBar=mymind 同款一体块——☰ 嵌入搜索长条左端无接缝 + 右侧**橘红(brand primary)方形＋块**（添加菜单由 PopupMenu 改 BottomSheet）②搜索页去自动返回箭头（手势时代；退出=×/系统侧滑）③**便利贴键盘修复**——展开态面板 padding bottom=键盘+底栏、底对齐排布，顶栏（⌄收起·日期·保存同行）**钉死可见区顶部**，键盘任何高度只压缩书写区（内部滚动编辑任意位置）；下滑收起手势删除（与列表滚动冲突），收起只留 ⌄ 按钮。analyze 0 / test 213 绿。
+- [2026-09-30] 宽度语言统一 + 面板态修复（用户拍板）：①内容区瀑布流边距 12→8px（「太宽了」）②便利贴收合/展开水平边距统一 8px，与内容区**同宽对齐**③修「点功能按钮回到全部页」——根因=系统相机/权限弹窗重建 Activity 时导航栈恢复但普通字段归零（面板态消失）；修法=面板态（expanded/待挂标签/待办模式）与 _draftText 同口径**静态留存**，initState 恢复 + 变更点同步。⚠️ 教训：Flutter 无 `RestorationManager` 全局类（曾误引，已纠正）——跨 Activity 重建恢复只有静态字段或 RestorationMixin 两条路。analyze 0 / test 213 绿。
+- [2026-09-30] 工作区/设置顶栏人机工程改版（用户拍板）：①工作区「＋」自 AppBar 右上角迁**右下角抬高位 FAB**（bottom:96，单手拇指自然扫掠弧内、避开导航栏与手势条；仅工作区列表层显示，进工作区后隐藏）②**☰ 收敛仅「全部」页**——工作区 AppBar 只留标题+层内返回箭头（`onOpenDrawer` 参数已删），设置页 AppBar 纯标题；抽屉为低频入口，代价=其他 tab 开抽屉先切回「全部」（一跳），换各页顶栏职责单一。analyze 0 / test 213 绿。
+- [2026-09-30] 便利贴展开态改三层结构 + 修「顶部完全不出现」（用户先要人机工程评估并复述设计，对齐后拍板落地）：根因=面板手算高度把键盘/底栏**双重扣减**（Scaffold resizeToAvoidBottomInset 已扣键盘、NavigationBar 已独立于 body），固定高度+底对齐面板比可用区高出键盘+底栏、顶栏整行被 Stack 裁出屏；修法=高度零手算（Positioned 已锚定 body 底=键盘上沿，面板避开状态栏后满幅撑开）+ 结构改三层——顶栏钉顶 / 文本层满幅无底边（Stack 让 TextField 框延伸到工具层背后，contentPadding 底部按 _toolLayerHeight 让位，光标/末行永不滑入工具层）/ 工具层独立覆盖底部（拍照/录音/标签/待办，待挂标签提示收进行内保层高恒定）；设计共识=工具固定底部是拇指热区且功能可见性不依赖滚动位置，保存留右上属提交语义防误触的有意取舍。教训入 lessons（浮层双重扣减）。analyze 0 / test 213 绿
+- [2026-09-30] 顶栏自动隐显 + 工作区卡片化（D1/D2 台账确认后落地）：**D1**=全部页顶栏并入滚动流（SliverAppBar floating+snap 非 pinned 非 overlay，CustomScrollView+SliverMasonryGrid）——向下滚内容（继续阅读）隐藏、向上滚轻微反向即弹回、顶部恒显示；方向判定由滚动位置天然驱动无需手写阈值；保险箱视图与搜索页不参与。**D2**=工作区两层卡片化——列表层 2 列卡片网格（卡=工作区：名字+条目数+封面拼贴最多 3 图，无图退首条 preview、空区图标兜底），条目层瀑布流双列与全部页同语言；工作区预览逐区取条目（数量通常个位数可接受）。设计共识=「读模式收 chrome、找模式亮 chrome」，顶栏隐显与 FAB 迁拇指区/便利贴工具层常驻同属「chrome 为内容让路」原则。ui-spec §4.2/§4.11 同步并清理搜索页改版前残留（chips 固定区/旧缩略图行）。analyze 0 / test 213 绿 / docs-lint OK
+
 ## 断点
-- [断点] 内容管线收尾三块（引用模式落地 / 备份携带工作区两表 / PDF 文本提取 pdfrx）已落地全绿待提交（analyze 0 / test 全绿，详见 devlog 2026-09-30 收尾条目）；提交后真机验收——①引用模式 SAF 持久化权限（takePersistableUriPermission）与 content:// 可达性，本机无设备阻塞，摄入默认走 ref 但需真机验证持久化是否生效 ②PDF 文本提取对文本型 PDF 的覆盖（pdfrx loadText），扫描件返回空、UI 已据 note 明示 ③备份恢复 workspaces/workspace_items 两表闭环。超长文本 Phase 0+1（去截断全量存储 + 渲染虚拟化）已落地（见下追加 5）；剩余：待办勾选写路径（V2，TodoMark 生产侧未实现）、文档类型支持矩阵、iOS/鸿蒙适配、超长文本 Phase 2/3/4（归一化分块 / Isolate 异步解析 / 向量引擎+RAG·Map-Reduce 摘要）
+- [断点] 下一步：视觉元数据前置 V1/V2/V3 全部完成全绿待提交；下一步 MCP 桌面端文档登记 og.v1/color.v1 约定或真机侧载验收（便利贴手感/批 B 块编辑/OG 卡片/主色占位）；长文本 Phase 2/3/4（分块/Isolate/向量 RAG）待做
+
+## 进度（追加 6）
+- [2026-09-30] 面板头部锚定（用户拍板两轮：先 B1 搜索框水平带+sm，后看真机改「顶到状态栏」）：展开态顶缘 = 状态栏下沿，topInset = statusBar——状态栏高度改取 View 原始 padding（Scaffold 消费 body 的 MediaQuery.padding 是「避让失效」根因）+ _morphSheet 静止展开分支补显式 height。回归 test/quick_note_topbar_test.dart。analyze 0 / test 219 绿
+- [2026-09-30] 修「首页内容区不能点击和滑动」：QuickNoteBar 顶层 Material(color: transparent) 全屏吸收命中（transparent 颜色不透传命中测试），改 MaterialType.transparency 一行修复；此 bug 自速记条替换悬浮球起即存在。教训入 lessons（transparent≠透传命中）。analyze 0 / test 218 绿
+- [2026-09-30] 便利贴跟手渐展重构（方案 A 用户拍板）：拖动由平移拉手改为控面板高度（_progress 0→1 连续形变，头部+身体一起长出），_morphSheet 三分支（静止两态各走干净树保命中区一致、中间态淡入+IgnorePointer）；连带修两个新 bug——①外层 onVerticalDragCancel 无展开态门控，点面板内按钮拖拽竞技场落败触发 cancel 致面板坍缩（补 expandedNow 门控）；②initState 静态恢复 _progress 未随 _expanded 同源（态开形未开）。教训入 lessons（手势竞技场 cancel 误伤 / 静态恢复须全字段同源）。analyze 0 / test 218 绿
 
 ## 进度（追加 4）
 - [2026-09-30] 引用模式落地（断点①推进）：`ShareIntake` 新增 `referenceMode`（默认 true——不复制、存源 URI、标 `attachRef`）+ `CollectCommand.attachState`（appendix_json 段标 `attachState` 状态机）+ handler 生效 + `Attach.reachable` 兼容 `content://` URI。⚠️ SAF `takePersistableUriPermission` 与 content URI 跨会话可达性**仍需真机验证**（本机无设备，阻塞项），故摄入默认 ref 但持久化成败未实测。
@@ -93,3 +110,6 @@ last-merge: 2026-09-29
 
 ## 进度（追加 5）
 - [2026-09-30] 超长文本 Phase 0+1（去截断全量存储 + 渲染虚拟化）：`kNormalizeMaxChars` 20000→1<<26（实际不触发截断），html/plain/pdf 三处 normalizer 截断逻辑随之失效，human_md 存全量、内容不再丢失；`RichTextView` 内部 `Column`→`ListView.builder`（解析缓存保留），并抽出 `richBlocksOf`/`buildRichBlock` 复用；`ItemViewTemplate` 视图函数改返回 `List<Widget>`（sliver 兼容），文本正文走 `SliverList`、媒体走 `SliverToBoxAdapter`；`item_detail_page` 主体 `ListView(children)`→`CustomScrollView(slivers)`，让正文 block 成为 sliver items——数万字长文只构建可视区，真正虚拟化（非嵌套 shrinkWrap 伪虚拟化）；顺手修原详情页 `_typeActions()` 重复调用 bug。docs/design content-pipeline.md 3 处「截断」更正为全量存储+虚拟化。analyze 0 / 全测绿。剩余超长文本瓶颈在 AI/向量化侧（Context 溢出），待 Phase 2 归一化分块 / Phase 3 Isolate 异步 / Phase 4 向量引擎+RAG·Map-Reduce 摘要。
+
+## 进度（追加 7）
+- [2026-09-30] 富文本行内媒体块设计定稿（rich-text-component.md 正由另一 AI 开发，独立成文 docs/design/rich-text-media.md，status: draft）：Image/Audio/Video 三块类型齐做（用户拍板：人往富文本插音频也插视频），三出口齐全、serialize 走标准 md 链接 MCP 零感知；顶级媒体与行内媒体块边界划分（顶级已在调用层，不涉及）；插入链路分期——音频插入 MVP 先行，图片/视频上传 V2；顺带修 ![alt](url) 现渲染成「!+链接」的降级 bug。README 索引 + devlog 已记。**未动任何代码**，实施排期待批 B 后。

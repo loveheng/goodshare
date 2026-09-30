@@ -174,6 +174,9 @@ void main() {
   group('数据层', () {
     test('listWorkspaces 按创建时间倒序；一个条目可进多个工作区', () async {
       final w1 = await repo.createWorkspace('a');
+      // createdAt 是毫秒时间戳：同毫秒连续创建会打平（排序并列属合法结果），
+      // 造数跨毫秒才能对严格倒序下断言（2026-09-30 修并发跑时的随机炸）
+      await Future<void>.delayed(const Duration(milliseconds: 2));
       final w2 = await repo.createWorkspace('b');
       final names = (await repo.listWorkspaces()).map((w) => w.name).toList();
       expect(names.indexOf('b'), lessThan(names.indexOf('a')));

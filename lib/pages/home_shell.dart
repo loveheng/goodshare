@@ -97,7 +97,6 @@ class _HomeShellState extends State<HomeShell> {
       repo: widget.repo,
       handler: widget.handler,
       caps: widget.caps,
-      onOpenDrawer: () => _scaffoldKey.currentState?.openDrawer(),
     ),
     SettingsPage(
       handler: widget.handler,
@@ -109,7 +108,6 @@ class _HomeShellState extends State<HomeShell> {
       llmModels: widget.llmModels,
       aiQueue: widget.aiQueue,
       backup: widget.backup,
-      onOpenDrawer: () => _scaffoldKey.currentState?.openDrawer(),
     ),
   ];
 
@@ -121,14 +119,22 @@ class _HomeShellState extends State<HomeShell> {
       body: Stack(
         children: [
           IndexedStack(index: _index, children: _pages),
-          // 速记条：仅内容页显示（设置页不显示），详情页是 push 出去的新页面
-          // 故天然不显示，不会与详情底部操作条并存。
-          if (_index != 2)
+          // 速记条：仅首页（「全部」tab）显示（2026-09-30 用户拍板：工作区不显示），
+          // 详情页是 push 出去的新页面故天然不显示，不会与详情底部操作条并存。
+          if (_index == 0)
             Positioned(
+              // 四边拉满：Stack 只在上下边同时给出时才收紧高度——此前仅 bottom
+              // 锚点时高度无界，展开态 Column+Expanded 触发 unbounded flex
+              // 异常，整棵便利贴子树渲染失败（真机=点一下整个功能消失）。
+              // 键盘让位仍由 Scaffold resize 承担，此处不做任何高度手算。
               left: 0,
               right: 0,
+              top: 0,
               bottom: 0,
-              child: QuickNoteBar(collector: widget.collector),
+              child: QuickNoteBar(
+                collector: widget.collector,
+                handler: widget.handler,
+              ),
             ),
         ],
       ),

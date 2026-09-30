@@ -8,6 +8,8 @@ const machineJsonSchemas = <String, Set<String>>{
   'contact.v1': {'name', 'phone'}, // V2 §4：name/phone/org/title
   'event.v1': {'when'}, // V2 §4：when/where/attendees/action_items
   'health_record.v1': {'date', 'metrics'}, // V3 §4 健康接入复用
+  'og.v1': {}, // OG 页面元数据（rich-text-component.md §6.1 V2）：字段常部分缺失，只验 schema 形态
+  'color.v1': {'hex'}, // 图片主色（§6.1 V3）：palette_generator 摄入 Job 产出，hex 渲染占位
 };
 
 /// 校验 machine_json 原文。返回 null 表示通过，否则返回可展示的拒绝原因。

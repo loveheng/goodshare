@@ -10,8 +10,11 @@ import 'package:video_player/video_player.dart';
 import '../ai/audio_extract.dart';
 import '../ai/video_clips.dart';
 import '../ai/subtitle.dart';
+import '../ai/url_extract.dart';
+import '../ai/palette_reconstructor.dart' show colorFromMachineJson;
 import '../models/item.dart';
 import 'image_annotator.dart';
+import 'content_body.dart';
 import 'rich_text_view.dart';
 import 'tokens.dart';
 
@@ -31,7 +34,7 @@ class ItemViewRegistry {
     InboxItem.typeNote: _textView,
     InboxItem.typeChatlog: _textView,
     InboxItem.typeDocument: _documentView,
-    InboxItem.typeUrl: _textView,
+    InboxItem.typeUrl: _urlView,
     InboxItem.typeImage: _imageView,
     InboxItem.typeVideo: _videoView,
     InboxItem.typeAudio: _audioView,
@@ -141,14 +144,81 @@ List<Widget> _textView(BuildContext context, InboxItem item) {
   if (body.isEmpty) return const [SliverToBoxAdapter(child: _EmptyView())];
   final blocks = richBlocksOf(body);
   if (blocks.isEmpty) return const [SliverToBoxAdapter(child: _EmptyView())];
-  return [
-    SliverList(
-      delegate: SliverChildBuilderDelegate(
-        (c, i) => buildRichBlock(c, blocks[i]),
-        childCount: blocks.length,
+  return contentSlivers(blocks);
+}
+
+/// URL 专属区：OG 卡片（rich-text-component.md §6.1 V2）+ 正文虚拟化。
+/// 无 OG 元数据（未抓取/页面无标签）时与通用文本区完全一致。
+List<Widget> _urlView(BuildContext context, InboxItem item) {
+  final og = ogFromMachineJson(item.machineJson);
+  final out = <Widget>[];
+  if (og != null) out.add(SliverToBoxAdapter(child: _OgCard(meta: og)));
+  out.addAll(_textView(context, item));
+  return out;
+}
+
+/// OG 元数据卡片：封面图（网络图，加载失败整块隐藏）+ 站点名/标题/描述。
+class _OgCard extends StatelessWidget {
+  const _OgCard({required this.meta});
+
+  final OgMeta meta;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Container(
+      margin: const EdgeInsets.only(bottom: Insets.md),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(Radii.md),
+        border: Border.all(color: scheme.outlineVariant),
       ),
-    ),
-  ];
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (meta.image != null)
+            Image.network(
+              meta.image!,
+              fit: BoxFit.cover,
+              cacheWidth: 720,
+              errorBuilder: (_, _, _) => const SizedBox.shrink(),
+              loadingBuilder: (context, child, progress) =>
+                  progress == null ? child : Container(height: 8, color: scheme.surfaceContainerHighest),
+            ),
+          Padding(
+            padding: const EdgeInsets.all(Insets.md),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (meta.siteName != null)
+                  Text(meta.siteName!,
+                      style: theme.textTheme.labelSmall
+                          ?.copyWith(color: scheme.primary, letterSpacing: 0.5)),
+                if (meta.title != null)
+                  Padding(
+                    padding: EdgeInsets.only(top: meta.siteName != null ? Insets.xs : 0),
+                    child: Text(meta.title!,
+                        style: theme.textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w600)),
+                  ),
+                if (meta.description != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: Insets.xs),
+                    child: Text(meta.description!,
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: scheme.onSurfaceVariant)),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// 文档类型：显示落盘文件信息（结构化字段表单随 V2 machine_json 驱动）。
@@ -156,14 +226,7 @@ List<Widget> _documentView(BuildContext context, InboxItem item) {
   final out = <Widget>[];
   if (item.bodyText.isNotEmpty) {
     final blocks = richBlocksOf(item.bodyText);
-    if (blocks.isNotEmpty) {
-      out.add(SliverList(
-        delegate: SliverChildBuilderDelegate(
-          (c, i) => buildRichBlock(c, blocks[i]),
-          childCount: blocks.length,
-        ),
-      ));
-    }
+    if (blocks.isNotEmpty) out.addAll(contentSlivers(blocks));
   }
   out.add(SliverToBoxAdapter(child: _FileTile(path: item.rawFilePath)));
   return out;
@@ -187,6 +250,7 @@ class _ImageViewState extends State<_ImageView> {
   @override
   Widget build(BuildContext context) {
     final item = widget.item;
+    final scheme = Theme.of(context).colorScheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -216,16 +280,33 @@ class _ImageViewState extends State<_ImageView> {
           if (item.hasAttachment)
             ClipRRect(
               borderRadius: BorderRadius.circular(Radii.md),
-              child: Image.file(
-                File(item.rawFilePath!),
-                fit: BoxFit.contain,
-                errorBuilder: (_, _, _) => const _EmptyView(text: '图片文件已不存在'),
-              ),
+              // 尺寸前置（§6.1 V1）+ 主色调占位（V3）：提前摆好版面且以图片
+              // 主色铺底，解码完成无白闪、无布局跳动
+              child: item.aspectRatio != null
+                  ? Container(
+                      color: colorFromMachineJson(item.machineJson) ??
+                          scheme.surfaceContainerHighest,
+                      child: AspectRatio(
+                        aspectRatio: item.aspectRatio!,
+                        child: Image.file(
+                          File(item.rawFilePath!),
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) =>
+                              const _EmptyView(text: '图片文件已不存在'),
+                        ),
+                      ),
+                    )
+                  : Image.file(
+                      File(item.rawFilePath!),
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, _, _) => const _EmptyView(text: '图片文件已不存在'),
+                    ),
             ),
           if (item.bodyText.isNotEmpty)
+            // 媒体附文与文本类正文共用 ContentBody（消除裸 SelectableText 渲染降级）
             Padding(
               padding: const EdgeInsets.only(top: Insets.sm),
-              child: SelectableText(item.bodyText),
+              child: ContentBody(markdown: item.bodyText),
             ),
         ],
       ],
@@ -246,7 +327,7 @@ List<Widget> _audioView(BuildContext context, InboxItem item) {
           if (item.bodyText.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(bottom: Insets.sm),
-              child: SelectableText(item.bodyText),
+              child: ContentBody(markdown: item.bodyText),
             ),
           _AudioPlayer(path: item.rawFilePath!),
           _AudioExportRow(item: item),
@@ -270,7 +351,7 @@ List<Widget> _videoView(BuildContext context, InboxItem item) {
           if (item.bodyText.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(bottom: Insets.sm),
-              child: SelectableText(item.bodyText),
+              child: ContentBody(markdown: item.bodyText),
             ),
           _VideoPlayer(
             path: item.rawFilePath!,

@@ -148,6 +148,72 @@ void main() {
       expect(_inlineText(nodes), '星号*没闭合');
     });
   });
+
+  group('serialize 往返（rich-text-component.md §7 验收）', () {
+    /// 块树 → 规范形字符串（逐节点结构化，比 == 严格）。
+    String treeOf(List<RichBlock> blocks) => blocks.map((b) => switch (b) {
+          HeadingBlock(:final level, :final inline) =>
+            'H$level[${_treeInline(inline)}]',
+          ParagraphBlock(:final inline) => 'P[${_treeInline(inline)}]',
+          QuoteBlock(:final children) =>
+            'Q{${children.map((c) => treeOf([c])).join('|')}}',
+          ListBlock(:final ordered, :final items) =>
+            '${ordered ? 'OL' : 'UL'}{${items.map((i) => '${i.done == null ? '' : i.done! ? '[x]' : '[ ]'}(${_treeInline(i.inline)})').join(',')}}',
+          CodeBlock(:final code, :final language) =>
+            'CODE<$language>[$code]',
+          DividerBlock() => 'HR',
+        }).join('\n');
+
+    /// parse→serialize→parse 块树逐节点相等（幂等）。
+    void expectRoundtrip(String markdown) {
+      final first = parser.parse(markdown);
+      final md2 = serializeBlocks(first);
+      final second = parser.parse(md2);
+      expect(treeOf(second), treeOf(first), reason: '往返后块树变化：\n$md2');
+    }
+
+    test('标题/段落/分隔线', () {
+      expectRoundtrip('# 标题一\n\n## 二级 **加粗**\n\n正文段落。\n\n---\n\n尾段');
+    });
+
+    test('无序列表 + 待办（勾选/未勾选混合）', () {
+      expectRoundtrip('- 普通项\n- [ ] 待办甲\n- [x] 待办乙\n- 尾项');
+    });
+
+    test('有序列表', () {
+      expectRoundtrip('1. 第一\n2. 第二 **粗**\n3. 第三');
+    });
+
+    test('引用（多段 + 嵌套列表）', () {
+      expectRoundtrip('> 引用第一段\n> 第二行\n>\n> 第二段\n> - 列表甲\n> - 列表乙');
+    });
+
+    test('引用嵌套引用', () {
+      expectRoundtrip('> 外层\n> > 内层\n> > 第二行');
+    });
+
+    test('代码块（带语言/无语言/多行）', () {
+      expectRoundtrip('```dart\nvoid main() {}\n// 注释\n```\n\n前段\n\n```\n纯文本代码\n```');
+    });
+
+    test('行内全家桶（粗/斜/码/链接）', () {
+      expectRoundtrip('**粗** 与 *斜* 与 `码` 与 [官网](https://a.com) 混排');
+    });
+
+    test('字面语法标记不丢不变形（转义往返）', () {
+      expectRoundtrip('乘法 5*3*2=30 与 下划线 snake_case_name 与 伪链接 [不是链接](真的不是)');
+    });
+
+    test('字面反斜杠与反引号', () {
+      expectRoundtrip(r'路径 C:\Users\test 与 反引号 ` 出现在文中');
+    });
+
+    test('serializeBlocks 输出可被二次 parse 稳定（二次幂等）', () {
+      final md1 = serializeBlocks(parser.parse('- [ ] 甲\n\n段 **粗**'));
+      final md2 = serializeBlocks(parser.parse(md1));
+      expect(md2, md1);
+    });
+  });
 }
 
 /// 块 → 纯文本（测试辅助）。
@@ -167,3 +233,14 @@ String _inlineText(List<InlineNode> nodes) => nodes.map((n) => switch (n) {
       InlineCode(:final code) => code,
       InlineLink(:final label) => label,
     }).join();
+
+
+
+/// 行内树 → 规范形（含节点类型，保证往返后节点类型也一致）。
+String _treeInline(List<InlineNode> nodes) => nodes.map((n) => switch (n) {
+      InlineText(:final text) => 'T($text)',
+      InlineStrong(:final children) => 'S[${_treeInline(children)}]',
+      InlineEm(:final children) => 'E[${_treeInline(children)}]',
+      InlineCode(:final code) => 'C($code)',
+      InlineLink(:final label, :final url) => 'L($label|$url)',
+    }).join(',');
