@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/repository.dart';
+import '../doc/rich_text.dart';
 import '../models/item.dart';
 import 'backup_manifest.dart';
 import 's3_client.dart';
@@ -383,6 +384,36 @@ class BackupService extends ChangeNotifier {
   }
 }
 
+/// 行内媒体收集：解析条目 human_md 的媒体块，`local://` 标记换算成 documents
+/// 相对路径收进白名单（同 rel 只收一次；Vault 条目不进本函数的 items——调用方已过滤）。
+Future<List<LocalBackupFile>> _collectInlineMediaFiles(
+  InboxItem it,
+  String docsPath,
+  Set<String> seenRels,
+) async {
+  final md = it.humanMd;
+  if (md == null || md.isEmpty) return const [];
+  final files = <LocalBackupFile>[];
+  for (final b in MarkdownSubsetParser().parse(md)) {
+    final url = switch (b) {
+      ImageBlock(:final url) => url,
+      AudioBlock(:final url) => url,
+      VideoBlock(:final url) => url,
+      _ => null,
+    };
+    if (url == null || !url.startsWith('local://')) continue;
+    final rel = url.substring('local://'.length);
+    if (!isSafeBackupRel(rel) || !seenRels.add(rel)) continue;
+    try {
+      final f = File(p.join(docsPath, rel));
+      final st = await f.stat();
+      if (st.size <= 0) continue;
+      files.add(LocalBackupFile(file: f, rel: rel, size: st.size, itemId: it.id));
+    } catch (_) {}
+  }
+  return files;
+}
+
 /// 备份白名单收集（可单测的文件系统扫描；2026-09-29 D3 拍板，设计 s3-backup.md §4）：
 /// - 条目原始附件：**视频源文件排除**（体积大头，「只备份关键的东西」；
 ///   音频体积不大照常备份；视频的关键产物=DB 文本层 + 字幕/译文，随备份走）
@@ -394,8 +425,12 @@ Future<List<LocalBackupFile>> collectBackupFiles({
   required String docsPath,
 }) async {
   final out = <LocalBackupFile>[];
+  final seenRels = <String>{};
 
   for (final it in items) {
+    // 行内媒体（便签作曲器产出，human_md 内 `local://` 标记，2026-09-30 拍板①）：
+    // 是条目的用户资产，随条目进备份——视频源排除策略不波及（那是 rawFilePath 的 D3 语义）
+    out.addAll(await _collectInlineMediaFiles(it, docsPath, seenRels));
     // D3 + 整片标记（2026-09-29）：视频源文件默认不进备份；用户整片标记的 opt-in 携带。
     if (it.itemType == InboxItem.typeVideo && !it.videoWholeMarked) continue;
     final path = it.rawFilePath;
@@ -404,6 +439,7 @@ Future<List<LocalBackupFile>> collectBackupFiles({
     if (!p.isWithin(docsPath, path)) continue;
     final rel = p.relative(path, from: docsPath);
     if (!isSafeBackupRel(rel)) continue;
+    if (!seenRels.add(rel)) continue;
     try {
       final st = await File(path).stat();
       if (st.size <= 0) continue;

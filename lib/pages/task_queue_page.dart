@@ -138,8 +138,10 @@ class _TaskTile extends StatelessWidget {
   (String, Color) _statusStyle(String status, ColorScheme scheme) => switch (status) {
         'pending' => ('等待', scheme.outline),
         'processing' => ('处理中', scheme.primary),
-        'paused' => ('已暂停', Colors.orange),
-        'completed' => ('完成', Colors.green),
+        // 暂停/完成强调色克制：走色阶与语义槽位，不用 Material 调色板字面量
+        // （mymind 基准，ui-spec §2.1）。
+        'paused' => ('已暂停', scheme.onSurfaceVariant),
+        'completed' => ('完成', scheme.secondary),
         'failed' => ('失败', scheme.error),
         'cancelled' => ('已取消', scheme.outline),
         _ => (status, scheme.outline),

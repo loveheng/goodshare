@@ -85,9 +85,10 @@ scan_all() {
     "UI 层出现 Platform.isX 分支，平台差异须收敛到接口实现/工厂" \
     'Platform\.is[A-Z]' ""
   # R4 禁止裸 Image.file/Image.network（统一 GoodshareImage 声明解码尺寸）
+  # 前缀断言 [^a-zA-Z] 防止 GoodshareImage.network( 的子串误报
   scan_pattern "R4-raw-image" "lib/pages lib/ui" \
     "裸 Image.file/Image.network，改用 GoodshareImage 并显式 cacheWidth" \
-    'Image\.(file|network)\(' "lib/ui/goodshare_image.dart lib/ui/image_annotator.dart lib/ui/item_view_template.dart"
+    '(^|[^a-zA-Z])Image\.(file|network)\(' "lib/ui/goodshare_image.dart lib/ui/image_annotator.dart lib/ui/item_view_template.dart"
   # R5 摄入路径禁止直连 Repository 写
   scan_pattern "R5-share-repo-write" "lib/share" \
     "摄入层直连 Repository 写，须走 CollectCommand / AppendSegmentCommand" \

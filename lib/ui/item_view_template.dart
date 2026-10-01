@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:just_audio/just_audio.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 
@@ -15,7 +14,8 @@ import '../ai/palette_reconstructor.dart' show colorFromMachineJson;
 import '../models/item.dart';
 import 'image_annotator.dart';
 import 'content_body.dart';
-import 'rich_text_view.dart';
+import 'media_blocks.dart';
+import 'section_legend.dart';
 import 'tokens.dart';
 
 /// 详情查看模板 + 按类型注册表（设计 §4.3/§6）。
@@ -90,17 +90,12 @@ class ItemViewTemplate extends StatelessWidget {
         ),
       ));
     }
-    // ② 导语块（原 TL;DR）：次级色 + 左侧细线，不再是顶部彩色文本
+    // ② 导语块（原 TL;DR）：骑框 legend 描边卡（ui-spec §2.3，mymind TLDR
+    // 形态——小签嵌框顶边 + 延长线，共享组件 SectionLegendCard）。
     if (item.humanTldr?.isNotEmpty ?? false) {
       out.add(SliverToBoxAdapter(
-        child: Container(
-          margin: const EdgeInsets.only(bottom: Insets.md),
-          padding: const EdgeInsets.only(left: Insets.md),
-          decoration: BoxDecoration(
-            border: Border(
-              left: BorderSide(width: 3, color: scheme.outlineVariant),
-            ),
-          ),
+        child: SectionLegendCard(
+          legend: 'TLDR',
           child: Text(
             item.humanTldr!,
             style: theme.textTheme.bodyMedium
@@ -115,7 +110,39 @@ class ItemViewTemplate extends StatelessWidget {
     } else {
       out.addAll(ItemViewRegistry.resolve(item.itemType)(context, item));
     }
+    // ④ 标签展示区（mymind MIND TAGS 形态，ui-spec §4.3）：AI 提取标签
+    // 胶囊流只读展示（骑框 legend 复用 SectionLegendCard）；无标签不渲染
+    // （不做假数据）。点击筛选跳主列表为 V2。
+    if (!machineMode && item.tags.isNotEmpty) {
+      out.add(SliverToBoxAdapter(
+        child: SectionLegendCard(
+          legend: '标签',
+          child: Wrap(
+            spacing: Insets.sm,
+            runSpacing: Insets.sm,
+            children: [for (final t in item.tags) _tagPill(context, t)],
+          ),
+        ),
+      ));
+    }
     return out;
+  }
+
+  /// 只读标签胶囊（mymind 深色胶囊无边框；选中态不存在，操作归「标签」底栏项）。
+  static Widget _tagPill(BuildContext context, String text) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: ShapeDecoration(
+        color: theme.colorScheme.surfaceContainerHigh,
+        shape: const StadiumBorder(),
+      ),
+      child: Text(
+        text,
+        style: theme.textTheme.labelSmall
+            ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+      ),
+    );
   }
 
   Widget _machineView(BuildContext context, InboxItem item) {
@@ -139,12 +166,14 @@ class ItemViewTemplate extends StatelessWidget {
 }
 
 /// 通用文本/Markdown 专属区（note / chatlog / url / document 摘要）：虚拟化正文。
+/// 长文经 [ContentBodySliver] 转 Isolate 异步解析（Phase 3）；解析为空的
+/// body 回退空态。文章类正文走衬线阅读态（ui-spec §2.2 P0，serif）。
 List<Widget> _textView(BuildContext context, InboxItem item) {
   final body = item.bodyText;
   if (body.isEmpty) return const [SliverToBoxAdapter(child: _EmptyView())];
-  final blocks = richBlocksOf(body);
-  if (blocks.isEmpty) return const [SliverToBoxAdapter(child: _EmptyView())];
-  return contentSlivers(blocks);
+  return [
+    ContentBodySliver(markdown: body, serif: true, emptyView: const _EmptyView())
+  ];
 }
 
 /// URL 专属区：OG 卡片（rich-text-component.md §6.1 V2）+ 正文虚拟化。
@@ -225,8 +254,7 @@ class _OgCard extends StatelessWidget {
 List<Widget> _documentView(BuildContext context, InboxItem item) {
   final out = <Widget>[];
   if (item.bodyText.isNotEmpty) {
-    final blocks = richBlocksOf(item.bodyText);
-    if (blocks.isNotEmpty) out.addAll(contentSlivers(blocks));
+    out.add(ContentBodySliver(markdown: item.bodyText));
   }
   out.add(SliverToBoxAdapter(child: _FileTile(path: item.rawFilePath)));
   return out;
@@ -329,7 +357,8 @@ List<Widget> _audioView(BuildContext context, InboxItem item) {
               padding: const EdgeInsets.only(bottom: Insets.sm),
               child: ContentBody(markdown: item.bodyText),
             ),
-          _AudioPlayer(path: item.rawFilePath!),
+          // 走页面级播放服务单例（rich-text-media.md §6：行内块与顶级区共用唯一播放器）
+          _AudioPlayer(path: item.rawFilePath!, itemId: item.id?.toString() ?? item.rawFilePath!),
           _AudioExportRow(item: item),
           if (item.id != null) _SubtitleExportRow(itemId: item.id!),
         ],
@@ -577,111 +606,25 @@ class _AudioExportRow extends StatelessWidget {
 String _fmtTime(Duration d) =>
     '${d.inMinutes.toString().padLeft(2, '0')}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
 
-/// 音频简单播放器：播放/暂停 + 进度条 + 时间；加载/解码失败给错误态。
-class _AudioPlayer extends StatefulWidget {
-  const _AudioPlayer({required this.path});
+/// 顶级音频播放器：收敛进页面级播放服务单例（rich-text-media.md §6）——
+/// 自持 `AudioPlayer` 的旧实现已废，与行内 AudioBlock 共用 [MediaAudioBar]。
+class _AudioPlayer extends StatelessWidget {
+  const _AudioPlayer({required this.path, required this.itemId});
 
   final String path;
 
-  @override
-  State<_AudioPlayer> createState() => _AudioPlayerState();
-}
-
-class _AudioPlayerState extends State<_AudioPlayer> {
-  late final AudioPlayer _player = AudioPlayer();
-  final List<StreamSubscription<dynamic>> _subs = [];
-  Duration _position = Duration.zero;
-  Duration _duration = Duration.zero;
-  bool _playing = false;
-  String? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    _subs.add(_player.positionStream
-        .listen((p) => mounted ? setState(() => _position = p) : null));
-    _subs.add(_player.durationStream.listen((d) {
-      if (d != null && mounted) setState(() => _duration = d);
-    }));
-    _subs.add(_player.playerStateStream.listen((s) {
-      if (mounted) setState(() => _playing = s.playing);
-    }));
-    _player.setFilePath(widget.path).catchError((Object e) {
-      debugPrint('[AudioPlayer] load failed: $e');
-      if (mounted) setState(() => _error = '音频文件加载失败');
-      return Duration.zero;
-    });
-  }
-
-  @override
-  void dispose() {
-    for (final s in _subs) {
-      s.cancel();
-    }
-    _subs.clear();
-    _player.dispose();
-    super.dispose();
-  }
-
-  Future<void> _toggle() async {
-    try {
-      if (_playing) {
-        await _player.pause();
-      } else {
-        if (_player.processingState == ProcessingState.completed) {
-          await _player.seek(Duration.zero);
-        }
-        await _player.play();
-      }
-    } catch (e) {
-      if (mounted) setState(() => _error = '播放失败：$e');
-    }
-  }
+  /// 播放身份（页内稳定）。
+  final String itemId;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Container(
-      margin: const EdgeInsets.only(top: Insets.xs),
-      padding: const EdgeInsets.symmetric(horizontal: Insets.md, vertical: Insets.sm),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(Radii.md),
+    return Padding(
+      padding: const EdgeInsets.only(top: Insets.xs),
+      child: MediaAudioBar(
+        blockId: 'top-audio-$itemId',
+        source: path,
+        showSlider: true,
       ),
-      child: _error != null
-          ? Row(
-              children: [
-                Icon(Icons.error_outline, size: 18, color: theme.colorScheme.error),
-                const SizedBox(width: Insets.sm),
-                Expanded(child: Text(_error!, style: theme.textTheme.bodySmall)),
-              ],
-            )
-          : Column(
-              children: [
-                Row(
-                  children: [
-                    IconButton.filledTonal(
-                      onPressed: _toggle,
-                      icon: Icon(_playing ? Icons.pause : Icons.play_arrow),
-                    ),
-                    const SizedBox(width: Insets.xs),
-                    Expanded(
-                      child: Text(
-                        '音频 ${_fmtTime(_position)} / ${_fmtTime(_duration)}',
-                        style: theme.textTheme.bodySmall,
-                      ),
-                    ),
-                  ],
-                ),
-                if (_duration > Duration.zero)
-                  Slider(
-                    value: _position.inMilliseconds.toDouble()
-                        .clamp(0, _duration.inMilliseconds.toDouble()),
-                    onChanged: (v) =>
-                        _player.seek(Duration(milliseconds: v.round())),
-                  ),
-              ],
-            ),
     );
   }
 }
@@ -719,11 +662,12 @@ class _VideoPlayerState extends State<_VideoPlayer> {
       setState(() {
         _ready = true;
         _playing = _controller.value.isPlaying;
-        if (desc != null) _error = '视频文件加载失败';
+        // R1：失败原因原样给用户，不吞成统一文案
+        if (desc != null) _error = '视频文件加载失败：$desc';
       });
     }).catchError((Object e) {
       debugPrint('[VideoPlayer] initialize failed: $e');
-      if (mounted) setState(() => _error = '视频文件加载失败');
+      if (mounted) setState(() => _error = '视频文件加载失败：$e');
     });
   }
 

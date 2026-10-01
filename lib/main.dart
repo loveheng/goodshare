@@ -28,6 +28,7 @@ import 'data/db.dart';
 import 'data/repository.dart';
 import 'pages/home_shell.dart';
 import 'service/mcp_controller.dart';
+import 'share/attachments.dart';
 import 'share/share_intake.dart';
 import 'share/text_collector.dart';
 import 'sync/backup_service.dart';
@@ -43,6 +44,8 @@ Future<void> main() async {
     ..maximumSizeBytes = 100 << 20 // 100MB
     ..maximumSize = 500; // 缩略图体积小，允许较多条目常驻缓存
   final repo = Repository();
+  // 预热 documents 路径缓存：行内媒体 local:// 的渲染层同步解析依赖它（rich-text-media §2）
+  await warmDocumentsPath();
   // 预热数据库，避免首页先闪空态；顺带物理清理超过 30 天的已删条目
   await Db.instance();
   await repo.purgeDeleted();
@@ -138,6 +141,62 @@ Future<void> main() async {
   ));
 }
 
+/// mymind 视觉基准主题（ui-spec §2.1，2026-09-30 拍板）。
+///
+/// 恒定暗色 + 三阶色阶分层（底/卡/浮）+ 单一橘红强调色。dynamic_color /
+/// 明暗跟随已废弃，亮色模式不做。ColorScheme.dark 全量 override，M3 seed
+/// 派生色不再露出。
+///
+/// 主题唯一出口：全页面只准走 `colorScheme.*` 语义槽位，禁止私藏色值——
+/// 将来加新主题（如可爱风）= 复制本函数改名换值，一处生效全 App。
+ThemeData _mymindTheme() {
+  const scheme = ColorScheme.dark(
+    // 色阶三层：底（最深）→ 卡片 → 浮层（sheet/dialog）。
+    surface: Color(0xFF15171E),
+    surfaceContainerLowest: Color(0xFF101218),
+    surfaceContainerLow: Color(0xFF1C1F27),
+    surfaceContainer: Color(0xFF1C1F27),
+    surfaceContainerHigh: Color(0xFF242833),
+    surfaceContainerHighest: Color(0xFF2A2F3B),
+    // 单一强调色：橘红仅用于动作与选中（ui-spec §2.1）。
+    primary: Color(0xFFFF5A1E),
+    onPrimary: Color(0xFFFFFFFF),
+    primaryContainer: Color(0xFF3D1D0E),
+    onPrimaryContainer: Color(0xFFFFB59A),
+    secondary: Color(0xFFFF5A1E),
+    onSecondary: Color(0xFFFFFFFF),
+    // 文字色阶：暖白正文（非纯白），次级灰阶递减。
+    onSurface: Color(0xFFE8E4DC),
+    onSurfaceVariant: Color(0xFF9BA0AC),
+    outline: Color(0xFF3A3F4C),
+    error: Color(0xFFFF5370),
+    onError: Color(0xFFFFFFFF),
+    // errorContainer 必须显式覆写：M3 默认回落值与 error 同为粉色系，
+    // 「error 字 + errorContainer 底」的组合会粉底粉字隐身（详情删除胶囊实测）
+    errorContainer: Color(0xFF43111E),
+    onErrorContainer: Color(0xFFFFB3C0),
+  );
+  return ThemeData(
+    useMaterial3: true,
+    colorScheme: scheme,
+    scaffoldBackgroundColor: scheme.surface,
+    // Chip 家族全局胶囊化（ui-spec §2.3）：深色胶囊无边框、全圆角 pill、
+    // 选中即橘红填充——search_page/clip_editor/image_annotator 等一处覆盖。
+    chipTheme: ChipThemeData(
+      backgroundColor: scheme.surfaceContainerHigh,
+      selectedColor: scheme.primary,
+      disabledColor: scheme.surfaceContainer,
+      checkmarkColor: scheme.onPrimary,
+      labelStyle: TextStyle(color: scheme.onSurfaceVariant),
+      secondaryLabelStyle: TextStyle(color: scheme.onPrimary),
+      side: BorderSide.none,
+      shape: const StadiumBorder(),
+      showCheckmark: false,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+    ),
+  );
+}
+
 class GoodShareApp extends StatelessWidget {
   const GoodShareApp({
     super.key,
@@ -177,36 +236,8 @@ class GoodShareApp extends StatelessWidget {
           child: PrivacyBlurOverlay(child: child!),
         );
       },
-      // 2026-09-30 mymind 视觉基准（ui-spec §2.1）：恒定暗色 + 三阶色阶分层
-      // （底 / 卡 / 浮）+ 单一橘红强调色。dynamic_color / 明暗跟随已废弃；
-      // 亮色模式不做。ColorScheme.dark 全量 override，M3 seed 派生色不再露出。
-      darkTheme: ThemeData(
-        useMaterial3: true,
-        colorScheme: const ColorScheme.dark(
-          // 色阶三层：底（最深）→ 卡片 → 浮层（sheet/dialog）。
-          surface: Color(0xFF15171E),
-          surfaceContainerLowest: Color(0xFF101218),
-          surfaceContainerLow: Color(0xFF1C1F27),
-          surfaceContainer: Color(0xFF1C1F27),
-          surfaceContainerHigh: Color(0xFF242833),
-          surfaceContainerHighest: Color(0xFF2A2F3B),
-          // 单一强调色：橘红仅用于动作与选中（ui-spec §2.1）。
-          primary: Color(0xFFFF5A1E),
-          onPrimary: Color(0xFFFFFFFF),
-          primaryContainer: Color(0xFF3D1D0E),
-          onPrimaryContainer: Color(0xFFFFB59A),
-          secondary: Color(0xFFFF5A1E),
-          onSecondary: Color(0xFFFFFFFF),
-          // 文字色阶：暖白正文（非纯白），次级灰阶递减。
-          onSurface: Color(0xFFE8E4DC),
-          onSurfaceVariant: Color(0xFF9BA0AC),
-          outline: Color(0xFF3A3F4C),
-          error: Color(0xFFFF5370),
-          onError: Color(0xFFFFFFFF),
-        ),
-        scaffoldBackgroundColor: const Color(0xFF15171E),
-      ),
       // 恒定暗色：不跟随系统（ui-spec §2.1 拍板）。
+      darkTheme: _mymindTheme(),
       themeMode: ThemeMode.dark,
       home: HomeShell(
         repo: repo,

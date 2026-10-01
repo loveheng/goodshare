@@ -272,3 +272,55 @@ last-merge: 2026-09-30
 - [2026-09-30] [变更]: 真机侧载验收行内媒体块 MVP 五项全绿（用户逐项确认：图片首帧定版、双音频块互斥切换、.amr 降级文件卡、行内视频全屏浮层、滚动零跳动）。验收环境：桌面自建回环媒体服务器（python http.server:8766 + adb reverse，零外网依赖）+ 分享 intent 注入 markdown 验收条目；配套环境变更——pubspec 6006→6007（真机已有 6006 需覆盖安装）、AndroidManifest 挂 network_security_config（仅放行 127.0.0.1 回环明文，验收/桌面联调专用，外网仍强制 TLS）
 - [2026-09-30] [变更]: 修 firstUrl 尾部括号剥离（真机验收发现的真 bug）：url_extract 的 https?://\S+ 贪婪匹配把 markdown [a](url) 的结尾 ) 吃进 URL，OG 预取 404；改剥不配对尾部 )（配对括号的合法 URL 如维基词条不受影响），og_metadata_test 新增 firstUrl 3 例
 - [2026-09-30] [验证]: 真机人工五项确认全绿；flutter analyze → 0 issue；flutter test 全量 1 例闪失（long_text_phase Isolate 时序，单跑 11/11 绿排除回归）、og_metadata 13/13 绿（含新增 firstUrl 3 例）
+
+## [2026-09-30] 便签页多媒体编辑（作曲器）：媒体不分散保存（用户四点拍板落地）
+- 需求与拍板：便签内文本/图片/录音混排且保存为**一个**条目不分散（视频 V2）。四点裁决——①本地行内媒体 url=`local://<documents 内相对路径>` 相对标记（绝不写绝对路径，推翻 rich-text-media.md 原「本地一律顶级附件」并修订 SSOT §2/§5/§7；resolver 见 attachments.dart 的 resolveLocalMediaSrc）②拍照/录音语义反转：直接出独立卡片→**就地插入本条** ③含媒体便签豁免合并窗口（合并链只对纯文本成立）④MVP 不含视频。
+- 落地：`lib/share/note_composer.dart` 重写为段模型（NoteText/Image/AudioSegment）+ `serializeNoteMd`（标准 md 媒体行，三出口护栏继承；旧 appendix 语音段骨架经查零调用方，一并 supersede）；`quick_note_bar` 展开态改**分段作曲器**——媒体在光标处拆段插入、媒体后恒有文本段、MediaAudioBar 复用（便利贴作用域 AudioPlaybackService，单实例红线不破）、草稿静态留存含媒体段、移除媒体段删私有副本文件（孤儿防线）；`InlineMediaImage` 本地文件支持（FileImage 首帧探测同一定版机制 + GoodshareImage.file）；保存路由：纯文本走 `TextCollector.collectText`（合并窗口不变）/ 含媒体直发 `CollectCommand(note, scatter, humanTitle=首文本行兜底「图文便签」)`。
+- 测试踩坑（重要）：①widget 测试内 sqflite_ffi 写链在 FakeAsync 下推不完——需「`runAsync` 放行真实时钟 → `pump` 推假区微任务」**交替循环**到 UI 反馈出现，单独任一都卡死（pumpAndSettle 10 分钟超时的根源）；②`record` 插件 `AudioRecorder` 构造的异步 MissingPluginException 落在「测试完成后」误判用例失败——setUpAll mock 其方法通道（com.llfbandit.record/messages）。
+- 验证：analyze 0 / 全量 309 绿 / arch-guard 7 条过（R4 抓作曲器裸 Image.file→改 GoodshareImage）/ docs-lint OK。文档联动：rich-text-media.md §2 写入口径修订 + §5 排期（MVP+ 便利贴作曲器）+ §7 验收行；ui-spec §4.6 便利贴多媒体语义（顺带修正落后于便利贴改版的旧「纯速记常驻条」描述）。真机待验：拍照/相册/录音插入→保存一条→详情混排渲染→草稿跨 Activity 重建恢复。
+
+---
+
+## [2026-09-30] 文档口径统一到 local://（后台跑全量）
+
+- 背景：`rich-text-media.md` §2 与代码（note_composer.dart 写入口径 + attachments.dart 的 `resolveLocalMediaSrc`/`toLocalMediaSrc`）早已采用 `local://<documents 内相对路径>` 相对标记、绝不写绝对路径；但 ui-spec §4.6 仍残留「url = app 私有目录绝对路径，与 `rawFilePath` 同口径」旧口径，与 SSOT 矛盾。index 等位置的 `rawFilePath` 是**条目主附件字段**（inbox_items.raw_file_path），属不同概念，不动。
+- 修正：`docs/design/ui-spec.md` §4.6 行内媒体 url 口径改为 `local://` 相对标记；`context/epics/goodshare/memory.md` 进度行与 `devlog.md` 便签作曲器条目①的「绝对路径/rawFilePath 同口径」同步改为 `local://` 相对标记，全口径对齐 SSOT 与代码。
+- 验证：后台脱离终端跑 `flutter test`（日志 /tmp/gs_test_full.log）→ **全量 314 绿**（All tests passed!）；analyze 0 issue 未跑（本批仅文档改动，无 Dart 代码）。
+
+## [2026-10-01] 便签内嵌视频（附件态）落地：双路径 + 门槛校验
+- 拍板（评估轮用户三裁决）：①非 MP4 策略=**扩大原生白名单 mp4/mov 直入库不转码**，.webm/.avi/.mkv 等硬拦截提示「暂不支持该格式」，**彻底抛弃 FFmpeg 软编软解**（将来压缩走系统硬件编码器另期）②封面=沿用图标占位卡（封面提取维持 V2，todo #37）③相册大小阈值=100MB。
+- 落地：新建 `lib/share/note_video_policy.dart`（门槛常量集中：60s 直拍 maxDuration / 5min 相册非阻断 / 100MB 拦截 / mp4/mov 白名单；`checkNoteVideoAlbum` 后置校验 + `probeVideoDurationMs` 走 FFprobeKit 只读元数据——probe 非 decode，不违拍板）；`note_composer.dart` 增 NoteVideoSegment（默认 label「视频」，序列化 `[label](local://…)` 命中 parse 视频白名单）；`quick_note_bar.dart`：_MediaSeg 的 bool audio 升三态 NoteMediaKind(image/audio/video) + 草稿行 'v' 编码 + 视频入口按钮→二选一 BottomSheet（相册首位）→_pickVideoWithGate 统一校验（拦截类 SnackBar、>5min AlertDialog「仍要添加」）+ 视频占位卡（保存后详情页 VideoBlock 全屏浮层播放）。
+- 验证：analyze 0 / 全量 315 绿（note_composer_test 增视频段序列化 + parse 回块树 VideoBlock 用例）。真机待验：相册选 mp4/mov/边缘格式三分支、直拍 60s 自动停、>5min 提示流、草稿含视频段跨 Activity 重建、保存后详情浮层播放。
+- SSOT 修订：note-video.md §2 格式行（mp4/mov 白名单拍板）、§6（SAF 前置实测可跳过：image_picker 本身复制进沙箱=即降级预案）、§7 落点补 note_video_policy.dart；todos #11 完成勾销。
+
+## [2026-10-01] 真机验收反馈修复：视频门槛通过不插入（null 语义误解）+ 三项连带
+- 现象（真机首轮验收）：①test.mp4/test.mov 相册添加后**无视频卡** ②保存后详情点视频「视频加载失败」 ③用户提议草稿态视频应可预览确认。
+- 取证路径：uiautomator dump 对 Flutter 语义不可见 → run-as 拉 DB + shares 目录对账 → ffmpeg 体检设备上文件。**「加载失败」根因是测试媒体本身**——首轮生成的 long_330s.mp4 被 libx264 编成 h264 High 4:4:4（yuv444p），Android 硬解不支持；test.mp4 有 `-pix_fmt yuv420p` 所以没问题。教训：**造测试媒体必须显式 `-pix_fmt yuv420p`**（testsrc 源在 ultrafast 下会被选成 yuv444p）。
+- 真 bug ①（无视频卡）：`checkNoteVideoAlbum` 约定「返回 null = 校验通过」，但 `_pickAlbumVideo`/`_captureVideo` 把 null 当「已取消」直接 return——mp4/mov 通过校验后**从不执行插入**，只有 >5min 非空 check 走弹窗后插得进去。修法：null 分支显式 `_insertCheckedVideo()`；gate 入口清 `_pendingVideoPath` 陈值（取消/失败不得残留上一次待插路径）。
+- 真 bug ②（孤儿副本）：白名单外 .webm 拦截前已 `copyToAppDir`，设备实测确认遗留孤儿。修法：拦截类 SnackBar 后异步删除已拷副本（[DEGRADE] 留痕）；顺手 run-as 清掉设备上 10 个测试孤儿。
+- 增强：作曲器视频卡**点按可预览**（用户提议）——复用详情同一全屏播放器与 `local://` 链路，草稿态即给「添加了什么、能不能播」的确认机会；播放器失败文案带真实原因（R1，media_blocks 与 item_view_template 两处），yuv444p 这类硬解问题用户可直接看到。
+- 测试：quick_note_bar_test 新增 2 用例（mp4 通过即插入 / webm 拦截提示+无孤儿副本）。踩坑：①ffmpeg_kit 事件通道 `flutter.arthenica.com/ffmpeg_kit_event` 在测试环境无实现，listen 的 MissingPluginException **逃逸出** probeVideoDurationMs 的 try/catch（异步事件回调抛出），setUpAll mock 之 ②unawaited 的删除链是 FakeAsync 区续体，断言须 runAsync（真实 IO）+ pump（微任务）交替推进——与保存路由用例同口径 ③草稿静态留存跨用例泄漏（有意设计），用例顺序敏感：拦截用例须先于插入用例。
+- 验证：analyze 0 / 全量 317 绿 / arch-guard 7 条 / docs-lint OK。真机已装 6007 修复版、yuv420p 测试媒体已重推、孤儿已清。真机待复验：mp4/mov 添加出卡、直拍、>5min 确认流、100MB 拦截、草稿预览、详情播放。
+
+## [2026-10-01] 60s 直拍进度感知：自建拍摄页＋进度环（用户拍板）
+- 动因：用户提出「拍摄 60s 自动停放个进度条，用户可以明确感知」。评估发现**原系统相机路径做不了**——image_picker 拉系统相机（源码实锤：ACTION_VIDEO_CAPTURE + MediaStore.EXTRA_DURATION_LIMIT），录制界面是相机 Activity，Android 不允许普通 App 在其上叠 UI；系统相机自带计时无倒计时、被掐断无预告。三选一（保持系统相机 / 记入待办 / 自建拍摄页）经用户拍板选**自建拍摄页＋进度环**。
+- 落地：新增 `camera ^0.12.1` 官方插件（用户批准）+ `lib/ui/note_video_capture_page.dart`——取景器（后摄优先）+ 快门单键复用（未录=白圆键启动录制 / 录制中=外圈 60s 进度环 CircularProgressIndicator(value:) + 红色停止方块）+ 「剩余 m:ss」倒计时 + 100ms ticker 到点自动停（camera 0.12 startVideoRecording 无 maxDuration 参数，自动停归我们定时器）+ 取消先停录并删 cache 临时文件防孤儿 + CameraException 分支给可行动文案（权限拒绝→引导系统设置，R1）。页面只产 ≤60s mp4 路径 pop 回作曲器，白名单/大小/时长门槛照走 `_pickVideoWithGate` 统一链，本页零写库。
+- 测试（test/note_video_capture_test.dart 2 用例）：fake `CameraPlatform` 桩（availableCameras/createCameraWithSettings/事件流/initializeCamera 补发 CameraInitializedEvent/startVideoCapturing/stopVideoRecording/buildPreview——**buildPreview 不是 buildView**，0.12 已改名）覆盖错误态渲染与直拍闭环（假时钟 pump 60s 验自动停+路径回传）。踩坑：①真相机平台通道在 FakeAsync 不完成（spinner 恒转、错误态不落地），probe 实证后与 sqflite 同口径 runAsync+pump 交替 ②`camera_platform_interface` 直接 import 须声明 dev 依赖（depend_on_referenced_packages）。
+- 验证：analyze 0 / 全量 319 绿 / debug 构建 ✓ / 真机 6007 覆盖安装、重启无崩溃。真机待验：自建拍摄页取景器、进度环走满 60s 自动停、提前停、取消丢弃、拍完直接出卡。
+
+## [2026-10-01] 直拍页微调：去倒计时文案（用户拍板）+「斜黄条」取证
+- 拍摄页录制中「剩余 m:ss」文案按用户拍板移除——进度环是时间的唯一表达（外圈走满 = 60s 自动停），快门红方块/圆键语义不变；回归测试同步改为 findsNothing。
+- 「拍摄的视频播放后出现斜黄条」取证（不盲改）：拉真机所拍 1790826820381.mp4（16.2s, h264 High, yuvj420p, 1280x720）逐帧体检——单帧、末 3 秒帧、全片 8 帧拼图三路核对，斜向暖色光带 16s 全程纹丝不动、无块状伪影、无跳变 → **文件本身完好，「斜黄条」录在内容里**（暗光下失焦光源/近距遮挡的镜头画面），非解码/播放损坏。判据沉淀：视频疑似损坏先抽帧对时间线（fps=1/2 tile 拼图），内容静止≠损坏；若真机复验发现「取景器所见 ≠ 录得内容」才是 CameraX 曝光/对焦链路问题，另案处理。
+- 验证：analyze 0 / 拍摄页 2 用例绿 / debug 构建覆盖安装 ✓
+
+## [2026-10-01] 「斜黄条」真凶定位与修复：两处布局溢出警示条（非视频损坏）
+- 迭代取证（三轮推翻）：①先判「测试媒体 yuv444p」→那是上一条「加载失败」的因，不是黄条 ②再抽帧判「内容如此」→错（暗视频里的暖色光带是巧合撞脸）③最终 **adb 驱动真机复现**：screencap 逐屏导航（tap 坐标按 1272 物理宽换算），打开视频详情播放 → 截图实拍 **黄黑斜纹 + "BOTTOM OVERFLOWED BY 6.4 PIXELS"** ——Flutter 调试态溢出警示条，release 不显示但内容被裁。教训：**真机可连时优先 adb+screencap 亲自复现，别停在文件取证推理**；uiautomator dump 对 Flutter 语义为空，但 screencap+坐标 tap 全程可驱动。
+- 溢出点 1（用户所见）：`_InlineVideoPlayerPage` 全屏播放页 Column `mainAxisAlignment: center`——竖版视频 VideoPlayer 高约 588dp（宽 331dp×16/9）+控制行 > 屏高，溢出 6.4px。修：视频区 Expanded+Center（AspectRatio letterbox），控制行钉底。
+- 溢出点 2（连带发现）：详情底栏 `_actionBar` Row 5 项胶囊——**本机逻辑屏宽仅 331dp**（1272px/DPR 3.84，非预想的 462dp），超宽 34px。修：Row→**Wrap**（贪心换行 spaceAround）。⚠️ 两个误改教训：**OverflowBar 不是换行**——放不下时「每项各占一行」竖排（AlertDialog 动作语义），真机上 5 项变 5 行；**BottomAppBar 把子级高度钉死**（探针实测 h=56），两行必竖向溢出——最终 Material+SafeArea+Wrap 自适应高度。
+- 连带修配色：主题未覆写 errorContainer，M3 默认回落值与 error 同粉系——删除胶囊「error 字 + errorContainer 底」粉底粉字隐身（旧版被裁切看不出来）。补 errorContainer 0xFF43111E / onErrorContainer 0xFFFFB3C0。
+- 取证工具沉淀：LayoutBuilder debugPrint 约束（logcat 按 pid 过滤）定位 w=331.4/h=56；screencap 全程目击。analyze 0 / 全量 319 绿 / 装机后截图复验：底栏 4+1 换行、删除胶囊清晰、播放页无斜纹。
+
+## [2026-10-01] 真机验收闭环：便签内嵌视频 + 作曲器全部项目完成（用户确认）
+- 用户逐项复验全绿：相册 mp4/mov 出卡、webm/big 拦截、>5min 确认流、直拍自建拍摄页（进度环+60s 自动停+去倒计时文案）、草稿视频卡点按预览、详情浮层播放、作曲器混排保存。断点①②销项。
+- 里程碑提交：本轮全部变更（便签视频双路径+自建拍摄页+验收修复批）入库。
+- 剩余前轮遗留：返回手势三态与引用模式 SAF 真机验收；自主下一项=超长文本 Phase 2。

@@ -14,6 +14,7 @@ import '../models/item.dart';
 import '../service/secure_window.dart';
 import '../ui/content_card.dart';
 import '../ui/clip_editor_sheet.dart';
+import '../ui/audio_playback_service.dart';
 import '../ui/block_editor_dialog.dart';
 import '../ui/draft_controller.dart';
 import '../ui/item_view_template.dart';
@@ -148,6 +149,10 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   EditDraft? _editDraft;
   StreamSubscription<AppLifecycleState>? _lifecycleSub;
 
+  /// 页面级音频播放控制器（rich-text-media.md §3 单实例红线）：唯一
+  /// AudioPlayer 实例，行内 AudioBlock 与顶级音频区共用；离开页面即释放。
+  final _audioPlayback = AudioPlaybackController();
+
   /// 机器态开关：由 AppBar `⋯` 菜单控制（双态入口保留但降权，不在正文流里常驻）。
   bool _machineMode = false;
 
@@ -167,6 +172,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   @override
   void dispose() {
     _lifecycleSub?.cancel();
+    _audioPlayback.dispose();
     if (widget.vaultContext) unawaited(SecureWindow.exitVaultDetail());
     super.dispose();
   }
@@ -246,6 +252,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
       markdown: originalBody,
       titleField: _editDraft!.title.text,
       tldrField: _editDraft!.tldr.text,
+      // 编辑态音频预览可播：透传页面级播放控制器（rich-text-media.md §4）
+      audioPlayback: _audioPlayback,
       // 过程草稿同步：块变更即回写 body 草稿（退后台 flush 已由页面生命周期承担）
       onChanged: (md) => _editDraft!.body.text.text = md,
     );
@@ -343,9 +351,12 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
       // 以 SliverList 虚拟化，数万字长文只构建可视区 widget。
       // 跨块文本选择：正文区统一包 SelectionArea（rich-text-component.md §3），
       // 块内为普通 Text，长按拖拽即可跨块复制。
-      body: SelectionArea(
-        child: CustomScrollView(
-          slivers: [
+      // 页面级音频播放服务作用域：行内 AudioBlock / 顶级音频区共用唯一播放器
+      body: AudioPlaybackService(
+        controller: _audioPlayback,
+        child: SelectionArea(
+          child: CustomScrollView(
+            slivers: [
             const SliverPadding(
                 padding: EdgeInsets.fromLTRB(Insets.xl, Insets.md, Insets.xl, 0)),
             ...ItemViewTemplate(item: _item, machineMode: _machineMode)
@@ -366,7 +377,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
               child: PoeticText(sloganFor(SloganKeys.detailFooter),
                   large: false, align: TextAlign.center),
             ),
-          ],
+            ],
+          ),
         ),
       ),
       // 基本操作条（5 项，全类型固定）：摘要 / 标签 / 工作区 / 分享 / 删除
@@ -378,53 +390,71 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   ///
   /// 摘要与标签是重操作，须带任务状态反馈（见 `_AiTaskStatusLine`），
   /// 且仅在有正文时可用——无正文跑模型必然空产出。
+  ///
+  /// Wrap 而非 Row：本机逻辑屏宽仅 331dp（1272px / DPR 3.84），5 项胶囊约
+  /// 365dp 固定单行必溢出——Row 溢出在调试态画黄黑斜纹警示条、release 直接
+  /// 裁切（2026-10-01 真机「斜黄条」即此，非视频损坏）。Wrap 贪心换行、
+  /// 高度自适应；不用 OverflowBar——它放不下时是「每项各占一行」的竖排
+  /// （AlertDialog 动作语义），不是换行；不用 BottomAppBar——它把子级高度
+  /// 钉死（实测 h=56），两行必竖向溢出。
   Widget _actionBar() {
     final canProcess = _item.bodyText.trim().isNotEmpty;
-    return BottomAppBar(
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
-        children: [
-          _barAction(
-            icon: Icons.summarize_outlined,
-            label: '摘要',
-            enabled: canProcess,
-            onPressed: () => _run(
-              () => widget.handler.execute(
-                SummarizeCommand(_item.id!),
-                vaultContext: widget.vaultContext,
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+              horizontal: Insets.sm, vertical: Insets.xs),
+          child: Wrap(
+            alignment: WrapAlignment.spaceAround,
+            runAlignment: WrapAlignment.center,
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _barAction(
+                icon: Icons.summarize_outlined,
+                label: '摘要',
+                enabled: canProcess,
+                onPressed: () => _run(
+                  () => widget.handler.execute(
+                    SummarizeCommand(_item.id!),
+                    vaultContext: widget.vaultContext,
+                  ),
+                  '已开始生成摘要',
+                ),
               ),
-              '已开始生成摘要',
-            ),
-          ),
-          _barAction(
-            icon: Icons.sell_outlined,
-            label: '标签',
-            enabled: canProcess,
-            onPressed: () => _run(
-              () => widget.handler.execute(
-                ExtractTagsCommand(_item.id!),
-                vaultContext: widget.vaultContext,
+              _barAction(
+                icon: Icons.sell_outlined,
+                label: '标签',
+                enabled: canProcess,
+                onPressed: () => _run(
+                  () => widget.handler.execute(
+                    ExtractTagsCommand(_item.id!),
+                    vaultContext: widget.vaultContext,
+                  ),
+                  '已开始提取标签',
+                ),
               ),
-              '已开始提取标签',
-            ),
+              _barAction(
+                icon: Icons.workspaces_outlined,
+                label: '工作区',
+                onPressed: _workspaceHint,
+              ),
+              _barAction(
+                icon: Icons.share_outlined,
+                label: '分享',
+                onPressed: _share,
+              ),
+              _barAction(
+                icon: Icons.delete_outline,
+                label: '删除',
+                danger: true,
+                onPressed: _confirmDelete,
+              ),
+            ],
           ),
-          _barAction(
-            icon: Icons.workspaces_outlined,
-            label: '工作区',
-            onPressed: _workspaceHint,
-          ),
-          _barAction(
-            icon: Icons.share_outlined,
-            label: '分享',
-            onPressed: _share,
-          ),
-          _barAction(
-            icon: Icons.delete_outline,
-            label: '删除',
-            danger: true,
-            onPressed: _confirmDelete,
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -437,27 +467,33 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     bool danger = false,
   }) {
     final scheme = Theme.of(context).colorScheme;
-    final color = danger ? scheme.error : scheme.onSurfaceVariant;
-    final effective = enabled ? color : scheme.outline;
+    // mymind 底栏形态（ui-spec §4.3）：胶囊操作项——icon+label 横排，
+    // 深色胶囊底；danger（删除）粉底 errorContainer + error 字（截图 Delete）。
+    final fg = !enabled
+        ? scheme.outline
+        : danger
+            ? scheme.error
+            : scheme.onSurfaceVariant;
+    final bg = danger && enabled
+        ? scheme.errorContainer
+        : scheme.surfaceContainerHigh;
     return InkWell(
       onTap: enabled ? onPressed : null,
-      borderRadius: BorderRadius.circular(Radii.md),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(
-          horizontal: Insets.sm,
-          vertical: Insets.xs,
-        ),
-        child: Column(
+      customBorder: const StadiumBorder(),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: ShapeDecoration(color: bg, shape: const StadiumBorder()),
+        child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 22, color: effective),
-            const SizedBox(height: 2),
+            Icon(icon, size: 18, color: fg),
+            const SizedBox(width: 6),
             Text(
               label,
               style: Theme.of(context)
                   .textTheme
                   .labelSmall
-                  ?.copyWith(color: effective),
+                  ?.copyWith(color: fg),
             ),
           ],
         ),
@@ -693,6 +729,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   }
 
   /// 末尾来源小字（把「从哪来、什么时候」说清楚）。
+  /// mymind 形态（ui-spec §4.3）：居中、更弱化（outline 色，仅存档感）。
   Widget _sourceLine() {
     final parts = <String>[
       if (_item.sourceApp?.isNotEmpty ?? false) _item.sourceApp!,
@@ -703,10 +740,10 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
       padding: const EdgeInsets.only(top: Insets.lg),
       child: Text(
         parts.join(' · '),
-        style: Theme.of(context)
-            .textTheme
-            .bodySmall
-            ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+        textAlign: TextAlign.center,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.outline,
+            ),
       ),
     );
   }

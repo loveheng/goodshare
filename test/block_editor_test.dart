@@ -34,6 +34,11 @@ void main() {
     test('多项列表（标记往返）', () => expectRebuildStable('- 甲\n- [ ] 乙\n- [x] 丙'));
     test('有序列表', () => expectRebuildStable('1. 甲\n2. 乙'));
     test('分隔线', () => expectRebuildStable('前段\n\n---\n\n后段'));
+    test('媒体块（alt/label 编辑往返，rich-text-media.md §4）', () {
+      expectRebuildStable('![说明图](https://a.com/x.jpg)');
+      expectRebuildStable('[备注语音](https://a.com/y.mp3)');
+      expectRebuildStable('[演示视频](https://a.com/z.mp4)');
+    });
 
     test('编辑文本改动反映到重建块', () {
       final p = parser.parse('原始段落').first;
@@ -44,6 +49,19 @@ void main() {
     test('编辑为空白 → 返回 null（删除块）', () {
       final p = parser.parse('原始段落').first;
       expect(rebuildBlock(p, '   '), isNull);
+    });
+
+    test('媒体块编辑 alt/label：清空文本不删块（url 是内容本体）', () {
+      final audio = parser.parse('[备注语音](https://a.com/y.mp3)').first;
+      final renamed = rebuildBlock(audio, '会议录音') as AudioBlock;
+      expect(renamed.label, '会议录音');
+      expect(renamed.url, 'https://a.com/y.mp3');
+      final cleared = rebuildBlock(audio, '') as AudioBlock;
+      expect(cleared.url, 'https://a.com/y.mp3'); // 块不因 label 清空而删除
+      final img = parser.parse('![说明图](https://a.com/x.jpg)').first;
+      final alt = rebuildBlock(img, '新说明') as ImageBlock;
+      expect(alt.alt, '新说明');
+      expect(alt.url, 'https://a.com/x.jpg');
     });
 
     test('单项待办勾选态可切换', () {
@@ -223,6 +241,93 @@ void main() {
       await tester.tap(find.byType(CloseButton));
       await tester.pumpAndSettle();
       expect(await saved!, isFalse);
+    });
+  });
+
+  group('粘贴多段拆块（单次变更插入 \\n\\n 才拆）', () {
+    Future<void> openEditor(WidgetTester tester, String markdown, List<String> changed) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: FilledButton(
+              onPressed: () => showBlockEditorDialog(context, markdown: markdown, onChanged: changed.add),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('粘贴多段文本拆成多块，激活尾块（光标在粘贴文本后）', (tester) async {
+      final changed = <String>[];
+      await openEditor(tester, '首段', changed);
+      await tester.tap(find.text('首段'));
+      await tester.pumpAndSettle();
+      // 一次变更 = 一次粘贴：插入片段含 \n\n
+      await tester.enterText(find.byType(TextField).last, '首段A\n\n中段\n\n尾段B');
+      await tester.pumpAndSettle();
+
+      // 首段并入当前块（阅读态），中段成新块，尾块保持激活（编辑态）
+      expect(find.text('首段A'), findsOneWidget);
+      expect(find.text('中段'), findsOneWidget);
+      expect(find.text('尾段B'), findsOneWidget); // EditableText（激活尾块）
+      expect(find.byType(TextField), findsNWidgets(3)); // 标题 + TL;DR + 尾块
+
+      await tester.tap(find.byIcon(Icons.check));
+      await tester.pumpAndSettle();
+      expect(changed.last, '首段A\n\n中段\n\n尾段B');
+    });
+
+    testWidgets('粘贴在光标处且光标后有原文：原文归尾块，光标停在原文之前', (tester) async {
+      final changed = <String>[];
+      await openEditor(tester, '尾后文', changed);
+      await tester.tap(find.text('尾后文'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField).last, 'A\n\n尾后文');
+      await tester.pumpAndSettle();
+
+      expect(find.text('A'), findsOneWidget); // 当前块（阅读态）
+      expect(find.text('尾后文'), findsOneWidget); // 尾块（编辑态）
+      await tester.tap(find.byIcon(Icons.check));
+      await tester.pumpAndSettle();
+      expect(changed.last, 'A\n\n尾后文');
+    });
+
+    testWidgets('手敲两次回车（逐事件单个 \\n）不拆块', (tester) async {
+      final changed = <String>[];
+      await openEditor(tester, '首段', changed);
+      await tester.tap(find.text('首段'));
+      await tester.pumpAndSettle();
+      // 模拟逐键输入：每次事件只插入一个字符
+      await tester.enterText(find.byType(TextField).last, 'a');
+      await tester.pump();
+      await tester.enterText(find.byType(TextField).last, 'a\n');
+      await tester.pump();
+      await tester.enterText(find.byType(TextField).last, 'a\n\n');
+      await tester.pump();
+      await tester.enterText(find.byType(TextField).last, 'a\n\nb');
+      await tester.pumpAndSettle();
+
+      // 未拆块：仍只有一个激活块，文本完整保留，无阅读态新块
+      expect(find.text('a\n\nb'), findsOneWidget);
+      expect(find.text('b'), findsNothing);
+    });
+
+    testWidgets('粘贴内容全是空白段：块被清空，退出编辑态', (tester) async {
+      final changed = <String>[];
+      await openEditor(tester, '首段', changed);
+      await tester.tap(find.text('首段'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField).last, '\n\n');
+      await tester.pumpAndSettle();
+
+      // 当前块清空删除、无尾块 → 退出编辑态，仅剩标题 + TL;DR 两个输入框
+      expect(find.byType(TextField), findsNWidgets(2));
+      await tester.tap(find.byIcon(Icons.check));
+      await tester.pumpAndSettle();
+      expect(changed.last, isEmpty);
     });
   });
 }

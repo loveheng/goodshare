@@ -275,5 +275,34 @@ void main() {
 
       await dir.delete(recursive: true);
     });
+
+    test('行内媒体（human_md 内 local:// 标记）随条目进备份；视频源排除不波及', () async {
+      final dir = await Directory.systemTemp.createTemp('inline_media_backup_test');
+      final shares = Directory(p.join(dir.path, 'shares'))..createSync(recursive: true);
+      File(p.join(shares.path, 'note1.jpg')).writeAsStringSync('img');
+      File(p.join(shares.path, 'note1.m4a')).writeAsStringSync('aud');
+
+      final items = [
+        // 作曲器便签：无 rawFilePath，媒体只活在 human_md 里
+        InboxItem(
+            id: 'note1',
+            itemType: InboxItem.typeNote,
+            humanMd: '前文\n\n![拍照](local://shares/note1.jpg)\n\n'
+                '[录音](local://shares/note1.m4a)',
+            createdAt: 1),
+        InboxItem(
+            id: 'note2',
+            itemType: InboxItem.typeNote,
+            humanMd: '无媒体便签',
+            createdAt: 2),
+      ];
+      final files = await collectBackupFiles(items: items, vaultIds: {}, docsPath: dir.path);
+      final rels = files.map((f) => f.rel).toSet();
+
+      expect(rels, contains('shares/note1.jpg'), reason: '行内图片进备份');
+      expect(rels, contains('shares/note1.m4a'), reason: '行内录音进备份');
+      expect(files.where((f) => f.rel == 'shares/note1.jpg').single.itemId, 'note1');
+      await dir.delete(recursive: true);
+    });
   });
 }

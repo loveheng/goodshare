@@ -2,8 +2,8 @@
 dev-loop: memory
 format: v1
 epic: goodshare
-total-merged: 5
-last-merge: 2026-09-29
+total-merged: 8
+last-merge: 2026-09-30
 ---
 
 # goodshare · Android 分享收集器 + 内嵌 MCP 服务
@@ -96,7 +96,8 @@ last-merge: 2026-09-29
 - [2026-09-30] 顶栏自动隐显 + 工作区卡片化（D1/D2 台账确认后落地）：**D1**=全部页顶栏并入滚动流（SliverAppBar floating+snap 非 pinned 非 overlay，CustomScrollView+SliverMasonryGrid）——向下滚内容（继续阅读）隐藏、向上滚轻微反向即弹回、顶部恒显示；方向判定由滚动位置天然驱动无需手写阈值；保险箱视图与搜索页不参与。**D2**=工作区两层卡片化——列表层 2 列卡片网格（卡=工作区：名字+条目数+封面拼贴最多 3 图，无图退首条 preview、空区图标兜底），条目层瀑布流双列与全部页同语言；工作区预览逐区取条目（数量通常个位数可接受）。设计共识=「读模式收 chrome、找模式亮 chrome」，顶栏隐显与 FAB 迁拇指区/便利贴工具层常驻同属「chrome 为内容让路」原则。ui-spec §4.2/§4.11 同步并清理搜索页改版前残留（chips 固定区/旧缩略图行）。analyze 0 / test 213 绿 / docs-lint OK
 
 ## 断点
-- [断点] 下一步：视觉元数据前置 V1/V2/V3 全部完成全绿待提交；下一步 MCP 桌面端文档登记 og.v1/color.v1 约定或真机侧载验收（便利贴手感/批 B 块编辑/OG 卡片/主色占位）；长文本 Phase 2/3/4（分块/Isolate/向量 RAG）待做
+- [断点] ✅ 已完成（2026-10-01 用户确认）：便签内嵌视频双路径真机验收全绿（相册门槛三分支/直拍自建拍摄页+进度环/草稿预览/详情播放/作曲器混排）——验收过程中连带修复：校验通过不插入、孤儿副本、yuv444p 测试媒体、播放页与详情底栏两处溢出警示条（「斜黄条」真身）、errorContainer 撞色隐身
+- [断点] 下一步：①前轮遗留真机验收——返回手势三态（详情返回回列表/根页返回退 App/预测性返回）与引用模式 SAF（takePersistableUriPermission 跨会话可达性，分享一个文件实测）②自主下一项=超长文本 Phase 2 归一化分块（todos 已挂）
 
 ## 进度（追加 6）
 - [2026-09-30] 面板头部锚定（用户拍板两轮：先 B1 搜索框水平带+sm，后看真机改「顶到状态栏」）：展开态顶缘 = 状态栏下沿，topInset = statusBar——状态栏高度改取 View 原始 padding（Scaffold 消费 body 的 MediaQuery.padding 是「避让失效」根因）+ _morphSheet 静止展开分支补显式 height。回归 test/quick_note_topbar_test.dart。analyze 0 / test 219 绿
@@ -113,3 +114,22 @@ last-merge: 2026-09-29
 
 ## 进度（追加 7）
 - [2026-09-30] 富文本行内媒体块设计定稿（rich-text-component.md 正由另一 AI 开发，独立成文 docs/design/rich-text-media.md，status: draft）：Image/Audio/Video 三块类型齐做（用户拍板：人往富文本插音频也插视频），三出口齐全、serialize 走标准 md 链接 MCP 零感知；顶级媒体与行内媒体块边界划分（顶级已在调用层，不涉及）；插入链路分期——音频插入 MVP 先行，图片/视频上传 V2；顺带修 ![alt](url) 现渲染成「!+链接」的降级 bug。README 索引 + devlog 已记。**未动任何代码**，实施排期待批 B 后。
+
+## 进度（追加 8）
+- [2026-09-30] 富文本组件批 A 收尾：item_view_template 两处自建 SliverList 收敛到 contentSlivers；规则层新增 serializeInline/serializeBlock/serializeBlocks 出口（含行内字面转义 `\X`、相邻文本节点归并，parse↔serialize 互逆）；往返单测 11 条；L0 抹除——编辑 sheet 用户可见文案去「Markdown」字样。analyze 0 / test 229 绿
+- [2026-09-30] 富文本批 B 结构化块编辑：新建 `block_editor_dialog.dart`（fullscreen dialog 块列表编辑器：Tap-to-Edit 单激活态、块类型映射编辑 widget——待办 Checkbox/引用左竖线/代码等宽、上移下移删除、其后插入、末尾添加块、新块抢焦点）+ 详情页编辑入口由 BottomSheet 源码 TextField 改块编辑器（UpdateItemCommand 契约不变）；块↔编辑文本映射纯函数 blockEditText/rebuildBlock——预填走 serializeInline 而非 blockToPlain，防行内样式静默压平（数据无损防线）。test 251 绿
+- [2026-09-30] 视觉元数据前置 V1 尺寸前置：`image_aspect.dart` probeImageAspect（ImageDescriptor.encoded 只解析图片头取宽高比，不整图解码，失败 null 降级）→ CollectCommand.aspectRatio → 专用列 inbox_items.aspect_ratio（schema v15 幂等迁移；弃 machineJson 方案——AI 回写整替会冲掉摄入元数据）；详情图与 ContentCard 渲染 AspectRatio+占位底色，无比例存量退旧路径。test 257 绿
+- [2026-09-30] 视觉元数据 V2 OG 富化：url_extract 新增 OG 三纯函数（property/name 双写法、og.v1 schema 只留非空字段、渲染侧读取）+ og.v1 登记 machine_json_validator；详情页拆 _urlView——OG 卡片（封面失败整块隐藏+站点名/标题/描述）+ 正文照常。test 267 绿
+- [2026-09-30] 视觉元数据 V3 主色调：新依赖 palette_generator（经用户确认）；`palette_reconstructor.dart` PaletteReconstructor（仅 image+extract_palette 认领、64px 降采样量化取 dominantColor、20s 超时/失败占位完成不置死信）+ color.v1 登记；GoodshareImage.placeholderColor（frameBuilder 首帧前铺主色）+ ContentCard/详情图接入；顺带补 GoodshareImage.network 网络图出口收敛（arch-guard R4 正则补前缀断言修子串误报）。test 274 绿
+- [2026-09-30] 视觉改版 mymind 令牌落地（两批次，ui-spec §2 拍板「旧审美作废」）：main.dart 弃 fromSeed 双主题，改 ColorScheme.dark 全量 override——恒定暗色、三阶色阶分层（surface 0xFF15171E / Low 0xFF1C1F27 / High 0xFF242833）、橘红强调 0xFFFF5A1E 仅动作选中、暖白文字；抽具名 _mymindTheme()（纪律：主题唯一出口，页面只准走 colorScheme.* 槽位）；chipTheme 胶囊化一处覆盖 5 页、ContentCard 卡层色+Radii.xl(20)、TLDR 描边 callout 卡、硬编码色归位（redAccent→error 等）。test 274 绿；goodshare-ui skill 同步（3 tab+常驻速记条+侧边栏；timeline/ai_tags/floating_ball 已删除不得复活）
+- [2026-09-30] 行内媒体块 MVP（rich-text-media.md 转 active）：规则层 ImageBlock/AudioBlock/VideoBlock + classifyMediaUrl 后缀两档分类（audioPlayable / audioDegrade .amr 降级文件卡）+ 整行媒体行入块解析 + parseInline `!?` 吞 `!` 消灭「!+链接」残留，三出口齐全 MCP 零感知；呈现层 `media_blocks.dart`（InlineMediaImage 首帧探测定版宽高比+AnimatedSize 吸收首跳+失败不塌陷、MediaAudioBar、InlineMediaVideo 占位卡+全屏浮层）+ `audio_playback_service.dart`（页面级单例 AudioPlaybackController：唯一 AudioPlayer、toggle 互斥切歌、块 dispose release 自动暂停——sliver 回收即停机制化）；块编辑器媒体块支持（预览同源、alt/label 编辑清空不删块、audioPlayback 透传 dialog 树）。test 292 绿
+- [2026-09-30] 工具箱收敛+预置链拍板（纯文档，实施待工具箱批次）：ui-spec §4.3 类型专属工具由正文 chips 平铺收敛为单一「工具」胶囊→工具箱 BottomSheet（预置链置顶+状态行，底栏 5 项恒定）；scheduling-tasks §4.4 预置链「提取并翻译」（image=ocr→translate、audio/video=transcribe→translate，产品固定预置链）；工程大头=TranslateCommand 产物化（译文写回产物 translated_md）+ 队列链式触发
+- [2026-09-30] 超长文本 Phase 3 Isolate 化：kRichParseIsolateThreshold=8k 字符 + richBlocksOfAsync（compute，块树纯对象图经 Isolate.exit 回传；自定义解析器不转 isolate）+ RichBlockParseState 共享解析缓存 mixin（seq 守卫防快速切换串块）+ ContentBodySliver 异步宿主（build 产出 SliverList，在途空占位不破坏虚拟化）；parse 基准 30k/60k=18/19ms 桌面 JIT（真机 AOT 预计 2-4 倍）。test 298 绿
+- [2026-09-30] 修「详情页返回手势直接退 App」：AndroidManifest activity 补 android:enableOnBackInvokedCallback="true"——缺失时系统走「应用不处理返回」路径绕过 Flutter 路由分发直接收尾 Activity（Navigator 栈上有路由也被退出）。真机待验：详情返回回列表、根页返回退 App
+- [2026-09-30] 详情骨架 mymind 改版：新建 `section_legend.dart` SectionLegendCard 骑框分区卡（小签嵌描边框顶边+背景切断+延长线，签名元素，正文分区统一用此禁各写边框+小签）；TLDR 接入骑框卡；新增标签展示区（tags 胶囊流只读，无标签不渲染）；底栏操作项胶囊化（删除 errorContainer 粉底）；元信息行居中+outline 弱化。test 298 绿
+- [2026-09-30] 块编辑器打磨两项：①粘贴多段拆块——单次变更（粘贴/Ctrl+V/输入法上屏）插入片段含 `\n\n` 按段界拆段落块（首段并入当前块并空则删/中间成新块/末段+光标后原文成尾块保持激活），手敲回车逐事件单 `\n` 永不触发（md 语法自动拆块维持驳回）；②激活块 IME 避让——不在视口时 ensureVisible 滚至视口顶缘（键盘上方），已完整可见不滚动，键盘高度差量（MediaQuery viewInsets didChangeDependencies）重触发。test 302 绿（新增粘贴拆块 4 用例）
+- [2026-10-01] **便签内嵌视频（附件态）落地**（用户三拍板：①白名单 mp4/mov 直入库不转码、边缘格式硬拦截「暂不支持」，彻底抛弃 FFmpeg 软编软解（压缩将来走硬件编码器另期）②封面沿用图标占位卡（封面提取留 V2）③相册大小阈值 100MB）：新建 `lib/share/note_video_policy.dart`（60s 直拍 maxDuration/5min 非阻断/100MB 拦截/白名单常量集中 + checkNoteVideoAlbum 后置校验 + probeVideoDurationMs 走 FFprobeKit 只读元数据——probe 非 decode 不违拍板）；note_composer 增 NoteVideoSegment（序列化 `[label](local://…)` 命中 parse 视频白名单，三出口继承）；quick_note_bar：_MediaSeg bool audio 升三态 NoteMediaKind + 草稿 'v' 行 + 视频入口→二选一 BottomSheet（相册首位）→统一门槛校验（拦截 SnackBar / >5min AlertDialog 仍要添加）+ 视频占位卡（播放走保存后详情 VideoBlock 全屏浮层）。SSOT：note-video.md §2 格式拍板 + §6 SAF 实测项销项（image_picker 本身复制进沙箱=即降级预案）+ §7 落点。analyze 0 / 全量 315 绿。真机待验：三分支校验/直拍 60s 自动停/长视频确认流/草稿含视频段跨重建/详情浮层播放
+- [2026-10-01] **真机首轮验收修复**（三个真问题）：①「添加后无视频卡」=null 语义误解——checkNoteVideoAlbum 约定 null=通过，_pickAlbumVideo/_captureVideo 却当「已取消」return，通过校验从不插入；修=null 分支显式插入 + gate 入口清 _pendingVideoPath 陈值 ②拦截类校验后清理已拷孤儿副本（.webm 实测遗留，run-as 顺手清 10 个）③作曲器视频卡**点按可预览**（用户提议，复用详情全屏播放器同链路）+ 播放器失败文案带真实原因（R1，两处）。「视频加载失败」根因=测试媒体 yuv444p（造媒体必须显式 `-pix_fmt yuv420p`，testsrc+ultrafast 会选 444），非 app bug。analyze 0 / 全量 317 绿 / arch-guard / docs-lint 绿；真机 6007 修复版已装待复验
+- [2026-10-01] **直拍自建拍摄页拍板＋落地**（用户提「60s 自动停放个进度条」→三选一拍板自建；推翻系统相机路径）：根因=系统相机 Activity 上无法叠 App 进度 UI（image_picker 源码实锤 EXTRA_DURATION_LIMIT 由系统相机执行）。新增 `camera ^0.12.1`（用户批准）+ `note_video_capture_page.dart`（取景器+快门单键复用+60s 进度环+定时器自动停+取消删临时文件；只产路径 pop 回作曲器照走门槛链，零写库）。测试 fake CameraPlatform 桩 2 用例（错误态/闭环假时钟验自动停）；踩坑：camera 0.12 的 preview 出口叫 **buildPreview** 非 buildView；真相机通道 FakeAsync 不完成须 runAsync 交替。analyze 0 / 全量 319 绿 / 真机已装待复验
+- [2026-10-01] **拍摄页微调＋斜黄条取证**：①录制中「剩余 m:ss」文案按用户拍板移除，进度环是时间唯一表达 ②「播放后斜黄条」最终定位=**Flutter 调试态溢出警示条**（非视频损坏，「内容如此」判断被 adb+screencap 真机复现推翻）：全屏播放页竖版视频+控制行竖向溢出 6.4px（Expanded+Center letterbox 修）；详情底栏 5 项 Row 超宽 34px（本机逻辑宽仅 331dp/DPR 3.84）→Wrap 换行（⚠️ OverflowBar 是「放不下每项各占一行」非换行、BottomAppBar 钉子级高度 h=56，两者都错）；连带修 errorContainer 未覆写致删除胶囊粉底粉字隐身。方法论：真机可连时 screencap+坐标 tap 亲自复现，勿停在文件取证推理。analyze 0 / 全量 319 绿 / 截图复验过
+- [2026-09-30] **便签页多媒体编辑落地**（用户四点拍板：①本地行内媒体 url=`local://<documents 内相对路径>` 相对标记直写 human_md（绝不写绝对路径，SSOT：rich-text-media.md §2）②拍照/录音「直接出独立卡片」→**就地插入本条**（语义反转）③含媒体便签豁免合并窗口④MVP 无视频）：`lib/share/note_composer.dart` 重写为行内媒体段模型（NoteText/Image/AudioSegment + serializeNoteMd，标准 md 媒体行三出口继承；旧 appendix 语音段骨架零调用方一并 supersede）+ `quick_note_bar` 展开态改**分段作曲器**（光标处拆段插图/录音、媒体后恒有文本段、MediaAudioBar 复用便利贴作用域 AudioPlaybackService、草稿静态留存含媒体段、移除段删私有副本）+ InlineMediaImage 本地文件（FileImage 首帧探测同一定版机制）；保存路由：纯文本 collectText（合并不变）/含媒体直发 CollectCommand(note, scatter, title=首文本行兜底「图文便签」）。SSOT 修订：rich-text-media.md §2 写入口径+§5 排期（MVP+）+§7 验收、ui-spec §4.6（顺带修正落后于便利贴改版的旧描述）。测试教训入 devlog：sqflite_ffi 在 FakeAsync 需 runAsync/pump 交替驱动；record 插件构造异常需 mock 通道。analyze 0 / 全量 309 绿 / arch-guard / docs-lint 绿。真机待验闭环

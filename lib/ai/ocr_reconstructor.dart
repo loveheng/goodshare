@@ -72,9 +72,12 @@ class OcrReconstructor implements AiReconstructor {
         if (html != null) {
           final doc = htmlToMarkdown(html);
           if (!doc.isEmpty) {
+            // OG 元数据富化（rich-text-component.md §6.1 V2）：复用同一份 HTML
+            // 顺带解析 og:*，url 条目从「一坨正文」变卡片；无 OG 标签则不写。
             return ReconstructResult(
               humanMd: doc.markdown,
               docMetaJson: jsonEncode(doc.meta.toJson()),
+              machineJson: ogMachineJson(html),
             );
           }
         }

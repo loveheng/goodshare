@@ -411,4 +411,44 @@ void main() {
     );
     expect(await repo.byId(it.id!), isNotNull, reason: '整批未执行');
   });
+
+  test('AI 防冲刷护城河：apply_ai_result 丢失行内媒体块 → human_md 保留原文', () async {
+    final md = '前文\n\n![拍照](local://shares/a.jpg)\n\n[录音](local://shares/a.m4a)';
+    final it = await repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      sourceType: InboxItem.typeNote,
+      rawContent: '前文',
+      humanMd: md,
+      createdAt: 1,
+    ));
+    // AI 润色产出把媒体块删了 → human_md 必须保留原文，原因进 note 可感知
+    final r = await handler.execute(
+      ApplyAiResultCommand(it.id!, const ReconstructResult(humanMd: 'AI 润色后的纯文本')),
+      actor: CommandActor.pipeline,
+    );
+    expect((await repo.byId(it.id!))!.humanMd, md, reason: '用户媒体资产不被 AI 整替冲刷');
+    expect(r.note, contains('媒体块'));
+
+    // 媒体全保留（即使文字被改写）→ 放行
+    const kept = '重写后的前文\n\n![拍照](local://shares/a.jpg)\n\n[录音](local://shares/a.m4a)';
+    await handler.execute(
+      ApplyAiResultCommand(it.id!, const ReconstructResult(humanMd: kept)),
+      actor: CommandActor.pipeline,
+    );
+    expect((await repo.byId(it.id!))!.humanMd, kept);
+
+    // 原文无媒体块 → AI 正常整替
+    final it2 = await repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      sourceType: InboxItem.typeNote,
+      rawContent: '纯文本',
+      humanMd: '原文',
+      createdAt: 2,
+    ));
+    await handler.execute(
+      ApplyAiResultCommand(it2.id!, const ReconstructResult(humanMd: 'AI 版')),
+      actor: CommandActor.pipeline,
+    );
+    expect((await repo.byId(it2.id!))!.humanMd, 'AI 版');
+  });
 }

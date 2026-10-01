@@ -26,16 +26,19 @@ class Insets {
   static const double xxl = 24;
 }
 
-/// 圆角刻度（Material 3 推荐 8/12/16 三档）。
+/// 圆角刻度（2026-09-30 mymind 视觉基准：大圆角，卡片档 xl=20）。
 class Radii {
   const Radii._();
 
   /// 8：小圆角（缩略图、开关容器）
   static const double sm = 8;
 
-  /// 12：默认圆角（卡片、容器、机器态框）
+  /// 12：默认圆角（容器、机器态框）
   static const double md = 12;
 
-  /// 16：大圆角（类型选择网格、 FloatingActionButton 等）
+  /// 16：中圆角（按钮、BottomSheet 内元素）
   static const double lg = 16;
+
+  /// 20：大圆角（卡片、媒体封面卡——mymind 基准，ui-spec §2.3）
+  static const double xl = 20;
 }

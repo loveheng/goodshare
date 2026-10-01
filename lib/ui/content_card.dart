@@ -90,8 +90,9 @@ class ContentCard extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       margin: EdgeInsets.zero,
       elevation: 0,
-      color: scheme.surfaceContainerHighest,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Radii.md)),
+      // mymind 基准（ui-spec §2.1/§2.3）：卡层色 + 大圆角 20（Radii.xl）。
+      color: scheme.surfaceContainerLow,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Radii.xl)),
       child: InkWell(
         onTap: onTap,
         child: Column(

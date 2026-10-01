@@ -312,9 +312,9 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
                 icon: Icon(_recording ? Icons.stop : Icons.mic_none),
               ),
               if (_recording)
-                const Padding(
-                  padding: EdgeInsets.only(left: 4),
-                  child: Text('录音中…', style: TextStyle(color: Colors.redAccent)),
+                Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: Text('录音中…', style: TextStyle(color: Theme.of(context).colorScheme.error)),
                 ),
               const Spacer(),
               OutlinedButton(

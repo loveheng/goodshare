@@ -117,6 +117,86 @@ class DividerBlock extends RichBlock {
   const DividerBlock();
 }
 
+/// 行内图片块（整行 `![alt](url)`，SSOT：docs/design/rich-text-media.md §2）。
+class ImageBlock extends RichBlock {
+  const ImageBlock({required this.url, this.alt = ''});
+
+  final String url;
+
+  /// 图片说明（用户/AI 原话，规则层禁加类型前缀——往返幂等）。
+  final String alt;
+}
+
+/// 行内音频块（整行 `[label](url)` 且 url 后缀命中音频白名单）。
+class AudioBlock extends RichBlock {
+  const AudioBlock({required this.url, this.label = ''});
+
+  final String url;
+  final String label;
+}
+
+/// 行内视频块（整行 `[label](url)` 且 url 后缀命中视频白名单）。
+class VideoBlock extends RichBlock {
+  const VideoBlock({required this.url, this.label = ''});
+
+  final String url;
+  final String label;
+}
+
+// ---------- 媒体 url 后缀分类 ----------
+
+/// 媒体 url 后缀归类（rich-text-media.md §2 白名单两档）。
+enum MediaSuffix {
+  /// 音频，可直接内嵌播放。
+  audioPlayable,
+
+  /// 音频但平台兼容性存疑（如 .amr）：parse 照常归 AudioBlock（AST 不携带
+  /// 能力信息），呈现层降级为文件卡不进播放器。
+  audioDegrade,
+
+  /// 视频。
+  video,
+
+  /// 非媒体或未识别。
+  unknown,
+}
+
+const Set<String> _audioPlayableExt = {'.mp3', '.m4a', '.aac', '.wav', '.opus'};
+const Set<String> _audioDegradeExt = {'.amr'};
+const Set<String> _videoExt = {'.mp4', '.mov', '.webm', '.m3u8'};
+
+/// url → 后缀归类。取 `Uri.parse(url).path`（天然剥离 query 与 fragment）、
+/// toLowerCase 后与白名单比对；parse 与呈现层共用此单一事实源。
+MediaSuffix classifyMediaUrl(String url) {
+  final path = Uri.tryParse(url)?.path ?? url;
+  final dot = path.lastIndexOf('.');
+  if (dot < 0 || dot == path.length - 1) return MediaSuffix.unknown;
+  final ext = path.substring(dot).toLowerCase();
+  if (_audioPlayableExt.contains(ext)) return MediaSuffix.audioPlayable;
+  if (_audioDegradeExt.contains(ext)) return MediaSuffix.audioDegrade;
+  if (_videoExt.contains(ext)) return MediaSuffix.video;
+  return MediaSuffix.unknown;
+}
+
+/// AI 回写防冲刷护城河（2026-09-30 拍板叮嘱②，rich-text-media.md §7）：
+/// 对比原 md 与 AI 产出 md 的**行内媒体块 url 集合**，返回原文有而产出丢失的 url。
+/// 非空 = AI 润色/重构自作主张删掉了用户媒体资产，动作层必须拒绝整替（保留原文）。
+/// 只对 apply_ai_result 管线回写生效；UI/MCP 的 update 走块编辑器，用户删媒体是合法操作。
+Set<String> lostMediaUrls(String originalMd, String incomingMd) {
+  Set<String> mediaUrlsOf(String md) => {
+    for (final b in MarkdownSubsetParser().parse(md))
+      ...switch (b) {
+        ImageBlock(:final url) => {url},
+        AudioBlock(:final url) => {url},
+        VideoBlock(:final url) => {url},
+        _ => <String>{},
+      },
+  };
+  final original = mediaUrlsOf(originalMd);
+  if (original.isEmpty) return const {};
+  return original.difference(mediaUrlsOf(incomingMd));
+}
+
 /// 行内节点 → 纯文本（待办回调取文本、复制、检索预览用）。
 ///
 /// 只取「人读到的字」，不含标记符号。
@@ -136,6 +216,10 @@ String blockToPlain(RichBlock block) => switch (block) {
       ListBlock(:final items) => items.map((i) => inlineToPlain(i.inline)).join('\n'),
       CodeBlock(:final code) => code,
       DividerBlock() => '',
+      // 媒体块降级（三出口之 blockToPlain，rich-text-media.md §2）
+      ImageBlock(:final alt) => alt.isEmpty ? '[图片]' : '[图片: $alt]',
+      AudioBlock(:final label) => label.isEmpty ? '[音频]' : '[音频: $label]',
+      VideoBlock(:final label) => label.isEmpty ? '[视频]' : '[视频: $label]',
     };
 
 // ---------- 序列化 ----------
@@ -178,6 +262,11 @@ String serializeBlock(RichBlock block) => switch (block) {
       CodeBlock(:final code, :final language) =>
         '```${language ?? ''}\n$code\n```',
       DividerBlock() => '---',
+      // 媒体块出口标准 Markdown 链接语法，MCP 桌面端零感知（§2）；
+      // label/alt 原话直出，禁注入类型前缀（往返幂等）
+      ImageBlock(:final url, :final alt) => '![${_escapeText(alt)}]($url)',
+      AudioBlock(:final url, :final label) => '[${_escapeText(label)}]($url)',
+      VideoBlock(:final url, :final label) => '[${_escapeText(label)}]($url)',
     };
 
 /// 块列表 → Markdown 子集串（块间空行分隔；编辑器回写唯一出口）。
@@ -205,6 +294,11 @@ class MarkdownSubsetParser implements RichTextParser {
   static final RegExp _quote = RegExp(r'^\s*>\s?');
   static final RegExp _bullet = RegExp(r'^\s*[-*+]\s+(.*)$');
   static final RegExp _ordered = RegExp(r'^\s*\d+[.)]\s+(.*)$');
+
+  /// 整行即媒体的两种形态（rich-text-media.md §2：只识别「整行即媒体」，
+  /// 段落中间混排降级 InlineLink）。
+  static final RegExp _imageLine = RegExp(r'^!\[([^\]]*)\]\(([^)]*)\)\s*$');
+  static final RegExp _linkLine = RegExp(r'^\[([^\]]*)\]\(([^)]*)\)\s*$');
 
   /// 列表项里的待办标记：`[ ]` / `[x]`。
   static final RegExp _todo = RegExp(r'^\[([ xX])\]\s+(.*)$');
@@ -279,6 +373,30 @@ class MarkdownSubsetParser implements RichTextParser {
         continue;
       }
 
+      // 媒体行：整行 `![alt](url)` → ImageBlock；整行 `[label](url)` 且后缀
+      // 命中白名单 → AudioBlock/VideoBlock（不命中则落回普通段落，不丢内容）
+      final image = _imageLine.firstMatch(line);
+      if (image != null) {
+        blocks.add(ImageBlock(url: image.group(2)!, alt: _unescape(image.group(1)!)));
+        i++;
+        continue;
+      }
+      final link = _linkLine.firstMatch(line);
+      if (link != null) {
+        final url = link.group(2)!;
+        final media = classifyMediaUrl(url);
+        if (media == MediaSuffix.audioPlayable || media == MediaSuffix.audioDegrade) {
+          blocks.add(AudioBlock(url: url, label: _unescape(link.group(1)!)));
+          i++;
+          continue;
+        }
+        if (media == MediaSuffix.video) {
+          blocks.add(VideoBlock(url: url, label: _unescape(link.group(1)!)));
+          i++;
+          continue;
+        }
+      }
+
       // 裸待办行（`[ ] xxx`，不在列表里）——归入单项无序列表，保证可勾选
       final bareTodo = RegExp(r'^\[([ xX])\]\s+(.*)$').firstMatch(line);
       if (bareTodo != null) {
@@ -317,7 +435,12 @@ class MarkdownSubsetParser implements RichTextParser {
       _heading.hasMatch(line) ||
       _quote.hasMatch(line) ||
       _bullet.hasMatch(line) ||
-      _ordered.hasMatch(line);
+      _ordered.hasMatch(line) ||
+      _imageLine.hasMatch(line) ||
+      // 媒体链接行才算块起始（普通链接行仍并入段落，保持既有行为）
+      (_linkLine.hasMatch(line) &&
+          classifyMediaUrl(_linkLine.firstMatch(line)!.group(2)!) !=
+              MediaSuffix.unknown);
 
   ListItem _listItem(String content) {
     final todo = _todo.firstMatch(content);
@@ -342,7 +465,7 @@ class MarkdownSubsetParser implements RichTextParser {
       r'|(\*\*|__)(.+?)\2' // 2,3 粗体
       r'|(\*|_)(.+?)\4' // 4,5 斜体
       r'|`([^`]+)`' // 6 行内码
-      r'|\[([^\]]*)\]\(([^)]*)\)', // 7,8 链接
+      r'|!?\[([^\]]*)\]\(([^)]*)\)', // 7,8 链接（`!` 前缀吞掉：行内图片降级 InlineLink，消灭「!+链接」残留）
       dotAll: true,
     );
 

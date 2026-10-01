@@ -1,6 +1,6 @@
 ---
 status: draft
-updated: 2026-09-29
+updated: 2026-09-30
 ---
 
 # 内容管线设计：富文本归一化 + 文件引用策略
@@ -87,7 +87,7 @@ lib/doc/
 
 排版令牌（文档感来源）：正文 15.5-16px / 行高 1.65 / 段间距 14；h1 22 w600、h2 18 w600、h3 16 w600；引用左侧 3px 竖线 + 次级色；代码块 `surfaceContainerHighest` + 等宽。
 
-**长文门控（已放开为全量存储）**：`url_extract` 抓取的 20000 字上限是**采集层**约束，与渲染无关——归一化**不再截断**，`human_md` 存全量。超长文本在消费侧处理：渲染走 `RichTextView` 的 `ListView.builder` / 详情页 `SliverList` 虚拟化（按需构建可视区 widget），向量按 `item_embeddings.chunk_index` 分块（Phase 2）。
+**长文门控（已放开为全量存储）**：`url_extract` 抓取的 20000 字上限是**采集层**约束，与渲染无关——归一化**不再截断**，`human_md` 存全量。超长文本在消费侧处理：渲染走 `RichTextView` 的 `ListView.builder` / 详情页 `SliverList` 虚拟化（按需构建可视区 widget），解析超阈值（`kRichParseIsolateThreshold` 8k 字符，Phase 3）转后台 Isolate（`compute`，sliver 面宿主 `ContentBodySliver`、inline 面 `RichTextView`/`ContentBody` 共用解析缓存 mixin），向量按 `item_embeddings.chunk_index` 分块（Phase 2）。阈值依据 2026-09-30 基准实测：30k/60k 字符 parse 18/19ms（桌面 JIT），真机 AOT 推算 2-4 倍、远超帧预算。
 
 ## 6. 文件持有策略矩阵
 
@@ -151,10 +151,10 @@ ref（引用中，未复制） ──用户点导入──▶ owned（已持有�
 | 项 | 默认 |
 |---|---|
 | PDF 库 | `pdfrx`（文本提取；渲染需求另议）；已核 pub.dev 活跃度与许可（注：`pdfx` 2.x 仅渲染无文本 API，`pdf_text` 在本项目 Dart 3.13 下 http 版本冲突不可用） |
-| 长文门控 | 全量存储 + 渲染虚拟化（ListView.builder/SliverList）+ 向量分块（Phase 2） |
+| 长文门控 | 全量存储 + 渲染虚拟化（ListView.builder/SliverList）+ 解析超 8k 字符转 Isolate（Phase 3）+ 向量分块（Phase 2） |
 | 富文本链接 | 不可点（不加 `url_launcher`） |
 | 待办勾选 | 渲染先出，勾选下一轮 |
 | 不支持格式 | 补「用其他应用打开」（`open_filex` 已有） |
 | 视频策略 | 引用整片 + 按需关键片段自持 |
 | 缩略图自持 | 做（几十 KB，原件失效时兜底） |
-| 大文件阈值 | 100MB 以上额外确认 |
+| 大文件阈值 | ~~100MB 以上额外确认~~（2026-10-01 对视频作废：按场景门槛取代——附件态/主体态分级见 [note-video.md](note-video.md) §2 与 [video-subject.md](video-subject.md) §2，门槛内即认可无需二次确认；其他大文件类型出现时按场景各定门槛，不回退通用确认） |

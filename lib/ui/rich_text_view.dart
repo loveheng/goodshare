@@ -1,6 +1,8 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../doc/rich_text.dart';
+import 'media_blocks.dart';
 import 'tokens.dart';
 
 /// 富文本渲染：块树 → Flutter widget。
@@ -18,6 +20,8 @@ import 'tokens.dart';
 /// 渲染采用 `ListView.builder` 虚拟化（2026-09-30 Phase 1）：数万字长文只构建
 /// 可视区 widget，不再一次性铺满 `Column`。详情页通过 [richBlocksOf] + [buildRichBlock]
 /// 把正文 block 直接并入 `CustomScrollView` 的 `SliverList` 实现真正虚拟化。
+/// 解析超阈值（[kRichParseIsolateThreshold]）转 Isolate 异步（Phase 3），
+/// 长文打开不再阻塞 UI 帧；sliver 面用 `ContentBodySliver`。
 class RichTextView extends StatefulWidget {
   const RichTextView({
     super.key,
@@ -62,21 +66,75 @@ List<RichBlock> richBlocksOf(
 ]) =>
     parser.parse(markdown);
 
-class _RichTextViewState extends State<RichTextView> {
+// ---------- Phase 3：长文 Isolate 异步解析 ----------
+
+/// Isolate 异步解析阈值（Phase 3）：低于此值同步解析，达到即转后台 isolate。
+///
+/// 阈值依据 2026-09-30 基准实测（桌面 JIT）：30k/60k 字符 parse ≈18/19ms，
+/// 真机 AOT 按此推算 2-4 倍（40-80ms），远超 16ms 帧预算；8k 字符约 5ms
+/// （JIT），低于可感 jank 门槛。isolate 派生本身有毫秒级开销，短文不值得。
+const int kRichParseIsolateThreshold = 8 * 1024;
+
+/// 是否应转 isolate 解析（自定义解析器永不转——闭包/自定义类型不跨 isolate，
+/// 属测试/扩展场景，宁可阻塞不可错）。
+bool _shouldIsolate(String markdown, RichTextParser parser) =>
+    markdown.length >= kRichParseIsolateThreshold &&
+    parser == const MarkdownSubsetParser();
+
+/// 长文异步解析：长文转 Isolate（`compute`，结果经 `Isolate.exit` 传递——
+/// 块树是纯 Dart 对象图，可安全跨 isolate）；短文/自定义解析器同步。
+Future<List<RichBlock>> richBlocksOfAsync(
+  String markdown, [
+  RichTextParser parser = const MarkdownSubsetParser(),
+]) async {
+  if (!_shouldIsolate(markdown, parser)) return parser.parse(markdown);
+  return compute(_parseInIsolate, markdown);
+}
+
+/// isolate 入口（顶层函数，[compute] 要求）。
+List<RichBlock> _parseInIsolate(String markdown) =>
+    const MarkdownSubsetParser().parse(markdown);
+
+/// 解析缓存 + 长文 Isolate 异步共享状态（Phase 3）。
+///
+/// 供 [RichTextView] / `ContentBody` / `ContentBodySliver` 三个渲染宿主复用：
+/// 同一 markdown 不重复解析；长文转 isolate，在途渲染空，结果回来后
+/// [setState] 补上。seq 守卫丢弃过期结果——markdown 快速切换（A→B→A）时
+/// 只有最后一次派发的结果会被采纳，不串块、不死锁。
+mixin RichBlockParseState<S extends StatefulWidget> on State<S> {
   List<RichBlock> _blocks = const [];
   String? _parsedSource;
+  int _parseSeq = 0;
 
-  /// 解析结果缓存：长文（上限已放开为全量）每次 build 重解析会掉帧。
-  void _ensureParsed() {
-    if (_parsedSource == widget.markdown) return;
-    _parsedSource = widget.markdown;
-    _blocks = widget.parser.parse(widget.markdown);
+  /// 当前已解析的块列表（未回填时空列表）。
+  List<RichBlock> get parsedBlocks => _blocks;
+
+  /// 确保按当前 markdown 解析完毕（短文同步、长文异步；build 内调用安全）。
+  void ensureBlocksParsed(
+    String markdown, [
+    RichTextParser parser = const MarkdownSubsetParser(),
+  ]) {
+    if (_parsedSource == markdown) return;
+    _parsedSource = markdown;
+    final seq = ++_parseSeq;
+    if (!_shouldIsolate(markdown, parser)) {
+      _blocks = parser.parse(markdown);
+      return;
+    }
+    _blocks = const [];
+    richBlocksOfAsync(markdown, parser).then((blocks) {
+      if (!mounted || seq != _parseSeq) return;
+      setState(() => _blocks = blocks);
+    });
   }
+}
 
+class _RichTextViewState extends State<RichTextView> with RichBlockParseState {
   @override
   Widget build(BuildContext context) {
-    _ensureParsed();
-    if (_blocks.isEmpty) return const SizedBox.shrink();
+    ensureBlocksParsed(widget.markdown, widget.parser);
+    final blocks = parsedBlocks;
+    if (blocks.isEmpty) return const SizedBox.shrink();
     return ListView.builder(
       shrinkWrap: widget.shrinkWrap,
       physics: widget.shrinkWrap
@@ -85,24 +143,28 @@ class _RichTextViewState extends State<RichTextView> {
       padding: widget.shrinkWrap ? EdgeInsets.zero : null,
       itemBuilder: (context, i) => Padding(
         padding: EdgeInsets.only(
-          bottom: i == _blocks.length - 1 ? 0 : _gapAfter(_blocks[i]),
+          bottom: i == blocks.length - 1 ? 0 : _gapAfter(blocks[i]),
         ),
         child: buildRichBlock(
           context,
-          _blocks[i],
+          blocks[i],
           onTodoToggle: widget.onTodoToggle,
           todoDone: widget.todoDone,
         ),
       ),
-      itemCount: _blocks.length,
+      itemCount: blocks.length,
     );
   }
 }
 
 /// 构建单个富文本块（与 [RichTextView] 共用，详情页 SliverList 直接复用）。
+///
+/// [serif] = 衬线阅读态（ui-spec §2.2 P0）：正文/标题走系统衬线 + 行高 ≥1.7，
+/// 文章类详情（note/chatlog/url/document）开启；媒体类转录稿不开启。
 Widget buildRichBlock(
   BuildContext context,
   RichBlock block, {
+  bool serif = false,
   void Function(String text, bool done)? onTodoToggle,
   bool Function(String text)? todoDone,
 }) {
@@ -113,10 +175,10 @@ Widget buildRichBlock(
     // 块内用普通 Text/RichText：跨块选择由外层 SelectionArea 统一提供
     // （rich-text-component.md §3 阅读态选择能力约束）
     HeadingBlock(:final level, :final inline) => Text.rich(
-        _spans(context, inline, _headingStyle(theme, level)),
+        _spans(context, inline, _headingStyle(theme, level, serif)),
       ),
     ParagraphBlock(:final inline) => Text.rich(
-        _spans(context, inline, _bodyStyle(theme)),
+        _spans(context, inline, _bodyStyle(theme, serif)),
       ),
     QuoteBlock(:final children) => Container(
         decoration: BoxDecoration(
@@ -128,7 +190,7 @@ Widget buildRichBlock(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            for (final c in children) buildRichBlock(context, c),
+            for (final c in children) buildRichBlock(context, c, serif: serif),
           ],
         ),
       ),
@@ -158,12 +220,18 @@ Widget buildRichBlock(
                 context,
                 item,
                 ordered ? '${i + 1}.' : '•',
+                serif,
                 onTodoToggle,
                 todoDone,
               ),
             ),
         ],
       ),
+    // 行内媒体块（SSOT：docs/design/rich-text-media.md §3）；QuoteBlock 子块
+    // 经同一 buildRichBlock 递归，引用内媒体块照常渲染
+    ImageBlock b => InlineMediaImage(block: b),
+    AudioBlock b => InlineMediaAudio(block: b),
+    VideoBlock b => InlineMediaVideo(block: b),
   };
 }
 
@@ -178,6 +246,7 @@ Widget _buildListItem(
   BuildContext context,
   ListItem item,
   String marker,
+  bool serif,
   void Function(String text, bool done)? onTodoToggle,
   bool Function(String text)? todoDone,
 ) {
@@ -207,7 +276,7 @@ Widget _buildListItem(
                 _spans(
                   context,
                   item.inline,
-                  _bodyStyle(theme).copyWith(
+                  _bodyStyle(theme, serif).copyWith(
                     decoration: done ? TextDecoration.lineThrough : null,
                     color: done ? scheme.onSurfaceVariant : null,
                   ),
@@ -227,35 +296,41 @@ Widget _buildListItem(
         width: 20,
         child: Text(
           marker,
-          style: _bodyStyle(theme).copyWith(color: scheme.onSurfaceVariant),
+          style: _bodyStyle(theme, serif).copyWith(color: scheme.onSurfaceVariant),
         ),
       ),
       Expanded(
         child: Text.rich(
-          _spans(context, item.inline, _bodyStyle(theme)),
+          _spans(context, item.inline, _bodyStyle(theme, serif)),
         ),
       ),
     ],
   );
 }
 
-TextStyle _bodyStyle(ThemeData theme) =>
-    (theme.textTheme.bodyLarge ?? const TextStyle()).copyWith(height: 1.65);
+/// 正文样式。[serif] = 衬线阅读态（ui-spec §2.2）：系统衬线 + 暖白已由
+/// colorScheme.onSurface 提供 + 行高 ≥1.7（非衬线保持 1.65）。
+TextStyle _bodyStyle(ThemeData theme, bool serif) =>
+    (theme.textTheme.bodyLarge ?? const TextStyle()).copyWith(
+      height: serif ? 1.75 : 1.65,
+      fontFamily: serif ? 'serif' : null,
+    );
 
 /// 标题层级映射 M3 `textTheme`（架构 R7：禁止裸 fontSize 字面量）。
 ///
 /// h1 `headlineSmall`(24) / h2 `titleLarge`(22) / h3 `titleMedium`(16) /
-/// h4-h6 `titleSmall`(14)，均 w600；行高比正文紧。
-TextStyle _headingStyle(ThemeData theme, int level) {
+/// h4-h6 `titleSmall`(14)，均 w600；行高比正文紧；[serif] 时标题同衬线。
+TextStyle _headingStyle(ThemeData theme, int level, bool serif) {
   final base = switch (level) {
     1 => theme.textTheme.headlineSmall,
     2 => theme.textTheme.titleLarge,
     3 => theme.textTheme.titleMedium,
     _ => theme.textTheme.titleSmall,
   };
-  return (base ?? _bodyStyle(theme)).copyWith(
+  return (base ?? _bodyStyle(theme, serif)).copyWith(
     fontWeight: FontWeight.w600,
     height: 1.35,
+    fontFamily: serif ? 'serif' : null,
   );
 }
 

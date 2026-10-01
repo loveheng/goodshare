@@ -4,6 +4,7 @@ import 'package:sqflite/sqflite.dart';
 
 import '../ai/language_codes.dart';
 import '../data/repository.dart';
+import '../doc/rich_text.dart' show lostMediaUrls;
 import '../models/item.dart';
 import 'commands.dart';
 import '../ai/video_clips.dart';
@@ -789,7 +790,16 @@ class ItemActionHandler {
       return _result('apply_ai_result', cmd.id, seeVault: seeVault, txn: txn,
           note: '已回写切片产出（${r.clip!.status == kClipStatusDone ? '完成' : r.clip!.status}）');
     }
-    final values = <String, Object?>{'human_md': r.humanMd, 'is_processed': 1};
+    // 防冲刷护城河（2026-09-30 拍板叮嘱②）：AI 产出的 human_md 若丢失原文的
+    // 行内媒体块，说明模型删了用户资产——human_md 保留原文（其余字段照常应用），
+    // 原因进 result.note 可感知（R1）。只拦管线回写；UI/MCP update 走块编辑器，
+    // 用户手动删媒体是合法操作。
+    final lostMedia = lostMediaUrls(item.humanMd ?? '', r.humanMd);
+    final guarded = lostMedia.isNotEmpty;
+    final values = <String, Object?>{
+      'human_md': guarded ? (item.humanMd ?? '') : r.humanMd,
+      'is_processed': 1,
+    };
     if (r.machineJson != null) {
       final raw = jsonEncode(r.machineJson);
       final err = validateMachineJson(raw);
@@ -822,7 +832,10 @@ class ItemActionHandler {
       values['doc_meta_json'] = r.docMetaJson;
     }
     await _write('apply_ai_result', cmd.id, values, expectedVersion: cmd.expectedVersion, txn: txn);
-    return _result('apply_ai_result', cmd.id, seeVault: seeVault, txn: txn, note: '已回写 AI 产出');
+    return _result('apply_ai_result', cmd.id, seeVault: seeVault, txn: txn,
+        note: guarded
+            ? 'AI 产出丢失行内媒体块（${lostMedia.length} 个），已保留原文；其余字段照常回写'
+            : '已回写 AI 产出');
   }
 
   // ---- 工作区（2026-09-30：条目集合容器，多对多，见 ui-spec §4.11） ----

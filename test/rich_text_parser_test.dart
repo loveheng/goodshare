@@ -162,6 +162,9 @@ void main() {
           CodeBlock(:final code, :final language) =>
             'CODE<$language>[$code]',
           DividerBlock() => 'HR',
+          ImageBlock(:final url, :final alt) => 'IMG($alt|$url)',
+          AudioBlock(:final url, :final label) => 'AUD($label|$url)',
+          VideoBlock(:final url, :final label) => 'VID($label|$url)',
         }).join('\n');
 
     /// parse→serialize→parse 块树逐节点相等（幂等）。
@@ -213,6 +216,109 @@ void main() {
       final md2 = serializeBlocks(parser.parse(md1));
       expect(md2, md1);
     });
+
+    test('媒体块往返（rich-text-media.md §7）', () {
+      expectRoundtrip(
+          '![说明图](https://a.com/x.jpg)\n\n[备注语音](https://a.com/y.mp3)\n\n[演示视频](https://a.com/z.mp4)');
+    });
+
+    test('媒体块 label/alt 原话往返不变（无前缀注入）', () {
+      final blocks = parser.parse('[🎤 会议录音](https://a.com/meet.m4a)');
+      final audio = blocks.single as AudioBlock;
+      expect(audio.label, '🎤 会议录音'); // 输入自带 emoji 原样保留
+      final out = serializeBlock(audio);
+      expect(out, '[🎤 会议录音](https://a.com/meet.m4a)'); // 不新增前缀
+      final reparsed = parser.parse(out).single as AudioBlock;
+      expect(reparsed.label, audio.label);
+      expect(reparsed.url, audio.url);
+    });
+  });
+
+  group('媒体块解析（rich-text-media.md §2）', () {
+    test('整行图片 → ImageBlock', () {
+      final blocks = parser.parse('![界面截图](https://a.com/shot.png)');
+      final img = blocks.single as ImageBlock;
+      expect(img.url, 'https://a.com/shot.png');
+      expect(img.alt, '界面截图');
+    });
+
+    test('音频后缀 → AudioBlock；视频后缀 → VideoBlock', () {
+      expect(parser.parse('[听](https://a.com/a.mp3)').single, isA<AudioBlock>());
+      expect(parser.parse('[听](https://a.com/a.opus)').single, isA<AudioBlock>());
+      expect(parser.parse('[看](https://a.com/v.mp4)').single, isA<VideoBlock>());
+      expect(parser.parse('[看](https://a.com/v.m3u8)').single, isA<VideoBlock>());
+    });
+
+    test('amr 归 AudioBlock 且后缀归类为降级档（呈现层降级，AST 不携带能力）', () {
+      final block = parser.parse('[录音](https://a.com/r.amr)').single;
+      expect(block, isA<AudioBlock>());
+      expect(classifyMediaUrl('https://a.com/r.amr'), MediaSuffix.audioDegrade);
+    });
+
+    test('后缀边界：query 参数 / 大写 / fragment 均正确归类', () {
+      expect(parser.parse('[x](https://a.com/v.MP4?token=1&x=2)').single, isA<VideoBlock>());
+      expect(parser.parse('[x](https://a.com/a.WAV#t=30)').single, isA<AudioBlock>());
+      expect(classifyMediaUrl('HTTPS://EXAMPLE.COM/A.MP3?version=1'), MediaSuffix.audioPlayable);
+    });
+
+    test('非媒体链接整行走段落 InlineLink，不丢内容', () {
+      final blocks = parser.parse('[官网](https://a.com)\n\n正文');
+      expect(blocks, hasLength(2));
+      final p = blocks[0] as ParagraphBlock;
+      expect(p.inline.whereType<InlineLink>(), hasLength(1));
+      expect(_plainOf(blocks[0]), contains('官网'));
+    });
+
+    test('段落中间混排图片降级 InlineLink，无「!+链接」残留', () {
+      final blocks = parser.parse('前文 ![配图](https://a.com/x.jpg) 后文');
+      final p = blocks.single as ParagraphBlock;
+      expect(p.inline.whereType<InlineLink>(), hasLength(1));
+      final joined = _inlineText(p.inline);
+      expect(joined, '前文 配图 后文'); // `!` 被吞掉（现状 bug 修复）
+    });
+
+    test('文本行后紧跟媒体行（无空行）也能拆块', () {
+      final blocks = parser.parse('先写一句\n![图](https://a.com/x.jpg)');
+      expect(blocks, hasLength(2));
+      expect(blocks[1], isA<ImageBlock>());
+    });
+
+    test('QuoteBlock 内嵌 ImageBlock（嵌套递归）', () {
+      final blocks = parser.parse('> ![photo](https://a.com/a.jpg)\n> 引用文字');
+      final q = blocks.single as QuoteBlock;
+      expect(q.children.whereType<ImageBlock>(), hasLength(1));
+      expect(serializeBlock(q), '> ![photo](https://a.com/a.jpg)\n>\n> 引用文字');
+    });
+
+    test('file:// url 不拒绝不崩溃（写路径才约束 http(s)）', () {
+      final block = parser.parse('[本地](file:///data/user/0/rec.m4a)').single;
+      expect(block, isA<AudioBlock>());
+    });
+
+    test('blockToPlain 降级：检索/分享可用', () {
+      final plain = parser
+          .parse('![截图](https://a.com/x.png)\n\n[录音](https://a.com/y.mp3)\n\n[视频](https://a.com/z.mp4)')
+          .map(blockToPlain)
+          .join('\n\n');
+      expect(plain, contains('[图片: 截图]'));
+      expect(plain, contains('[音频: 录音]'));
+      expect(plain, contains('[视频: 视频]'));
+    });
+  });
+
+  group('AI 防冲刷护城河 lostMediaUrls（rich-text-media.md §7）', () {
+    const original = '前文\n\n![拍照](local://shares/a.jpg)\n\n[录音](local://shares/a.m4a)';
+    test('产出丢失媒体 url → 返回丢失集合', () {
+      expect(lostMediaUrls(original, 'AI 润色纯文本'), {'local://shares/a.jpg', 'local://shares/a.m4a'});
+      expect(lostMediaUrls(original, '前文\n\n![拍照](local://shares/a.jpg)'),
+          {'local://shares/a.m4a'});
+    });
+    test('产出保留全部媒体（可增文字）→ 空', () {
+      expect(lostMediaUrls(original, '\n\n$original\n\n补充'), isEmpty);
+    });
+    test('原文无媒体 → 恒空（纯文本条目不受护城河约束）', () {
+      expect(lostMediaUrls('纯文本', 'AI 版'), isEmpty);
+    });
   });
 }
 
@@ -224,6 +330,9 @@ String _plainOf(RichBlock b) => switch (b) {
       ListBlock(:final items) => items.map((i) => _inlineText(i.inline)).join(),
       CodeBlock(:final code) => code,
       DividerBlock() => '',
+      ImageBlock(:final alt) => '[图片: $alt]',
+      AudioBlock(:final label) => '[音频: $label]',
+      VideoBlock(:final label) => '[视频: $label]',
     };
 
 String _inlineText(List<InlineNode> nodes) => nodes.map((n) => switch (n) {
@@ -233,8 +342,6 @@ String _inlineText(List<InlineNode> nodes) => nodes.map((n) => switch (n) {
       InlineCode(:final code) => code,
       InlineLink(:final label) => label,
     }).join();
-
-
 
 /// 行内树 → 规范形（含节点类型，保证往返后节点类型也一致）。
 String _treeInline(List<InlineNode> nodes) => nodes.map((n) => switch (n) {
