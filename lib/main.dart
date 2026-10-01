@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'action/item_action_handler.dart';
 import 'app/lifecycle_manager.dart';
 import 'ui/privacy_blur_overlay.dart';
+import 'ui/tokens.dart' show Radii;
 import 'ai/asr_reconstructor.dart';
 import 'ai/ai_queue_service.dart';
 import 'ai/capabilities.dart';
@@ -41,7 +42,9 @@ Future<void> main() async {
   AppLifecycleManager.instance.init();
   // 规则二：限制图片缓存水位，长列表缩略图不会撑爆内存（默认 1000 张 / 100MB 过高）
   PaintingBinding.instance.imageCache
-    ..maximumSizeBytes = 100 << 20 // 100MB
+    ..maximumSizeBytes =
+        100 <<
+        20 // 100MB
     ..maximumSize = 500; // 缩略图体积小，允许较多条目常驻缓存
   final repo = Repository();
   // 预热 documents 路径缓存：行内媒体 local:// 的渲染层同步解析依赖它（rich-text-media §2）
@@ -60,7 +63,9 @@ Future<void> main() async {
   // 本机能力检测：首次执行后持久化，此后不再检测
   await caps.ensureDetected();
   // 翻译层装配（骨架期：ML Kit 引擎 + Noop 兜底，真离线模型后续按接口插拔）
-  final translationEngine = MlKitTranslationEngine(targetLang: () => caps.targetLang);
+  final translationEngine = MlKitTranslationEngine(
+    targetLang: () => caps.targetLang,
+  );
   final translationRouter = TranslationRouter([translationEngine]);
   caps.router = translationRouter;
   caps.engine = translationEngine;
@@ -128,17 +133,19 @@ Future<void> main() async {
   aiQueue = AiQueueService(repo: repo, consumer: consumer, mcp: mcp);
   consumer.canProcess = () async => aiQueue.inferenceAllowed;
   await aiQueue.init();
-  runApp(GoodShareApp(
-    repo: repo,
-    handler: handler,
-    collector: collector,
-    mcp: mcp,
-    caps: caps,
-    models: models,
-    llmModels: llmModels,
-    aiQueue: aiQueue,
-    backup: backup,
-  ));
+  runApp(
+    GoodShareApp(
+      repo: repo,
+      handler: handler,
+      collector: collector,
+      mcp: mcp,
+      caps: caps,
+      models: models,
+      llmModels: llmModels,
+      aiQueue: aiQueue,
+      backup: backup,
+    ),
+  );
 }
 
 /// mymind 视觉基准主题（ui-spec §2.1，2026-09-30 拍板）。
@@ -169,6 +176,13 @@ ThemeData _mymindTheme() {
     onSurface: Color(0xFFE8E4DC),
     onSurfaceVariant: Color(0xFF9BA0AC),
     outline: Color(0xFF3A3F4C),
+    // 描边/分隔线：比 outline 亮一档的暗灰。必须覆写——M3 基线默认是浅
+    // 薰衣草白，漏出来即「便签收起态白边」（2026-10-01 真机反馈）。
+    outlineVariant: Color(0xFF474D5C),
+    // tonal 容器对齐 primaryContainer 暖棕系（secondary 本就同橘红），
+    // 不覆写会漏 M3 默认紫灰——「保存」tonal 按钮撞色（2026-10-01 真机反馈）。
+    secondaryContainer: Color(0xFF3D1D0E),
+    onSecondaryContainer: Color(0xFFFFB59A),
     error: Color(0xFFFF5370),
     onError: Color(0xFFFFFFFF),
     // errorContainer 必须显式覆写：M3 默认回落值与 error 同为粉色系，
@@ -180,8 +194,107 @@ ThemeData _mymindTheme() {
     useMaterial3: true,
     colorScheme: scheme,
     scaffoldBackgroundColor: scheme.surface,
-    // Chip 家族全局胶囊化（ui-spec §2.3）：深色胶囊无边框、全圆角 pill、
-    // 选中即橘红填充——search_page/clip_editor/image_annotator 等一处覆盖。
+    // 按压反馈纪律（2026-10-01 拍板）：反馈发生在**内容本身**上，不做面积型
+    // 反馈——M3 半透明状态层在暗色主题上是「底色与文字叠成灰泥」的脏源。
+    // 图标钮=图标提亮（onSurfaceVariant→onSurface，按下即「激活」暗示，橘红
+    // 语义不被稀释）；CTA=底色实色加深一档（禁罩）；文字钮=文字实色加深。
+    // 扩散水波纹全局关闭（splashFactory），卡片/列表按压保留默认 highlight。
+    splashFactory: NoSplash.splashFactory,
+    iconButtonTheme: IconButtonThemeData(
+      style: ButtonStyle(
+        overlayColor: WidgetStateProperty.resolveWith(
+          (states) =>
+              states.contains(WidgetState.pressed) ||
+                  states.contains(WidgetState.hovered)
+              ? Colors.transparent
+              : null,
+        ),
+        foregroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.pressed)
+              ? scheme.onSurface
+              : null, // 非按下态回落 M3 默认（selected 橘红等不丢）
+        ),
+      ),
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: ButtonStyle(
+        // 按钮形态=大圆角矩形（mymind 基准，与卡片同语言）——2026-10-01
+        // 全系统去胶囊：Stadium 退役，chips/标签同为矩形（chipTheme md12）
+        shape: const WidgetStatePropertyAll(
+          RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(Radii.lg)),
+          ),
+        ),
+        overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+        backgroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.pressed)
+              ? const Color(0xFFE04F1A) // primary 深一档实色
+              : null,
+        ),
+      ),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: ButtonStyle(
+        shape: const WidgetStatePropertyAll(
+          RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(Radii.lg)),
+          ),
+        ),
+        overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+        foregroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.pressed)
+              ? const Color(0xFFE04F1A)
+              : null,
+        ),
+      ),
+    ),
+    floatingActionButtonTheme: const FloatingActionButtonThemeData(
+      // M3 FAB 默认 Stadium 胶囊——同口径改大圆角矩形（工作区新建钮等）
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.all(Radius.circular(Radii.lg)),
+      ),
+    ),
+    navigationBarTheme: NavigationBarThemeData(
+      // 选中指示器胶囊退役（2026-10-01 全系统去胶囊）：M3 原生 indicator
+      // 就是一枚 64×32 胶囊——mymind 口径=选中仅图标+文字变橘红，无底板
+      indicatorColor: Colors.transparent,
+      iconTheme: WidgetStateProperty.resolveWith(
+        (states) => IconThemeData(
+          color: states.contains(WidgetState.selected)
+              ? scheme.primary
+              : scheme.onSurfaceVariant,
+        ),
+      ),
+      labelTextStyle: WidgetStateProperty.resolveWith(
+        (states) => TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w500,
+          color: states.contains(WidgetState.selected)
+              ? scheme.primary
+              : scheme.onSurfaceVariant,
+        ),
+      ),
+    ),
+    segmentedButtonTheme: SegmentedButtonThemeData(
+      style: ButtonStyle(
+        // 分段选中底色保留（容器语义），形态随全局去胶囊走 lg16 矩形
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(Radii.lg)),
+        ),
+      ),
+    ),
+    textButtonTheme: TextButtonThemeData(
+      style: ButtonStyle(
+        overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+        foregroundColor: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.pressed)
+              ? const Color(0xFFE04F1A)
+              : null,
+        ),
+      ),
+    ),
+    // Chip 家族（ui-spec §2.3，2026-10-01 全系统去胶囊）：深色无边框、
+    // 大圆角矩形 md12、选中即橘红填充——Stadium 胶囊全面退役。
     chipTheme: ChipThemeData(
       backgroundColor: scheme.surfaceContainerHigh,
       selectedColor: scheme.primary,
@@ -190,7 +303,9 @@ ThemeData _mymindTheme() {
       labelStyle: TextStyle(color: scheme.onSurfaceVariant),
       secondaryLabelStyle: TextStyle(color: scheme.onPrimary),
       side: BorderSide.none,
-      shape: const StadiumBorder(),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.all(Radius.circular(Radii.md)),
+      ),
       showCheckmark: false,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
     ),
@@ -231,7 +346,10 @@ class GoodShareApp extends StatelessWidget {
         final data = MediaQuery.of(context);
         return MediaQuery(
           data: data.copyWith(
-            textScaler: data.textScaler.clamp(minScaleFactor: 1.0, maxScaleFactor: 1.5),
+            textScaler: data.textScaler.clamp(
+              minScaleFactor: 1.0,
+              maxScaleFactor: 1.5,
+            ),
           ),
           child: PrivacyBlurOverlay(child: child!),
         );

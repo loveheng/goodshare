@@ -83,6 +83,7 @@ stateDiagram-v2
 
 - **Loupe 用复渲染而非截屏**：`Transform.scale` + `ClipOval` 在气泡内**再渲染一遍**图层（实时截屏法在 60fps 拖拽中掉帧严重，弃用）；镜中**只渲染原图 + 当前操作标注的本体线**（不做选中态/其他标注/吸附线——200% 视野里多余图层全是噪音，且规避层级同步问题）；
 - **手势排他锁（落地第一优先级）**：默认态单指=平移、双指=缩放（`InteractiveViewer`）；**选中对象/锚点后画布锁定平移**，单指拖拽仅作用于标注；点空白取消选中后解锁。命中优先级：锚点热区 > 对象本体 > 画布平移；平移采用**拖拽阈值判定**（位移 >8dp 前不锁定画布，给「按在对象上但想平移」的用户逃生口）——不处理此竞争整套 UI 不可用；
+- **系统返回手势兜底（2026-10-01，ui-spec §3 无返回箭头口径的画布附属）**：画布生成/拖拽中 `PopScope canPop:false`——笔画起于屏幕边缘手势带时被系统掐断（ACTION_CANCEL），随后的返回事件解释为「取消生成模式」而非退页；边缘工具栏布局为第一层缓冲（落指点被挤离边缘），PopScope 为第二层兜底；（可选第三层：标注态对左缘 200dp 申请 gesture exclusion rects，真机验收再定）。
 - **文字框几何边界**：`TextPainter` 计算动态宽高可行；几何模型写死 `minWidth`（≥2 个汉字宽），自动换行须考虑图片边缘 padding（框不得生长出图边界）；
 - **导出合成（瞬时）**：`PictureRecorder` 离屏 Canvas——先画 Image，再遍历 annotations 调 `drawLine`/`drawRRect`/`TextPainter.paint`，`toImage()` 出 PNG；不受屏幕分辨率与 UI 遮挡影响，比截屏清晰；
 - **渲染函数三消费方复用**：画布叠加层 / loupe 镜中 / 导出合成共用同一个纯函数（入参 canvas + annotations[] + 变换矩阵），保证所见即所得。
@@ -131,3 +132,32 @@ stateDiagram-v2
 | 标注列表组件 | 四件事（选中/删除/改样式/调整入口）+ 双向联动高亮 |
 | 反馈层 | loupe（快照+Positioned 悬浮）、吸附线计算、触觉 tick、数值微显 |
 | 导出合成（瞬时） | 分享/导出成图时按 annotations 渲染合成新文件，原数据不动 |
+| `lib/models/annotation.dart` | schema（归一化点/type/filled 实心填充态/'stroke' 读侧留位归一）+ AnnotationStore 纯文件 IO |
+| `lib/models/annotation_geometry.dart`（第 1 批已建） | 锚点最小集/命中判定（hitAnchor/hitObject）/锚点重算（withAnchor）/整体平移（translated）/序号视图属性（assignPinNumbers——只存 ID 删中间自动回补）——全部纯函数 |
+| `lib/render/annotation_painter.dart`（第 1 批已建） | **渲染纯函数三消费方共用**（§5.1）：画布叠加 / loupe（onlyIds 过滤只画当前操作标注）/ 导出合成同入口 `paintAnnotations` |
+| `lib/ui/annotation_canvas.dart`（第 1 批已建） | 画布组件：两级选择状态机 + 手势排他锁（选中锁平移/8dp 逃生口/命中优先级 锚点>对象>画布）+ AnnotationToolbar 轻量工具栏（箭头/矩形/序号 pin 拖拽生成，tap 生成 pin） |
+| `lib/ui/image_annotator.dart`（第 1 批已重写挂载） | 编辑宿主：装配画布+工具栏+调色板，持久化走 AnnotationStore——UI 只持交互态零 IO/json |
+
+## 10. 第 1 批验收（2026-10-01 落地）
+
+- ✅ 已落地：schema 对象化扩展（filled 实心态 + stroke 留位）+ 几何/序号纯函数 + 渲染纯函数（三消费方同一入口）+ 画布状态机与手势排他锁 + 工具栏三工具（箭头/矩形/序号）拖拽生成自动入列；`ImageAnnotator` 重写为新画布宿主（旧涂画实现 supersede）。
+- 验证：analyze 0 / 全量 329 绿（新增 annotation_object_test 10 用例：schema 往返/序号防雪崩回补/命中吸附/对角锁定/离屏渲染三消费方）。
+- 第 1 批**未含**（分批排期）：标注列表（第 2 批，含删除/改色/双向联动）、loupe/吸附线/触觉反馈栈（第 2 批）、文字标注与横竖屏输入降级（第 3 批）、导出合成（第 3 批）、隐私遮挡 Toggle（第 3 批，schema `filled` 位已就绪）。
+
+## 11. 第 2 批验收（2026-10-01 落地）
+
+- ✅ 已落地：**标注列表**（`lib/ui/annotation_list.dart`——四件事选中/删除/改色/进入调整，防膨胀纪律无搜索折叠分组；pin 行首序号角标动态算；竖屏底部抽屉形态，宿主 `ImageAnnotator` 装配 + 列表↔画布受控 `_selectedId` 双向联动）；**吸附线**（`annotation_geometry.dart` 增 `snapAnchorPoint` 边缘/中心/其他标注锚点对齐 + `snapOrthogonal` 正交八向射线修正，画布拖锚点接入，参照系排除自身）；**触觉两档**（正交=selectionClick / 对齐=lightImpact，边沿触发不随帧连发）；**loupe**（`lib/ui/annotation_loupe.dart` 复渲染法 Transform.scale+ClipOval，镜中只画原图+当前标注本体线 `onlyIds` 复用第 1 批纯函数，十字准星，贴顶/左边缘自动翻转，锚点级拖动时浮现松手即隐）。
+- 验证：analyze 0 / 全量 336 绿（新增 annotation_snap_test 7 用例：边缘中心吸附/对齐参照/超容差/横竖双线/正交修正/SnapLine 语义/loupe 渲染链路回归）。
+- 第 2 批**未含**（第 3 批）：文字标注与横竖屏输入降级、导出合成、隐私遮挡 Toggle（schema `filled` 位已就绪）、横屏右栏列表形态（当前仅竖屏抽屉）。
+
+## 12. 第 3 批验收（2026-10-01 落地，改版三批全齐）
+
+- ✅ 已落地：**隐私遮挡**（工具栏「遮挡」快捷入口=rect 实心态生成 + 选中 rect 的空心/实心 Toggle，安全边界文案见 §3——展示级遮挡非数据级销毁，涉及证件/密码级引导裁剪）；**文字标注**（工具栏「文字」工具 tap 落点生成 → 输入确认才入列（空文本不产出）；渲染走 `paintAnnotations` 既有 `_paintText`：TextPainter 动态宽高 maxWidth 0.8 图宽自动换行 + 半透明底框，单锚点可拖）；**导出合成**（`lib/render/annotation_export.dart`：PictureRecorder 离屏画原图+annotations → 走 `paintAnnotations` 同一纯函数（第三消费方兑现）→ PNG 落 `documents/annotations/export/` **新文件**，长边 2048 限边；源图与 annotations 数据不动；解码失败原样抛出不静默；宿主「导出分享」按钮经 share_plus 出系统分享，防重入转圈态）；**横屏右栏列表**（`OrientationBuilder` 方向感知：横屏 Row 画布+240dp 右栏常驻列表，竖屏保持抽屉形态不变，入口按钮随方向显隐——§9 推荐横屏不强制）。
+- 验证：analyze 0 / 全量 344 绿（新增 annotation_export_test 8 用例：实心渲染出图/filled Toggle 往返/安全边界 schema 面/文字渲染/空文字防御/单锚点最小集/导出失败抛出/产物新文件且源图不动）。
+- 改版收官：三批全部交付，§3-§9 拍板全量落地。遗留演进位（非第 3 批范围）：横屏沉浸式全屏文字输入（§7 横屏降级，当前通用对话框）、吸附线数值微显（§5 可选项）、笔迹工具（§3 候选，schema `stroke` 留位已备）。
+
+## 13. 遗留演进位销项（2026-10-01，用户拍板笔迹+沉浸输入即做）
+
+- ✅ **笔迹工具**（§3 候选 → 正式落地）：工具栏「笔迹」入口，free 类型画布拖拽**矢量一笔采点**（轨迹追加非两点替换，与上一点 <0.002 归一化重合不重复采）；命中走既有逐段线距离、锚点级=全轨迹点逐点调整、渲染走既有 drawPath 分支——schema `stroke` 留位兑现为 `free` 同模型（写侧维持 'free' 旧口径不变）。工具集至此 = 四工具 + 笔迹全齐（§3 表格全覆盖）。
+- ✅ **横屏沉浸式文字输入**（§7 横屏降级完整形态）：`_askText` 方向感知两形态——竖屏键盘不遮画布走通用对话框（实时排版心智不变）；横屏软键盘遮 70%+ 画布走**全屏毛玻璃沉浸输入**（BackdropFilter blur + 大输入区，完成/取消显式双钮），确认后回图上回显排版。不做「文字场景回竖屏」的规则碎片化（§7 纪律）。
+- 仍开放（低优，按需再排）：吸附数值微显（§5 标「可选」，纯增强）。

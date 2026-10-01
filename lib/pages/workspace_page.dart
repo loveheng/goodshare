@@ -13,6 +13,7 @@ import '../ui/content_card.dart';
 import '../ui/goodshare_image.dart';
 import '../ui/tokens.dart';
 import 'item_detail_page.dart';
+import 'workspace_create_page.dart';
 
 /// 工作区（ui-spec §4.11）：条目集合容器，多对多。
 ///
@@ -60,7 +61,12 @@ class _WorkspacePageState extends State<WorkspacePage> {
     final out = <_WsEntry>[];
     for (final ws in list) {
       // 与 list() 同口径：排除 Vault 与已删，工作区不得成为隐私隔离后门
-      out.add(_WsEntry(ws, _WsPreview.of(await widget.repo.listWorkspaceItems(ws.id))));
+      out.add(
+        _WsEntry(
+          ws,
+          _WsPreview.of(await widget.repo.listWorkspaceItems(ws.id)),
+        ),
+      );
     }
     return out;
   }
@@ -74,27 +80,11 @@ class _WorkspacePageState extends State<WorkspacePage> {
   }
 
   Future<void> _create() async {
-    final ctl = TextEditingController();
-    final name = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('新建工作区'),
-        content: TextField(
-          controller: ctl,
-          decoration: const InputDecoration(hintText: '工作区名称'),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, ctl.text.trim()),
-            child: const Text('创建'),
-          ),
-        ],
-      ),
+    // 整页创建（2026-10-01 拍板，mymind「Create new space」参照）取代裸
+    // AlertDialog——本页只产名称，写路径仍走 CreateWorkspaceCommand
+    final name = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(builder: (_) => const WorkspaceCreatePage()),
     );
     if (name == null || name.isEmpty) return;
     await widget.handler.execute(CreateWorkspaceCommand(name));
@@ -103,36 +93,37 @@ class _WorkspacePageState extends State<WorkspacePage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        // ☰ 只保留在「全部」页（2026-09-30 用户拍板）；工作区 AppBar 仅
-        // 进入某工作区时给返回箭头
-        leading: _selected == null
-            ? null
-            : IconButton(
-                icon: const Icon(Icons.arrow_back),
-                onPressed: () => setState(() => _selected = null),
+    // 进入某工作区后手势返回=退回工作区列表（ui-spec §3）；列表层级交还系统
+    return PopScope(
+      canPop: _selected == null,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) setState(() => _selected = null);
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          // ☰ 只保留在「全部」页（2026-09-30 用户拍板）；进入工作区后无返回
+          // 箭头，出口=系统手势/返回键
+          automaticallyImplyLeading: false,
+          title: Text(_selected?.name ?? '工作区'),
+        ),
+        body: Stack(
+          children: [
+            _selected == null ? _buildList() : _buildItems(),
+            // 新建工作区 FAB：右下角、底栏上沿再抬高 ~96px——单手拇指自然
+            // 扫掠弧内（2026-09-30 用户拍板，自 AppBar 右上角迁来）。
+            // 仅工作区列表层显示；避免与底部导航/手势条重叠。
+            if (_selected == null)
+              Positioned(
+                right: Insets.lg,
+                bottom: 96,
+                child: FloatingActionButton(
+                  onPressed: _create,
+                  tooltip: '新建工作区',
+                  child: const Icon(Icons.add),
+                ),
               ),
-        automaticallyImplyLeading: false,
-        title: Text(_selected?.name ?? '工作区'),
-      ),
-      body: Stack(
-        children: [
-          _selected == null ? _buildList() : _buildItems(),
-          // 新建工作区 FAB：右下角、底栏上沿再抬高 ~96px——单手拇指自然
-          // 扫掠弧内（2026-09-30 用户拍板，自 AppBar 右上角迁来）。
-          // 仅工作区列表层显示；避免与底部导航/手势条重叠。
-          if (_selected == null)
-            Positioned(
-              right: Insets.lg,
-              bottom: 96,
-              child: FloatingActionButton(
-                onPressed: _create,
-                tooltip: '新建工作区',
-                child: const Icon(Icons.add),
-              ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -140,33 +131,32 @@ class _WorkspacePageState extends State<WorkspacePage> {
   /// ①工作区列表：卡片网格（mymind Spaces 形态，D2 用户拍板）。
   /// 高度贴内容的固定比例小卡，不做低密度大卡（否决小红书式大卡的教训延续）。
   Widget _buildList() => FutureBuilder<List<_WsEntry>>(
-        future: _workspaces,
-        builder: (ctx, snap) {
-          if (!snap.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          final entries = snap.data!;
-          if (entries.isEmpty) {
-            return Center(
-              child: Text(
-                '还没有工作区\n点右下角 + 新建',
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-            );
-          }
-          return GridView.count(
-            crossAxisCount: 2,
-            mainAxisSpacing: Insets.sm,
-            crossAxisSpacing: Insets.sm,
-            childAspectRatio: 1.15,
-            // 底部 96 让出右下角 FAB（与列表层 FAB bottom:96 同一让位语言）
-            padding:
-                const EdgeInsets.fromLTRB(Insets.sm, Insets.sm, Insets.sm, 96),
-            children: [for (final e in entries) _workspaceCard(e)],
-          );
-        },
+    future: _workspaces,
+    builder: (ctx, snap) {
+      if (!snap.hasData) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      final entries = snap.data!;
+      if (entries.isEmpty) {
+        return Center(
+          child: Text(
+            '还没有工作区\n点右下角 + 新建',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+        );
+      }
+      return GridView.count(
+        crossAxisCount: 2,
+        mainAxisSpacing: Insets.sm,
+        crossAxisSpacing: Insets.sm,
+        childAspectRatio: 1.15,
+        // 底部 96 让出右下角 FAB（与列表层 FAB bottom:96 同一让位语言）
+        padding: const EdgeInsets.fromLTRB(Insets.sm, Insets.sm, Insets.sm, 96),
+        children: [for (final e in entries) _workspaceCard(e)],
       );
+    },
+  );
 
   Widget _workspaceCard(_WsEntry e) {
     final scheme = Theme.of(context).colorScheme;
@@ -176,7 +166,9 @@ class _WorkspacePageState extends State<WorkspacePage> {
       margin: EdgeInsets.zero,
       elevation: 0,
       color: scheme.surfaceContainerHighest,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Radii.md)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(Radii.md),
+      ),
       child: InkWell(
         onTap: () => _open(e.ws),
         child: Padding(
@@ -199,8 +191,9 @@ class _WorkspacePageState extends State<WorkspacePage> {
                   const SizedBox(width: Insets.xs),
                   Text(
                     '${e.preview.count}',
-                    style: textTheme.bodySmall
-                        ?.copyWith(color: scheme.onSurfaceVariant),
+                    style: textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
                   ),
                 ],
               ),
@@ -229,8 +222,11 @@ class _WorkspacePageState extends State<WorkspacePage> {
                   cacheWidth: 480,
                   errorBuilder: (_, _, _) => ColoredBox(
                     color: scheme.surfaceContainerHigh,
-                    child: Icon(Icons.image_outlined,
-                        size: 24, color: scheme.outline),
+                    child: Icon(
+                      Icons.image_outlined,
+                      size: 24,
+                      color: scheme.outline,
+                    ),
                   ),
                 ),
               ),
@@ -244,57 +240,64 @@ class _WorkspacePageState extends State<WorkspacePage> {
         preview,
         maxLines: 5,
         overflow: TextOverflow.ellipsis,
-        style:
-            Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+        style: Theme.of(context).textTheme.bodySmall
+            ?.copyWith(color: scheme.onSurfaceVariant),
       );
     }
     return Center(
-      child: Icon(Icons.workspaces_outlined,
-          size: 40, color: scheme.outlineVariant),
+      child: Icon(
+        Icons.workspaces_outlined,
+        size: 40,
+        color: scheme.outlineVariant,
+      ),
     );
   }
 
   /// ②工作区内条目：瀑布流双列（与「全部」页同一套卡片语言，D2 用户拍板）。
   Widget _buildItems() => FutureBuilder<List<InboxItem>>(
-        future: _items,
-        builder: (ctx, snap) {
-          if (!snap.hasData) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          final items = snap.data!;
-          if (items.isEmpty) {
-            return Center(
-              child: Text(
-                '这个工作区还没有条目',
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-            );
-          }
-          return MasonryGridView.count(
-            crossAxisCount: 2,
-            mainAxisSpacing: Insets.sm,
-            crossAxisSpacing: Insets.sm,
-            padding:
-                const EdgeInsets.fromLTRB(Insets.sm, Insets.sm, Insets.sm, Insets.lg),
-            itemCount: items.length,
-            itemBuilder: (context, i) => ContentCard(
-              item: items[i],
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute<void>(
-                  builder: (_) => ItemDetailPage(
-                    repo: widget.repo,
-                    handler: widget.handler,
-                    caps: widget.caps,
-                    item: items[i],
-                    vaultContext: false,
-                  ),
-                ),
+    future: _items,
+    builder: (ctx, snap) {
+      if (!snap.hasData) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      final items = snap.data!;
+      if (items.isEmpty) {
+        return Center(
+          child: Text(
+            '这个工作区还没有条目',
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+        );
+      }
+      return MasonryGridView.count(
+        crossAxisCount: 2,
+        mainAxisSpacing: Insets.sm,
+        crossAxisSpacing: Insets.sm,
+        padding: const EdgeInsets.fromLTRB(
+          Insets.sm,
+          Insets.sm,
+          Insets.sm,
+          Insets.lg,
+        ),
+        itemCount: items.length,
+        itemBuilder: (context, i) => ContentCard(
+          item: items[i],
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute<void>(
+              builder: (_) => ItemDetailPage(
+                repo: widget.repo,
+                handler: widget.handler,
+                caps: widget.caps,
+                item: items[i],
+                vaultContext: false,
               ),
             ),
-          );
-        },
+          ),
+        ),
       );
+    },
+  );
 }
 
 /// 工作区卡片数据：条目数 + 封面素材（图片路径 / 文字预览）。

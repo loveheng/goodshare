@@ -293,6 +293,50 @@ last-merge: 2026-09-30
 - 验证：analyze 0 / 全量 315 绿（note_composer_test 增视频段序列化 + parse 回块树 VideoBlock 用例）。真机待验：相册选 mp4/mov/边缘格式三分支、直拍 60s 自动停、>5min 提示流、草稿含视频段跨 Activity 重建、保存后详情浮层播放。
 - SSOT 修订：note-video.md §2 格式行（mp4/mov 白名单拍板）、§6（SAF 前置实测可跳过：image_picker 本身复制进沙箱=即降级预案）、§7 落点补 note_video_policy.dart；todos #11 完成勾销。
 
+## [2026-10-01] 图片标注对象化改版第 1 批（image-markup.md：schema/渲染纯函数/画布状态机/手势锁）
+
+- 背景与切批（用户确认架构后开工）：标注从「手指涂画」升级「矢量对象操作」，操作与呈现分离。第 1 批锁**架构不可逆部分**——schema 扩展与渲染纯函数接口先定死；标注列表/反馈栈（loupe/吸附/触觉）留第 2 批，文字标注/导出合成/隐私遮挡 Toggle 留第 3 批（schema `filled` 位已就绪）。
+- 落地（分层按 goodshare-arch「UI 只持交互态」）：
+  - `lib/models/annotation.dart`：增 `filled` 实心填充态（仅 rect 有效，隐私遮挡=圆角矩形实心态，JSON 缺省不写字段向后兼容）；`'stroke'` 读侧归一到 `free`（笔迹留位，写侧维持旧口径）。
+  - `lib/models/annotation_geometry.dart`（新建，全部纯函数）：`assignPinNumbers`（**序号与身份解耦**——schema 只存 ID，序号渲染时按列表顺序算，删中间 pin 自动回补防雪崩）、`anchorsOf`（锚点最小集：箭头/矩形两点、pin/文字单点、free 全轨迹）、`hitAnchor`（就近吸附，倒序遍历=Z 轴最上层优先）、`hitObject`（矩形包围盒/箭头线段距离/pin 半径/笔迹逐段）、`withAnchor`（锚点重算原地副本不换身份）、`translated`（整体平移）。
+  - `lib/render/annotation_painter.dart`（新建）：`paintAnnotations` 单一入口服务三消费方（§5.1 纪律）——画布叠加 / loupe（`onlyIds` 过滤只画当前操作标注）/ 导出合成（离屏 Canvas 同链路出图）；线要素淡黑投影 + 文字半透明底框（对比度纪律）；选中态叠加（锚点小圆点、锚点级单点放大高亮其余变暗）。
+  - `lib/ui/annotation_canvas.dart`（新建）：两级选择状态机（对象级↔锚点级，层级回退单向，唯一出口点空白/点本体）+ **手势排他锁**（命中优先级 锚点热区>对象本体>画布；选中后 `InteractiveViewer.panEnabled` 翻转锁平移，双指缩放恒可用；8dp 逃生口=选中判定只发生在 tap）；AnnotationToolbar 轻量工具栏（箭头/矩形/序号，拖拽生成两点、pin tap 单点生成，误触两点重合不产出）。
+  - `lib/ui/image_annotator.dart` 重写为编辑宿主（旧涂画实现 supersede）：装配画布+工具栏+调色板，持久化走 AnnotationStore——宿主零几何判定零 json。
+- 测试（test/annotation_object_test.dart，10 用例）：schema filled 往返与缺省不写、stroke 归一、序号防雪崩回补（删②③→②）、schema 无 index 字段、锚点最小集、就近吸附容错、包围盒/线段命中与重叠取最上层、对角锁定/整体平移（浮点 closeTo）、离屏渲染三消费方（全量/onlyIds/toImage）。
+- 验证：analyze 0 / 全量 329 绿（+10）。真机待验：三工具生成与两级选中手感、选中锁平移/8dp 逃生口竞争、缩放后命中坐标、pin 删除回补显示。
+- SSOT：image-markup.md §9 落点表补四个文件 + §10 第 1 批验收行（含未含清单）。
+
+## [2026-10-01] 图片标注对象化改版第 2 批（标注列表 + 精度反馈栈：吸附/触觉/loupe）
+
+- 落地（继续对齐「UI 只持交互态」分层）：
+  - **吸附纯函数**（`annotation_geometry.dart` 追加）：`snapAnchorPoint`（x/y 独立解算：图片 0/0.5/1 三线 + 其他标注锚点坐标为参照，返回修正点 + SnapLine 列表，参照系排除被拖标注自身）；`snapOrthogonal`（八向 45° 射线修正，弧度容差）；`SnapLine`（竖/横 + 触觉语义）、`SnapHaptic` 两档（orthogonal=selectionClick / align=lightImpact）。
+  - **画布接入**（`annotation_canvas.dart`）：锚点拖动走吸附解算（对齐与正交叠加，正交优先）；触觉**边沿触发**（`_lastHaptic` 去重，不随帧连发）；吸附线垫底渲染细白线，松手/取消即隐（`_snapLines` 清理三处：up/cancel/objectDrag 收尾）。
+  - **loupe**（`lib/ui/annotation_loupe.dart` 新建）：复渲染法（FittedBox+Transform.scale 放大原图层，**非截屏**，§5.1 纪律）；镜中三层=原图+当前操作标注本体线（`onlyIds` 复用第 1 批 paintAnnotations 纯函数——三消费方纪律兑现）+ 十字准星；贴顶翻下方/贴左翻右侧（悬浮层边界碰撞）；**仅锚点级拖动浮现**（对象级不浮现，§5），画布 Stack 挂载、拖动结束清 `_fingerLocal` 即隐；`AnnotationCanvas` 增 `background` 参数供镜中复渲染原图。
+  - **标注列表**（`lib/ui/annotation_list.dart` 新建）：§6 四件事（选中/删除/改色=色板循环/进入调整），防膨胀纪律（无搜索/折叠/分组/锁定/重排）；pin 行首序号角标（`assignPinNumbers` 动态算，与画布同源）；行内 trailing 三钮；`Scrollable.ensureVisible` 双向联动列表侧。
+  - **宿主装配**（`image_annotator.dart`）：持受控 `_selectedId` 透传列表↔画布（§6 双向联动打通：图上选中→列表行滚动高亮、列表点行→画布高亮）；列表竖屏收底部抽屉（280h，选中不关抽屉可连续管理）；「调整」= 选中并 pop 抽屉露出画布拖锚点；删除清选中；画布传入原图 `background`。
+- 测试（test/annotation_snap_test.dart，7 用例）：边缘/中心吸附修正+线、对齐其他标注参照（含自身不吸附）、超容差原样、横竖双线同帧、正交 45°/轴向/超容差、SnapLine 两档语义、loupe 渲染链路回归（onlyIds 复用）。
+- 验证：analyze 0 / 全量 336 绿（+7）。真机待验：吸附手感与容差观感、触觉两档区分度、loupe 跟手与翻转、抽屉列表联动流畅度。
+- SSOT：image-markup.md §11 第 2 批验收行（含未含清单：文字标注/导出合成/隐私遮挡 Toggle/横屏右栏列表留第 3 批）。
+
+## [2026-10-01] 图片标注对象化改版第 3 批（文字标注 + 导出合成 + 隐私遮挡 + 横屏右栏，三批收官）
+
+- 落地（分层不变：UI 只持交互态，合成/导出下沉 render 层）：
+  - **隐私遮挡**（§3 不新增工具=rect 实心态）：工具栏「遮挡」快捷入口（rect 生成默认实心）+ 选中 rect 的空心/实心 Toggle（`AnnotationToolbar` 增 onToggleFill/fillAvailable/currentFilled；宿主 `_toggleFill` 有选中改对象、无选中切生成态）；安全边界口径「展示级遮挡非数据级销毁」随 tooltip 与 SSOT 保留。
+  - **文字标注**（§7）：工具栏「文字」工具，tap 落点单点生成（`AnnotationCanvas` up 判定放行 text 单点）→ 宿主弹输入确认才入列（取消/空文本不产出）；渲染零新增——`paintAnnotations._paintText` 既有 TextPainter 动态宽高（maxWidth 0.8 图宽换行）+ 半透明底框即 §7 形态，单锚点可拖可整体移。
+  - **导出合成**（§7 瞬时合成）：新建 `lib/render/annotation_export.dart`——`exportCompositedImage` 离屏 PictureRecorder 先画原图再走 `paintAnnotations` **同一纯函数**（三消费方纪律第三消费方兑现），PNG 落 `documents/annotations/export/` 新文件（长边 2048 限边）；源图与 annotations 数据不动；解码失败原样抛出不静默（R1）；宿主「导出分享」按钮 share_plus 出系统分享，防重入转圈态，无标注先提示。
+  - **横屏右栏列表**（§9）：宿主 `OrientationBuilder` 方向感知——横屏 Row 画布+240dp 右栏常驻 `AnnotationList`（进入调整就地选中不 pop），竖屏保持抽屉形态；「标注列表」入口按钮随方向显隐。遗留：横屏沉浸式全屏文字输入（当前通用对话框，§7 横屏降级的完整形态随真机横屏验收再补）。
+- 测试（test/annotation_export_test.dart，8 用例）：实心渲染出图、filled Toggle 往返、安全边界 schema 面（filled 不改 points/type）、文字渲染出图、空文字/无点防御、文字单锚点最小集、导出源图缺失原样抛出、产物新文件落 export 目录且源图 stat 不变（path_provider mock 系统临时目录）。
+- 验证：analyze 0 / 全量 344 绿（+8）。
+- SSOT：image-markup.md §12 第 3 批验收行（改版三批收官声明 + 遗留演进位：横屏沉浸输入/数值微显/笔迹工具）。
+
+## [2026-10-01] 标注遗留演进位销项：笔迹工具 + 横屏沉浸输入（用户拍板两项即做）
+
+- **笔迹工具**（§3 候选→正式落地，成本最低因全链路第 1 批已备）：工具栏「笔迹」入口（`_tool(context, Icons.gesture, '笔迹', AnnotationType.free)`）；画布 free 生成态改**矢量一笔采点**——`_onPointerMove` creating 分支按类型分派：free 轨迹追加（与上一点 <0.002 归一化重合不重复采）、其余两点替换。命中/锚点/渲染零新增（hitObject 逐段线距离、anchorsOf free=全轨迹、paintAnnotations drawPath 分支均第 1 批就绪）；schema `'stroke'` 留位兑现为 free 同模型，写侧维持 'free' 旧口径。工具集至此=四工具+笔迹全齐（§3 表格全覆盖）。
+- **横屏沉浸式文字输入**（§7 横屏降级完整形态）：宿主 `_askText` 方向感知两形态——竖屏对话框不变（键盘不遮画布）；横屏走 `_ImmersiveTextInput` 全屏毛玻璃（BackdropFilter blur 16 + surface 60% 底 + 大输入区 expands，完成/取消显式双钮，PageRouteBuilder opaque:false 推入）。不做「回竖屏」规则碎片化。
+- 测试（test/annotation_stroke_test.dart，4 用例）：free 轨迹逐段命中/远点不命中、anchorsOf 全轨迹、withAnchor 单点重算保身份、drawPath 三消费方出图。
+- 验证：analyze 0 / 全量 348 绿（+4）。
+- SSOT：image-markup.md §13 遗留位销项（笔迹+沉浸输入 ✅；仅剩吸附数值微显低优按需）。
+
 ## [2026-10-01] 真机验收反馈修复：视频门槛通过不插入（null 语义误解）+ 三项连带
 - 现象（真机首轮验收）：①test.mp4/test.mov 相册添加后**无视频卡** ②保存后详情点视频「视频加载失败」 ③用户提议草稿态视频应可预览确认。
 - 取证路径：uiautomator dump 对 Flutter 语义不可见 → run-as 拉 DB + shares 目录对账 → ffmpeg 体检设备上文件。**「加载失败」根因是测试媒体本身**——首轮生成的 long_330s.mp4 被 libx264 编成 h264 High 4:4:4（yuv444p），Android 硬解不支持；test.mp4 有 `-pix_fmt yuv420p` 所以没问题。教训：**造测试媒体必须显式 `-pix_fmt yuv420p`**（testsrc 源在 ultrafast 下会被选成 yuv444p）。
@@ -329,3 +373,115 @@ last-merge: 2026-09-30
 - 返回手势三态：详情返回回列表不退 App（enableOnBackInvokedCallback 修复生效）/ 根页返回退 App / 浮层返回只关浮层。
 - 引用模式 SAF：分享文件进拾贝 → 杀 App 重开仍可打开——takePersistableUriPermission 跨会话可达性实测通过，2026-09-30 落地时「本机无设备、持久化成败未实测」的悬置风险正式销项（摄入默认 referenceMode 从此有实测背书）。
 - 设备中途断开未做库级 attachState 对账，以用户行为验收为准。
+
+## [2026-10-01] 导航减 chrome：去 app 内返回箭头，出口收归系统手势（用户拍板）
+- 口径（ui-spec §3 新增「返回口径」节）：二级页与状态层级视图一律无返回箭头，出口=系统手势/返回键（HCI 评估定论：Android 返回是平台级能力，app 内箭头是冗余 affordance；判断依据是任务重量——拾贝详情是工作面，走小红书式「安静的正式页」，不走 mymind 便签式降级）。
+- ①路由页机械摘箭头（6 处 `automaticallyImplyLeading: false`）：详情 / MCP 服务 / 更新 / AI 任务队列 / 最近删除 / 视频全屏播放（media_blocks）。
+- ②状态层级视图必须先接管再摘（评估关键发现：全仓原本零 PopScope，保险箱/工作区里系统返回会直接退 App，摘箭头=困住用户）：保险箱视图（inbox_page vaultOnly 分支）PopScope 返回→`onVaultOnlyChanged(false)` 回「全部」；工作区进入态 PopScope `canPop: _selected==null`，返回→退回工作区列表。
+- ③标注画布手势兜底（image-markup §5.1 新增条目）：生成/拖拽中 `PopScope canPop:false`——笔画起于边缘手势带被系统掐断（ACTION_CANCEL）后，返回事件解释为「取消生成模式」而非退页；评估中否决「工具栏当手势缓冲区」作主防线（手势带全屏高度 ~20-24dp > 工具栏覆盖、Tap/Drag 论证对画布无效、16dp 内缩低于阈值），采纳为第一层布局缓冲，PopScope 为第二层；可选第三层（左缘 200dp exclusion rects）真机验收再定。
+- 例外保留：块编辑器 CloseButton（取消/保存语义）、速记面板收起箭头（收合非返回）——导航返回口径不外溢到动作语义。
+- 验证：analyze 0 / 全量 348 绿。真机待验：保险箱/工作区手势返回回上级、标注边缘起笔后返回不退页、六路由页手势返回。
+
+## [2026-10-01] 速记条真机反馈三连修：主题漏覆写槽位是白边/杂色共同根因
+- 白边根因：`outlineVariant` 未在主题覆写，漏 M3 基线默认浅薰衣草白（≈#CAC4D0）——速记条收起态/拖动中间态顶部 1.5px 边线用该槽位，故拖动中不消失；完全展开后边线换 primary 橘红才「消失」。修：主题补 `outlineVariant: 0xFF474D5C`（比 outline 亮一档暗灰），连带修正 rich_text_view 分隔线、卡片描边等 8 处同槽位浅线。
+- 展开态杂色根因：`secondaryContainer/onSecondaryContainer` 同样漏覆写，「保存」FilledButton.tonal 漏 M3 默认紫灰底淡紫字，与暖灰底+橘红强调撞色。修：对齐 primaryContainer 暖棕系（0xFF3D1D0E / 0xFFFFB59A，secondary 本就同橘红，映射逻辑一致）。
+- 教训：主题注释自称「M3 派生色不再露出」但全量 override 不全——ColorScheme 有 30+ 槽位，凡用未覆写槽位即漏 M3 基线紫白系；后续新页面用色先核对 main.dart 已覆写清单。
+- 收起拉手提示词「· 点按或上滑展开」按用户拍板移除（上滑手势本就 Predictive affordance，无需文字教学）；3 处测试引用同步。
+- 验证：analyze 0 / 全量 348 绿。
+
+## [2026-10-01] 工作区创建升级为整页仪式（mymind「Create new space」参照，用户拍板）
+- 背景评估：FAB+裸 AlertDialog 的创建流「语法错位」——Dialog 是快速确认语法，撑不起「建一个容器」的分量；主按钮两个同权重 TextButton 无承诺感；零语境无定位语。用户给 mymind 创建页截图定参照，确认整页方案（比此前评估的 BottomSheet 方案更贴 mymind 视觉基准 SSOT）。
+- 落地 `lib/pages/workspace_create_page.dart`：全屏居中构图——中国结线稿（CustomPaint 盘长结简形：顶环+外内菱+十字织线+四向耳弧+三绺流苏，单色 onSurfaceVariant，装饰不走橘红）→ 衬线 headlineMedium 标题 → 定位语（用户四备选中拍板第 4 句「聚合点滴记录与热爱。不止是为了归档过去，更是为了启发未来。」——最短、最诚实、贴拾贝品牌）→ 居中描边名称框（autofocus）→ 橘红 StadiumBorder「创建」FilledButton（ValueListenableBuilder，名称空=onPressed null 承诺门）；右上角 X 关闭（§3 例外口径：关闭语义非导航返回）+ automaticallyImplyLeading:false，手势返回天然可用。
+- 分层：本页只产名称 pop 回字符串，写路径留在 WorkspacePage 走 CreateWorkspaceCommand（arch：UI 不持写路径）；WorkspacePage._create 的 Dialog 下线改 push；V3 口子登记在 ui-spec §4.11（图标/配色属性步长在本页）。
+- 测试：test/workspace_create_page_test.dart 2 用例（空名承诺门不可点 / 输入 pop 回 trim 后名称）；中国结形态经临时 golden 渲染自查两轮（整圆耳环偏花朵感→改四向半圆弧后达标），golden 不入库。
+- 验证：analyze 0 / 全量 350 绿 / arch-guard 7 条过。真机待验：中国结线稿观感、衬线标题渲染、键盘弹起输入框避让、创建后回列表新卡出现。
+
+## [2026-10-01] 品牌符号落地：鹦鹉螺 glyph（用户供 SVG，色板重映射进主题）
+- 符号评选（用户供 8 图）：选定「Geometric Nautilus」——单主体无底板、剪影经得起缩小、几何线稿与既有体系同源、「贝」押「拾贝」题眼且螺旋分室暗合工作区「散落碎片长出秩序」；「Gathering Basket」聚合语义最好但编织纹理小尺寸糊死，划为空态插画素材。
+- 颜色处理（用户供 SVG 后按纪律重映射，assets/glyphs/nautilus.svg）：①删 #fafefe 白底 rect+底路径（深色界面上就是白方块）②线稿层 #0a2c34/#143746 → #e8e4dc（onSurface 暖白）③40 个中间调青绿切面按亮度两分 → #242833/#1c1f27（surfaceContainerHigh/Low，亮源色压暗保持层次反转）——源图彩色不落一色进代码，仅 3 个主题槽位值。手绘 CustomPaint 版（弦线螺旋三轮迭代）作废，golden 渲染验证 SVG 深底观感达标后移除。
+- 依赖：flutter_svg ^2.3.0（项目首个 SVG 渲染依赖）；NautilusGlyph widget 就绪（size 入参，未落页——创建页顶部当前仍是中国结，符号分工待用户拍板：鹦鹉螺替换创建页顶 / 作全 app 品牌符号另寻落点）。
+- 验证：analyze 0 / 全量 350 绿 / arch-guard 7 条过。
+
+## [2026-10-01] 速记条 UI 分析两连修：双提示淡出时序 + 保存按钮内容感知（用户拍板）
+- 双提示根因：形变交叉淡化（收合/展开两树叠放）里两态各有一份「记点什么…」（拉手文字 + 正文首行 hint），共用 0.35→1 淡化窗口 → 半途并存。修：拉手文字提前淡出（进度 0→0.2 消隐，正文提示 0.35 才浮现）——「先死后生」，任意时刻全屏最多一份提示，且拖动初期「文字先走、面板在长」形变更连贯。
+- 保存按钮「脏」的根因分析：①静态 tonal 深棕与面板底同明度 → 空态成暗斑（无状态 CTA 扛 stateful 动作，语义错位）②M3 禁用默认样式 = onSurface@12% 半透明罩 + 38% 半透明白字，罩叠面板即「灰泥」观感——用户直觉「有内容才显色」正踩主题纪律「橘红仅动作与选中」。修：内容感知 CTA——`_hasContent`（文字/媒体/标签/待办任一）+ ListenableBuilder 订阅各文本段 controller；空=实色禁用（surfaceContainer 底 + onSurfaceVariant@60% 字，无半透明罩），有内容=橘红 FilledButton + onPrimary 白字（设计好的高对比对，非脏源）。`_save` 的「先写点什么吧」分支自然退役（按钮进不去，留作防御）。
+- 测试：新增内容感知用例（空禁用/输入点亮）；既有保存路由用例不受影响（先输入后保存）。
+- 验证：analyze 0 / 全量 351 绿 / arch-guard 7 条过。真机待验：拖动半途单提示、保存钮点亮瞬间反馈、禁用态实色观感。
+
+## [2026-10-01] 新建工作区页垂直居中修复
+- 现象：整页内容靠上。根因：Center 套在 SingleChildScrollView 里，纵向滚动视口给子级的是**无界高度**，Center 撑不满视口 → 内容顶到上沿（单子级滚动布局的经典陷阱）。修：LayoutBuilder 取可视高 + ConstrainedBox(minHeight) 撑满 + Center 居中；键盘弹起（resizeToAvoidBottomInset 缩小可视区）时自动在剩余空间内居中、超高仍可滚。顺手补水平 Insets.lg 边距（原名称框在窄屏满宽贴边）。中间态括号补丁两次失手后整文件重写——多层级嵌套改动直接重写比逐层补丁可靠。
+- 验证：analyze 0 / 全量 351 绿；临时 golden 渲染确认内容块落可视区垂直中心（golden 不入库）。
+
+## [2026-10-01] UI 规则沉淀：本日交互/视觉决策提取进规范体系
+- 分流：设计口径进 docs/design/ui-spec.md（SSOT）——新增 §2.4 品牌符号与装饰（鹦鹉螺=全 App 品牌符号 / 中国结=聚合挂创建页；装饰不走橘红；矢量资产色板重映射禁白底；不写手势教学文案）、§4.6 补三条（速记条常驻不随滚动隐显=任务生命周期判断 / 保存按钮内容感知 / 形变交叉淡化「先死后生」）、§6 补 CTA 分级（FilledButton 主按钮 / 裸 AlertDialog 仅快速确认 / 低频重要动作=整页仪式「形式升级流程不加价」+ 承诺门）。§3 返回口径、§4.11 创建页此前已回写。
+- 工程硬规则进 .agents/skills/goodshare-ui/SKILL.md——新增「交互与主题硬规则」节八条（无返回箭头三层落法含「状态视图先补 PopScope 再摘箭头」次序、主题槽位覆写核对、装饰不走橘红、资产重映射、先死后生、CTA 内容感知、捕获入口不随滚动隐、Center-in-scrollview 布局陷阱）；自查清单补第 8/9 条（槽位覆写 / 返回箭头·半透明罩·AlertDialog / 资产重映射·双提示）。
+- 泛化原则：规则写「可判定的工程口径 + 实证事故出处」，案例叙事留 devlog 不进规范。
+
+## [2026-10-01] 创建页符号替换：中国结废弃（联通商标撞车）→ 鹦鹉螺顶上
+- 用户供新 knot SVG 评估时自查发现：盘长结形态与**联通公司 logo 撞车**（其商标即红色盘长结）——品类被注册，非画得像不像的问题，凡品牌/logo 用途中国结形态整体禁用（硬约束）。SVG 源弃用未入库。
+- 处置：创建页顶部 `_ChineseKnot`/`_KnotPainter`（手绘盘长结）整体删除，换 `NautilusGlyph(size: 96)`——此前 A/B 分工悬案就此落定为「鹦鹉螺唯一品牌符号」（ui-spec §2.4 已改写并记废弃因由；§4.11 同步）。golden 渲染验证居中构图正常。
+- 教训沉淀：符号/图标引入前先做**商标形态冲突排查**（尤其中国结、灯笼、华表等被大公司注册的品类），晚发现不如入库前查。
+- 验证：analyze 0 / 全量 351 绿 / arch-guard 7 条过。
+
+## [2026-10-01] 符号体系定稿：三环结插画上创建页（箭头序号保留）+ 鹦鹉螺升任 app 启动图标
+- 用户供三环绳结教程图（PNG，带①②③④序号与方向箭头、右上白补丁），拍板：**箭头+序号是表达核心不去**，与海螺同风格处理。定位=插画非品牌 glyph（品牌符号=鹦鹉螺），工作区隐喻「把散落的条目打成结」。
+- 处理管线（纯 PIL，无 numpy 环境）：边界连通泛洪抠浅色渐变背景（绳体内部高光不与边连通故保留）+ 亮度反转映射主题暖灰阶（绳体→#1c1f27 档、编织纹理/线稿/箭头/序号→#e8e4dc 暖白，gamma 1.15 保纹理对比）+ 内容框裁剪。产出 `assets/glyphs/knot_diagram.png`（1075×914，源图彩色不落一色）。
+- `KnotIllustration` widget 挂创建页顶（height 180）；鹦鹉螺经品牌底（#15171E）渲染 1024px→`assets/icon/app_icon.png`→`flutter_launcher_icons` 重生成 Android/iOS 全尺寸图标集（golden 渲染法产图标，DPR 1.0 需显式设）。
+- 踩坑：widget test 里 `Image.asset` 异步解码不被 pumpAndSettle 追踪，golden 空白假象——`tester.runAsync` 放行真实时钟后再 pump 才捕到。
+- 验证：analyze 0 / 全量 351 绿 / arch-guard 7 条过 / golden 双验（创建页构图 + 图标渲染）。真机待验：桌面图标观感、创建页插画在真暗底上的纹理表现。
+
+## [2026-10-01] 创建页绳结插画微调：尺寸 180→96（与海螺同档）+ 序号剔除（用户拍板）
+- 96dp 下序号①-④缩成斑点噪点（源图 1075×914 压到 96dp 序号仅数像素）——用户拍板「不要数字了」。连通域分析剔除：序号特征=55×55 近方形环形块（面积~2360），箭头=细长笔画保留，绳体=巨块保留；顺带清 2 个 1px 尘点。首版孔检测条件写错（透明像素 label==cid 恒假）零命中，debug 打印特征后改按形态参数精准命中。
+- 资产重裁 1071×910；KnotIllustration 默认 height 96；ui-spec §2.4/§4.11 措辞同步（箭头保留、序号剔除）。
+- 验证：analyze 0 / 全量 351 绿 / golden 确认 96dp 构图干净。
+
+## [2026-10-01] 按压反馈重构：图标变色替代面积罩（用户拍板「图标本身变色」）
+- 病根：M3 默认按压反馈=半透明状态层（onSurface@8-12%）叠满可点击区——暗色主题上灰白罩叠深底即「底色与白字叠成灰泥」（与禁用罩同源），且视觉重心落在底板而非图标。用户直觉「图标本身变色」正合 chrome 极低体系：反馈与动作对象同位，明度跳变 100ms 内可感知，「提亮=激活」语义比底板变灰准；橘红纪律不稀释（按压用提亮非点亮）。
+- 落地（main.dart 主题一处收口）：`splashFactory: NoSplash` 全局关扩散水波纹；iconButtonTheme 按压/悬停罩透明 + 按下图标 onSurfaceVariant→onSurface 提亮；filledButtonTheme 按压底色实色加深（#E04F1A=primary 深一档）禁罩；textButtonTheme 按压文字实色加深。resolveWith 非按下态返回 null 回落 M3 默认——selected 橘红不丢（关键细节）。卡片/列表 InkWell 保留默认 highlight（未在投诉范围，且是唯一反馈）。
+- tonal 特例：全局 pressed 色是橘红系，tonal 暖棕底会闪橘——settings_page 3 处 tonal 局部 `_tonalPressStyle`（Color.alphaBlend 黑18% 实色加深，主题派生不硬编码）。
+- 连带：dart format 重排 settings_page（旧格式文件）触发既有裸 if 的 curly_braces lint，补大括号；long_text Phase 3 全量首跑偶发失败（Isolate 时序），复跑两次均绿判偶发。
+- 规范回写：ui-spec §6 按压反馈分级 + goodshare-ui skill 硬规则新增「禁面积型反馈」条（含 resolveWith null 回落细节）。
+- 验证：analyze 0 / 全量 351 绿 / arch-guard 7 条过。真机待验：图标钮按下提亮手感、CTA 按下实色加深、全 app 无灰泥罩残留感。
+
+## [2026-10-01] 按钮去胶囊：Filled/Outlined/FAB 全局改大圆角矩形（用户拍板「不用胶囊按钮」）
+- 用户示 mymind 截图拍板「不用胶囊按钮了，这种感觉的按钮更好看」——按钮类一律 Radii.lg 16dp 大圆角矩形（与卡片同语言，mymind ＋块/搜索条参照）：主题 filledButtonTheme/outlinedButtonTheme/floatingActionButtonTheme 三处 shape 全局收口（M3 默认 Stadium 整体退役）；workspace_create_page 手写 Stadium 移除（继承主题）；详情页底部操作条（InkWell+ShapeDecoration）Stadium→lg16。
+- 胶囊保留给「词汇形态」：筛选 chips（chipTheme）与标签（_tagPill）——胶囊=标签专属语言，与按钮混用稀释语义；ui-spec §2.3 修订（原「按钮一律全 pill」废止，原 mymind 依据实为标签场景）+ goodshare-ui skill 硬规则新增「按钮形态=大圆角矩形，新按钮禁止手写 Stadium、不要给按钮加 shape」。
+- 澄清：用户随后明确 mymind 截图同时是**按压反馈**参照（按下只有图标本身变色非整个区域）——该行为上一轮已实现（iconButtonTheme 罩透明+图标提亮/NoSplash），重新构建安装即生效。
+- 验证：analyze 0 / 全量 351 绿。真机待验：按钮矩形大圆角观感 + 图标按下提亮。
+
+## [2026-10-01] 全系统去胶囊：chips/标签/输入框/工具栏全部矩形化（用户拍板「不再使用胶囊」）
+- 二次拍板升级：上一轮「胶囊留给词汇形态」口径作废，胶囊形态全系统退役。清单：①chipTheme Stadium→md12（筛选 chips）②标签 _tagPill→_tagBadge Stadium→md12 ③搜索输入框 24→xl20 ④标注工具栏容器 24→lg16 ⑤创建页输入框 M3 默认 4dp→lg16（顺带统一）。lib 内 Stadium 归零（grep=0）。
+- 圆角取档原则沉淀：按组件尺寸取档——小件（chips/标签）md12、按钮/工具栏 lg16、卡片/输入框 xl20；半径 ≥ 高度一半即伪装胶囊，同禁（如工具栏 24/40dp）。
+- 规范回写：ui-spec §2.3（去胶囊条款升级 + 圆角取档）+ goodshare-ui skill 硬规则（全系统去胶囊 + 禁伪装胶囊）。
+- 验证：analyze 0 / 全量 351 绿 / arch-guard 7 条过。真机待验：筛选 chips/标签/搜索条/标注工具栏的矩形观感。
+
+## [2026-10-01] 去胶囊补漏：底部导航选中指示器胶囊（用户真机截图定位）
+- 用户真机截图（对比 mymind）指出页面下部「还是胶囊一个区域变色」——真凶不是按压反馈，是 M3 NavigationBar 的**选中指示器**（原生=64×32 secondaryContainer 胶囊，全部页面底部常驻）。修：navigationBarTheme indicatorColor 透明 + 选中态 icon/label resolveWith 变橘红（onSurfaceVariant→primary，mymind 口径「选中仅内容变色无底板」）。连带 SegmentedButton（settings 2 处）shape 收口 lg16（选中容器语义保留）。ActionChip 经 chipTheme 自动矩形化。
+- 规范同步：ui-spec §2.3 去胶囊条目补「NavigationBar 指示器」；skill 硬规则已含全系统去胶囊条。
+- 教训：去胶囊首轮只扫了 StadiumBorder 显式写法，漏了 M3 组件**内置**的胶囊形态（NavigationBar indicator）——完整清单应遍历「自带默认胶囊」的组件族：按钮、FAB、chips、NavigationBar 指示器、SegmentedButton。
+- 验证：analyze 0 / 全量 351 绿 / arch-guard 7 条过。真机待验：底部导航选中=橘红图标文字无胶囊。
+
+## [2026-10-01] 创建页定位语拆两行（用户拍板）
+- 「聚合点滴记录与热爱。\n不止是为了归档过去，更是为了启发未来。」——每句一行居中，「短—长」行长对比自生节奏；层级不加配色强调（标题白/定位语灰已有明暗节奏，第三重强调过载，mymind 定位语亦统一灰）。golden 验证两行居中构图。
+
+## [2026-10-01] 详情页两区改版 + 区块能力平台（detail-two-zone.md，11 条预警打磨）
+- **页面级已落地**：公共区底栏 3 项（工作区/分享/删除，「分享」后台静默导出 PDF 后拉起分享面板）；摘要/标签切换器+刷新（复用 Summarize/ExtractTags+_AiTaskStatusLine）；PDF 导出 `lib/ui/pdf_export.dart`（pdf 包+内嵌 DroidSansFallback 中文字体，Apache 2.0）。
+- **能力平台四件套**：`lib/ai/capability.dart`（ContentCapability 抽象，appliesTo 自声明，command() 对接命令层=自动进 ai_task_queue FIFO，多链互斥=队列化）+ `capability_chain.dart`（纯状态机：完成即落库/中断续跑 restore/失败停步 retry/Reset/raw+edited 双字段，6 单测绿）+ `block_capability_host.dart`（长按统一触发+Semantics custom action，媒体块三处接线 buildRichBlock）+ `block_capability_card.dart`（单卡链式+来源锚点+回注目标/复制+编辑覆盖态回调钩子）+ `block_text_page.dart`（文本块三级处理页）。
+- **分享分流**：`share_scope_sheet.dart`（预览勾选，灵感区/块附录默认关=隐私红线）+ `body_screenshot.dart`（复用页面既有 RepaintBoundary=Theme 红线；8000px 等效高度硬阈值超限降级 PDF）。
+- **灵感区重构**：schema v16 加 `inspiration_md` 列（幂等补齐）；UpdateItemCommand 加 inspirationMd 字段全链贯通；AI 产出区/灵感区拆分——摘要/标签=机器只读+刷新，灵感=人的碎片可编辑失焦即存（dispose 兜底，reload 编辑中不覆盖）。
+- 教训：arch-guard R7 扫 `fontSize:` 正则无法用常量化绕过；pdf 包 fontSize 是文档排版参数与 textTheme 无关，按 remedy 指引加白名单注明原因（只减不增）；批量 sed 替换标签名会连 `fontSize:` 标签一起吞掉（本次 `python str.replace('fontSize: 20)', '_fontSizeTitle)')` 事故，改完必须复跑 analyze）。
+- 验证：analyze 0 / 全量 357 绿（含新 6 条链单测）/ arch-guard 7 条过 / docs-lint OK。真机待验：长按唤出菜单手感（文本块双击选字分家待验，别扭回退单入口方案）、能力卡流转、分享产物形态、灵感区失焦落库。
+- [2026-10-01] [变更]: 能力卡执行接线落地：item_detail_page 包 BlockCapabilityExecutor，onRunStep 组装真命令（OCR/转写/翻译/摘要，翻译带入队前预检）+ _waitForTask 轮询任务落定（completed 判定，5 分钟上限）后从条目字段抽产出（human_md/translated_md/summary_md）；onApply 三回注目标走 UpdateItemCommand（追加/替换/灵感区）；onEditOutput 接三级文本页；MVP 口径=产出落条目级字段，链每次全新开始、Reset 仅归零卡内状态（块附件通道落地前无续跑死锁）
+- [2026-10-01] [验证]: flutter analyze → 0 issue；test capability_chain_test+block_editor_test 34 绿（UI 接线轮按验证分级跑相关文件，全量测试未跑）
+- [2026-10-01] [变更]: 区块能力触发改版落地（真机验收否决长按+菜单三跳，用户拍板 ✨ 单入口）：BlockCapabilityHost 改每块右上角常驻 28px ✨ 圆钮点按直进三级能力页（长按/能力清单菜单层废除）；新建 block_capability_page 全屏页（资源预览+链式工作台，能力卡 BottomSheet 并入页）；链=capabilitiesFor 全量（chainFor 删除，ReinjectTarget 移 capability.dart）；行内文本/代码/列表/媒体块+顶级媒体条目全包 ✨ 外壳（补顶级区缺口）；删 showBlockCapabilitySheet/卡 Sheet 入口
+- [2026-10-01] [验证]: flutter analyze → 0；全量测试 357 绿；arch-guard 7 条过；docs-lint 过；detail-two-zone.md §5.1/§5.3/§5.4/§7 已回写改版记录；8009 包构建成功但真机断连未装
+- [2026-10-01] [变更]: 独立能力拆分落地（用户拍板：独有功能也进三级页，二级页与类型统一）：capability.dart 增 StandaloneCapability 五项（分类/条码=image、分析文本=text、切片/整片=video）+ standaloneFor；执行器/三级页增 onRunStandalone 分发（命令入队或切片工具流）；三级页增「独立能力」chips 区；详情页 _typeActions/_translate 整体删除——内容能力唯一入口=✨，MCP 工具不动
+- [2026-10-01] [验证]: flutter analyze → 0；全量 358 绿（capability_chain_test 增 standalone 分发 4 断言）；arch-guard / docs-lint 过；detail-two-zone.md §5.2/§7 回写；8010 构建成功，真机仍断连未装
+- [2026-10-01] [变更]: 触发分派定稿落地（用户拍板：媒体块长按、文本块 ✨）：BlockCapabilityHost 增 BlockCapabilityTrigger 双模式——handle=✨ 常驻（热区外扩 44×44，视觉仍 28px）/ longPress=媒体块长按直进三级页（无常驻图标，阅读态零 AI）；媒体块包 SelectionContainer.disabled 退出选区容器（解 SelectionArea 吃长按，真机已证）+ HitTestBehavior.translucent 全宽热区；行内/顶级图音视全走 longPress，文本/列表/代码块走 handle
+- [2026-10-01] [验证]: flutter analyze → 0；全量 358 绿；arch-guard / docs-lint 过；detail-two-zone.md §5.1 三轮拍板记录回写；8011 已装真机（3B161700Y0600000）
+- [2026-10-01] [变更]: 区块能力触发四版改版（用户拍板：文本块撤销常驻 ✨——「一行文本也出现图标，页面大量图标」，根因=常驻入口密度即块密度）：新增 BlockAnchorStore 锚点注册表（Host 注册自身矩形，dispose/滑出视口即注销；hitTest 按菜单锚点反查命中块——纵向包含取高度最小者、块间空隙取最近块、>48dp 判未命中）；BlockCapabilityTrigger.handle → selection（文本块纯透传 child，正文零图标），longPress 档与媒体块手势不动；新增 buildBlockCapabilityMenu（系统选字菜单追加「AI 处理本段」项，未命中不追加=不死项），item_detail_page 的 SelectionArea 接 contextMenuBuilder 并外包 BlockAnchorRegistry；Host 内 _invoke 抽为顶层 openBlockCapability（菜单项/媒体长按共用唯一出口）；rich_text_view 注释同步
+- [2026-10-01] [验证]: flutter analyze → 0；全量 361 绿（新增 test/block_anchor_test.dart 3 条：锚点命中/卸载即注销/划词菜单项出现）；detail-two-zone.md §5.1 四版拍板 + 已评估否决的替代（侧边书签/边缘磁吸、焦点块单 ✨）、§5.2/§5.4/§7 落点/验证口径已回写；待真机验收：划词菜单项触达与命中块是否正确
+- [2026-10-01] [变更]: 详情页操作区重划（用户拍板）：底栏 3 项 = **编辑 / 工作区 / 分享**（删除移出底栏——危险项不占常驻位）；`⋯` 菜单 = 解除编辑(条件) / 重分类(条件) / 重新处理 / 移入移出保险箱(条件) + **删除**（末位红字，走 _confirmDelete 二次确认）；菜单移除「编辑」「分享」——同一动作只留底栏唯一入口，纯文本直分享 `_share()` 一并删除；「机器态」不给按钮（人类不进机器态），入口改**长按 AppBar 标题**切换（_toggleMachineMode，双态呈现能力保留=ui-spec 硬规则）；_barAction 去掉 danger 形态（底栏不再有删除）
+- [2026-10-01] [验证]: flutter analyze → 0；全量 361 绿；arch-guard 7 条过 / docs-lint 过；ui-spec §4.3（公共区 3 项 + 操作分层表 + 文档形态⑤⑥）+ detail-two-zone §3/§6/§7 已回写；待真机验收：底栏三项触达、菜单删除二次确认、长按标题切机器态是否误触
+- [2026-10-02] [变更]: 三项拍板落地（与并行会话四版改版共存，全量 361 绿）：①图片标注迁三级页独立能力 annotate（新 annotation_editor_page.dart 全屏宿主，ImageAnnotator 整体迁入；二级页内联标注双态+按钮删除）②灵感区摘要/标签平行并置（删页签互斥）+ 标签手动增删（_TagEditorSheet BottomSheet chips，保存走 UpdateItemCommand 整表替换）+ AI 刷新并集合并（applyAiResult 只增不删）③底栏方向感知隐显（NotificationListener 方向判定 + AnimatedAlign heightFactor：下滑藏/上滑现/静止保持/键盘隐藏），与并行会话重划后的底栏（编辑/工作区/分享）零冲突叠加
+- [2026-10-02] [验证]: flutter analyze → 0；全量 361 绿（含并行会话 block_anchor_test 3 条）；arch-guard / docs-lint 过；detail-two-zone.md §3/§5.2/§7 回写；8012 已装真机

@@ -1,7 +1,9 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../ai/capability.dart';
 import '../doc/rich_text.dart';
+import 'block_capability_host.dart';
 import 'media_blocks.dart';
 import 'tokens.dart';
 
@@ -173,12 +175,23 @@ Widget buildRichBlock(
 
   return switch (block) {
     // 块内用普通 Text/RichText：跨块选择由外层 SelectionArea 统一提供
-    // （rich-text-component.md §3 阅读态选择能力约束）
-    HeadingBlock(:final level, :final inline) => Text.rich(
-        _spans(context, inline, _headingStyle(theme, level, serif)),
+    // （rich-text-component.md §3 阅读态选择能力约束）。文本载体块统一包
+    // BlockCapabilityHost：无常驻图标，划词后经选区菜单「AI 处理本段」进
+    // 三级能力页（detail-two-zone.md §5.1 二次改版拍板——常驻 ✨ 入口密度
+    // = 块密度，一行文本一个图标），与系统选字长按互不抢占。
+    HeadingBlock(:final level, :final inline) => wrapWithCapabilityHost(
+        Text.rich(
+          _spans(context, inline, _headingStyle(theme, level, serif)),
+        ),
+        kind: BlockKind.text,
+        anchorLabel: '文本块',
       ),
-    ParagraphBlock(:final inline) => Text.rich(
-        _spans(context, inline, _bodyStyle(theme, serif)),
+    ParagraphBlock(:final inline) => wrapWithCapabilityHost(
+        Text.rich(
+          _spans(context, inline, _bodyStyle(theme, serif)),
+        ),
+        kind: BlockKind.text,
+        anchorLabel: '文本块',
       ),
     QuoteBlock(:final children) => Container(
         decoration: BoxDecoration(
@@ -194,44 +207,69 @@ Widget buildRichBlock(
           ],
         ),
       ),
-    CodeBlock(:final code) => Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(Insets.md),
-        decoration: BoxDecoration(
-          color: scheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(Radii.md),
-        ),
-        child: Text(
-          code,
-          style: theme.textTheme.bodySmall?.copyWith(
-            fontFamily: 'monospace',
-            height: 1.5,
+    CodeBlock(:final code) => wrapWithCapabilityHost(
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(Insets.md),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(Radii.md),
+          ),
+          child: Text(
+            code,
+            style: theme.textTheme.bodySmall?.copyWith(
+              fontFamily: 'monospace',
+              height: 1.5,
+            ),
           ),
         ),
+        kind: BlockKind.text,
+        anchorLabel: '代码块',
       ),
     DividerBlock() => Divider(height: 1, color: scheme.outlineVariant),
-    ListBlock(:final items, :final ordered) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          for (final (i, item) in items.indexed)
-            Padding(
-              padding: const EdgeInsets.only(bottom: Insets.xs),
-              child: _buildListItem(
-                context,
-                item,
-                ordered ? '${i + 1}.' : '•',
-                serif,
-                onTodoToggle,
-                todoDone,
+    ListBlock(:final items, :final ordered) => wrapWithCapabilityHost(
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (final (i, item) in items.indexed)
+              Padding(
+                padding: const EdgeInsets.only(bottom: Insets.xs),
+                child: _buildListItem(
+                  context,
+                  item,
+                  ordered ? '${i + 1}.' : '•',
+                  serif,
+                  onTodoToggle,
+                  todoDone,
+                ),
               ),
-            ),
-        ],
+          ],
+        ),
+        kind: BlockKind.text,
+        anchorLabel: '列表块',
       ),
     // 行内媒体块（SSOT：docs/design/rich-text-media.md §3）；QuoteBlock 子块
-    // 经同一 buildRichBlock 递归，引用内媒体块照常渲染
-    ImageBlock b => InlineMediaImage(block: b),
-    AudioBlock b => InlineMediaAudio(block: b),
-    VideoBlock b => InlineMediaVideo(block: b),
+    // 经同一 buildRichBlock 递归，引用内媒体块照常渲染。
+    // 媒体块统一包 BlockCapabilityHost：块本体点按=播放/预览不动，长按=
+    // 三级能力页（无常驻图标，阅读态零 AI；detail-two-zone.md §5.1 拍板）。
+    ImageBlock b => wrapWithCapabilityHost(
+        InlineMediaImage(block: b),
+        kind: BlockKind.image,
+        anchorLabel: '图片块',
+        trigger: BlockCapabilityTrigger.longPress,
+      ),
+    AudioBlock b => wrapWithCapabilityHost(
+        InlineMediaAudio(block: b),
+        kind: BlockKind.audio,
+        anchorLabel: '音频块',
+        trigger: BlockCapabilityTrigger.longPress,
+      ),
+    VideoBlock b => wrapWithCapabilityHost(
+        InlineMediaVideo(block: b),
+        kind: BlockKind.video,
+        anchorLabel: '视频块',
+        trigger: BlockCapabilityTrigger.longPress,
+      ),
   };
 }
 

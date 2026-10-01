@@ -457,6 +457,7 @@ class _InlineVideoPlayerPageState extends State<_InlineVideoPlayerPage> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
+        automaticallyImplyLeading: false,
         backgroundColor: Colors.transparent,
         foregroundColor: Colors.white,
         title: Text(

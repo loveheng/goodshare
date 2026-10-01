@@ -40,6 +40,7 @@ class InboxItem {
     this.translateLang,
     this.summaryMd,
     this.clipsJson,
+    this.inspirationMd,
     this.videoWholeMarked = false,
     this.docMetaJson,
     this.attachState = attachOwned,
@@ -75,6 +76,10 @@ class InboxItem {
   final String? translateLang; // 译文语言码（BCP-47），与 translatedMd 成对
   final String? summaryMd; // 端侧 LLM 摘要（与 humanMd 并列，不覆盖原文；2026-09-28 v8）
   final String? clipsJson; // 视频切片（关键区间）附属记录 JSON（schema v10，2026-09-29）
+
+  /// 灵感区：用户私密碎片想法（schema v16，2026-10-01，detail-two-zone §3）。
+  /// 与 AI 产出区分家；分享预览默认排除（隐私红线）。
+  final String? inspirationMd;
   final bool videoWholeMarked; // 整片标记：备份时携带源文件（schema v11，2026-09-29）
   final List<String> tags;
   final Map<String, List<String>>? facets; // 多视角聚类：视角 → 标签（AI 分类页消费，V2）
@@ -154,6 +159,7 @@ class InboxItem {
         'translate_lang': translateLang,
         'summary_md': summaryMd,
         'clips_json': clipsJson,
+        'inspiration_md': inspirationMd,
         'video_whole_marked': videoWholeMarked ? 1 : 0,
         if (docMetaJson != null) 'doc_meta_json': docMetaJson,
         'attach_state': attachState,
@@ -225,6 +231,7 @@ class InboxItem {
       translateLang: map['translate_lang'] as String?,
       summaryMd: map['summary_md'] as String?,
       clipsJson: map['clips_json'] as String?,
+      inspirationMd: map['inspiration_md'] as String?,
       videoWholeMarked: (map['video_whole_marked'] as int? ?? 0) == 1,
       docMetaJson: map['doc_meta_json'] as String?,
       attachState: (map['attach_state'] as String?) ?? attachOwned,

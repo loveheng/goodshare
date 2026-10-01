@@ -24,6 +24,19 @@ description: 拾贝 goodshare（Flutter 分享收集器+MCP）UI 层规范事实
 - Vault 内容在 MCP 层物理隔离（`is_vault=0` 过滤），UI 进入需生物识别（`local_auth`）。
 - 设置树固定 `ui-spec` §5 五分组；新增开关先在需求登记再落地。
 
+## 交互与主题硬规则（2026-10-01 会话沉淀；案例细节 SSOT=ui-spec §2.4/§3/§4.6/§6）
+
+- **二级页无返回箭头**：出口=系统手势/返回键。三层落法——①路由页 `automaticallyImplyLeading: false`；②状态层级视图（同页状态切换的上下级，如保险箱视图/工作区进入态）**必须先补 `PopScope` 接管手势返回再摘箭头**（此类视图不是路由，裸摘箭头=困住用户）；③画布类手势密集页绘制中 `canPop:false` 兜底。例外（语义非导航返回，保留按钮）：Sheet/Dialog 关闭/取消、速记面板收起。
+- **主题槽位覆写核对**：`ColorScheme` 30+ 槽位，**用未覆写槽位即漏 M3 基线紫白系**（实证事故：outlineVariant 漏浅薰衣草白=便签白边、secondaryContainer 漏紫灰=保存钮撞色）。新用任何槽位前先核对 `lib/main.dart` 已覆写清单，缺则先补主题层；主按钮 tonal/填充色已映射暖棕系（对齐 primaryContainer）。
+- **装饰不走橘红**：glyph/插画/品牌符号取 `onSurfaceVariant`/`onSurface`/surfaceContainer 槽位；橘红仅动作与选中（CTA 点亮、选中态）。
+- **矢量资产入库前色板重映射**：源图彩色按亮度映射进主题槽位值、删除背景板/白底；源图彩色不落一色进代码（`assets/glyphs/nautilus.svg` = 3 主题值为范本）。
+- **交叉淡化「先死后生」**：两态树叠放做形变时，同名元素（提示语等）禁止同屏并存——先现者提前退场（更早的进度窗口淡出），后现者原窗口浮现。
+- **CTA 内容感知**：写动作按钮（保存/创建类）空态=实色禁用（`disabledBackgroundColor` 给实色，**禁 M3 默认半透明罩**——onSurface@12% 罩叠深底即脏），有内容=橘红点亮；判据用 `ListenableBuilder` 订阅输入 controller 实时响应。主按钮一律 FilledButton；裸 AlertDialog 仅限快速确认，低频重要动作走整页仪式或 BottomSheet。
+- **常驻捕获入口不随滚动隐显**：chrome 是否随滚动隐藏按**任务生命周期**判断——消费时用不着的（搜索栏）随滚动让位，创作/捕获类入口的触发时机在浏览中途，恒常驻。两者不共用同一滚动行为。
+- **滚动布局陷阱**：`Center`/`Align` 直接套 `SingleChildScrollView`（纵向）拿不到有界高度 → 内容顶到上沿；须 `LayoutBuilder` 取可视高 + `ConstrainedBox(minHeight)` 撑满再居中。
+- **按压反馈分级（禁面积型反馈）**：M3 半透明状态层叠暗底即「灰泥」（与禁用罩同源）。图标钮=图标本身变色（onSurfaceVariant→onSurface）、底板罩透明；CTA=底色实色加深一档（禁罩）；文字钮=文字实色加深。已全局收口在 `main.dart` 主题（`splashFactory: NoSplash` + 三类 ButtonTheme 的 resolveWith），新按钮零成本继承；**非按下态 resolveWith 必须返回 null 回落 M3 默认**，否则 selected 橘红等状态丢失；tonal 按钮的按压深棕须局部样式（全局 pressed 色是橘红系）。
+- **全系统去胶囊（2026-10-01 拍板）**：胶囊（Stadium/half-height 圆角）不再是任何组件的合法形态——按钮 Filled/Outlined/FAB 主题收口 `Radii.lg`，chips/标签 `md`，搜索输入框 `xl`，工具栏 `lg`（lib 内 Stadium 归零）。新组件按尺寸取档：小件 md、按钮/工具栏 lg、卡片/输入框 xl；**禁止手写 StadiumBorder 或半径 ≥ 高度一半的伪装胶囊**，按钮不要单独加 shape（继承主题）。
+
 ## 视觉令牌（单一事实源；2026-09-30 起 mymind 基准，口径 SSOT=ui-spec §2）
 
 - **取色 / 圆角 / 间距一律走令牌**：颜色用 `Theme.of(context).colorScheme.*` / `surfaceContainer*`；**唯一硬编码处是主题层**（`lib/main.dart` 的 `ColorScheme.dark` override——恒定暗色三阶底/卡/浮 + 橘红强调，`dynamic_color` 已废弃）。
@@ -77,3 +90,5 @@ description: 拾贝 goodshare（Flutter 分享收集器+MCP）UI 层规范事实
 5. BottomSheet 有 `isScrollControlled` + `viewInsets.bottom` 避让吗？悬浮 / 底部元素有 `SafeArea` 吗？
 6. 图片渲染走 `GoodshareImage` 并显式 `cacheWidth` 了吗？（内存口径见 `goodshare-mobile`）
 7. 新增长按 / 危险操作有触觉反馈吗？图标按钮有 `Semantics` / `tooltip` 吗？
+8. 用到未在 `main.dart` 覆写的 ColorScheme 槽位了吗？（漏覆写=M3 基线紫白系露出）有没有返回箭头 / 半透明禁用罩 / 裸 AlertDialog 承载重要动作？（交互硬规则见上节）
+9. SVG/位图资产做色板重映射、删背景板了吗？形变交叉淡化里有同名元素同屏并存吗？

@@ -73,19 +73,19 @@ void main() {
 
   Future<void> expandViaPeek(WidgetTester tester) async {
     await ensureCollapsed(tester);
-    await tester.tap(find.text('记点什么…  ·  点按或上滑展开'));
+    await tester.tap(find.text('记点什么…'));
     await tester.pumpAndSettle();
   }
 
   testWidgets('收合态：拉手存在，无布局异常', (tester) async {
     await pumpShell(tester);
     expect(tester.takeException(), isNull);
-    expect(find.text('记点什么…  ·  点按或上滑展开'), findsOneWidget);
+    expect(find.text('记点什么…'), findsOneWidget);
   });
 
   testWidgets('展开态：点拉手不抛 unbounded flex 异常，顶栏出现', (tester) async {
     await pumpShell(tester);
-    await tester.tap(find.text('记点什么…  ·  点按或上滑展开'));
+    await tester.tap(find.text('记点什么…'));
     await tester.pumpAndSettle();
     expect(
       tester.takeException(),
@@ -100,7 +100,7 @@ void main() {
     await pumpShell(tester);
     await ensureCollapsed(tester);
     await tester.drag(
-      find.text('记点什么…  ·  点按或上滑展开'),
+      find.text('记点什么…'),
       const Offset(0, -80),
     );
     await tester.pumpAndSettle();
@@ -114,7 +114,7 @@ void main() {
       // ignore: avoid_print
       print('PROBE[$tag] tf=${find.byType(TextField).evaluate().length} '
           'save=${find.text('保存').evaluate().length} '
-          'peek=${find.text('记点什么…  ·  点按或上滑展开').evaluate().length}');
+          'peek=${find.text('记点什么…').evaluate().length}');
     }
     probe('pump');
     await expandViaPeek(tester);
@@ -164,6 +164,31 @@ void main() {
     });
     expect(find.byType(TextField), findsOneWidget,
         reason: '保存后内容区清空但面板保持张开（单空文本段 + 提示语）');
+  });
+
+  testWidgets('保存按钮内容感知：空态禁用，输入后点亮（禁用=实色无半透明罩）', (tester) async {
+    await pumpShell(tester);
+    await expandViaPeek(tester);
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, '保存'),
+          )
+          .onPressed,
+      isNull,
+      reason: '空便签：保存钮不可点',
+    );
+    await tester.enterText(find.byType(TextField), '第一条');
+    await tester.pump();
+    expect(
+      tester
+          .widget<FilledButton>(
+            find.widgetWithText(FilledButton, '保存'),
+          )
+          .onPressed,
+      isNotNull,
+      reason: '有内容：保存钮点亮（橘红动作态）',
+    );
   });
 
   testWidgets('视频门槛：白名单外格式拦截提示且不留孤儿副本', (tester) async {

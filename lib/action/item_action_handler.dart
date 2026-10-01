@@ -163,6 +163,7 @@ class ItemActionHandler {
     if (cmd.tldr != null) values['human_tldr'] = cmd.tldr;
     if (cmd.tags != null) values['tags'] = jsonEncode(cmd.tags);
     if (cmd.humanMd != null) values['human_md'] = cmd.humanMd;
+    if (cmd.inspirationMd != null) values['inspiration_md'] = cmd.inspirationMd;
     if (cmd.machineJson != null) {
       final err = validateMachineJson(cmd.machineJson);
       if (err != null) throw ActionException(err, code: ActionErrorCode.schemaInvalid);
@@ -808,7 +809,15 @@ class ItemActionHandler {
       }
       values['machine_json'] = raw;
     }
-    if (r.tags.isNotEmpty) values['tags'] = jsonEncode(r.tags);
+    if (r.tags.isNotEmpty) {
+      // 并集合并（2026-10-01 拍板）：AI 重新提取只增不删——标签的用户权威
+      // 在人（手动增删走 update 命令整表替换），AI 提取只是代劳不全量覆写。
+      final merged = <String>[...item.tags];
+      for (final t in r.tags) {
+        if (!merged.contains(t)) merged.add(t);
+      }
+      values['tags'] = jsonEncode(merged);
+    }
     if (r.itemType != null && r.itemType != item.itemType) {
       if (actor != CommandActor.pipeline) {
         final err = _reclassifyError(item, r.itemType!, privilege: false);

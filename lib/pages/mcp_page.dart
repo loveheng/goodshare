@@ -55,7 +55,10 @@ class _McpPageState extends State<McpPage> {
   Widget build(BuildContext context) {
     final c = widget.controller;
     return Scaffold(
-      appBar: AppBar(title: const Text('MCP 服务')),
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        title: const Text('MCP 服务'),
+      ),
       body: ListView(
         padding: const EdgeInsets.all(12),
         children: [

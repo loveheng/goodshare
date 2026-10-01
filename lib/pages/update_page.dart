@@ -150,7 +150,10 @@ class _UpdatePageState extends State<UpdatePage> {
     final info = _info;
     final manifest = _manifest;
     return Scaffold(
-      appBar: AppBar(title: const Text('更新')),
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        title: const Text('更新'),
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [

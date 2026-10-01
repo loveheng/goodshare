@@ -123,21 +123,25 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
 
     // 保险箱视图（2026-09-30 D1 范围外）：静态 AppBar 不参与隐显，现状保留
     if (widget.vaultOnly) {
-      return Scaffold(
-        appBar: AppBar(
-          automaticallyImplyLeading: false,
-          titleSpacing: Insets.md,
-          title: _topBarRow(scheme, onSurfaceVariant),
-        ),
-        body: Scaffold(
+      // 手势返回=退出保险箱视图回「全部」，而非退到后台（ui-spec §3）
+      return PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) widget.onVaultOnlyChanged?.call(false);
+        },
+        child: Scaffold(
           appBar: AppBar(
-            leading: IconButton(
-              icon: const Icon(Icons.arrow_back),
-              onPressed: () => widget.onVaultOnlyChanged?.call(false),
-            ),
-            title: const Text('保险箱'),
+            automaticallyImplyLeading: false,
+            titleSpacing: Insets.md,
+            title: _topBarRow(scheme, onSurfaceVariant),
           ),
-          body: _listBody(),
+          body: Scaffold(
+            appBar: AppBar(
+              automaticallyImplyLeading: false,
+              title: const Text('保险箱'),
+            ),
+            body: _listBody(),
+          ),
         ),
       );
     }
@@ -176,14 +180,20 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
               SliverPadding(
                 // 边距收窄并与便利贴同宽语言（2026-09-30 用户拍板：内容区太宽了）；
                 // 底部 96 让出便利贴拉手
-                padding:
-                    const EdgeInsets.fromLTRB(Insets.sm, Insets.sm, Insets.sm, 96),
+                padding: const EdgeInsets.fromLTRB(
+                  Insets.sm,
+                  Insets.sm,
+                  Insets.sm,
+                  96,
+                ),
                 sliver: SliverMasonryGrid.count(
                   crossAxisCount: 2,
                   mainAxisSpacing: Insets.sm,
                   crossAxisSpacing: Insets.sm,
-                  itemBuilder: (context, i) =>
-                      ContentCard(item: _items[i], onTap: () => _open(_items[i])),
+                  itemBuilder: (context, i) => ContentCard(
+                    item: _items[i],
+                    onTap: () => _open(_items[i]),
+                  ),
                   childCount: _items.length,
                 ),
               ),
@@ -223,9 +233,7 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
                     Expanded(
                       child: Text(
                         '搜索',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodyMedium
+                        style: Theme.of(context).textTheme.bodyMedium
                             ?.copyWith(color: onSurfaceVariant),
                       ),
                     ),
@@ -328,10 +336,7 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
           color: Theme.of(context).colorScheme.outlineVariant,
         ),
         const SizedBox(height: 12),
-        Text(
-          _emptyTitle(),
-          style: Theme.of(context).textTheme.bodyMedium,
-        ),
+        Text(_emptyTitle(), style: Theme.of(context).textTheme.bodyMedium),
         const SizedBox(height: 4),
         Text(
           widget.vaultOnly ? '把条目移入保险箱后会出现在这里' : '用底部输入条记下第一条',
@@ -376,9 +381,8 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
     final ready = await cap.ensureReady();
     if (!ready.available) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(ready.reason ?? '文档扫描不可用')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(ready.reason ?? '文档扫描不可用')));
       }
       return;
     }
@@ -393,9 +397,8 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
       final raw = result.machineJson?['document_scan'];
       if (raw == null) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(result.note ?? '未扫描到内容')),
-          );
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(result.note ?? '未扫描到内容')));
         }
         return;
       }
@@ -431,17 +434,16 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
         reload();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(failed > 0
-                ? '已添加 $n 个扫描页，$failed 个保存失败'
-                : '已添加 $n 个扫描页'),
+            content: Text(
+              failed > 0 ? '已添加 $n 个扫描页，$failed 个保存失败' : '已添加 $n 个扫描页',
+            ),
           ),
         );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('文档入库中断：$e')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('文档入库中断：$e')));
       }
     }
   }

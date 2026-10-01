@@ -57,8 +57,8 @@ sealed class _Seg {}
 
 class _TextSeg extends _Seg {
   _TextSeg([String text = ''])
-      : ctrl = TextEditingController(text: text),
-        focus = FocusNode();
+    : ctrl = TextEditingController(text: text),
+      focus = FocusNode();
 
   final TextEditingController ctrl;
   final FocusNode focus;
@@ -150,7 +150,10 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
         ..addAll([
           for (final row in _draftSegsPersisted)
             switch (row.first) {
-              'i' => _MediaSeg(row[1], kind: NoteMediaKind.image), // row[1] = local:// url
+              'i' => _MediaSeg(
+                row[1],
+                kind: NoteMediaKind.image,
+              ), // row[1] = local:// url
               'a' => _MediaSeg(row[1], kind: NoteMediaKind.audio),
               'v' => _MediaSeg(row[1], kind: NoteMediaKind.video),
               _ => _TextSeg(row.length > 1 ? row[1] : ''),
@@ -198,6 +201,16 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
     if (_segs.isEmpty || _segs.last is _MediaSeg) _segs.add(_TextSeg());
   }
 
+  /// 便签是否“有东西可存”（文字/媒体/待挂标签/待办模式任一）——
+  /// 保存按钮的内容感知点亮依据。
+  bool get _hasContent =>
+      _pendingTags.isNotEmpty ||
+      _todoMode ||
+      _segs.any(
+        (s) =>
+            s is _MediaSeg || (s is _TextSeg && s.ctrl.text.trim().isNotEmpty),
+      );
+
   String get _todayLabel {
     final now = DateTime.now();
     const weekdays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
@@ -227,9 +240,8 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
     } else {
       final idx = _segs.indexOf(active);
       final sel = active.ctrl.selection;
-      final offset =
-          (sel.isValid ? sel.extentOffset : active.ctrl.text.length)
-              .clamp(0, active.ctrl.text.length);
+      final offset = (sel.isValid ? sel.extentOffset : active.ctrl.text.length)
+          .clamp(0, active.ctrl.text.length);
       final before = active.ctrl.text.substring(0, offset);
       final after = active.ctrl.text.substring(offset);
       active.ctrl.value = TextEditingValue(
@@ -267,7 +279,9 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
       } catch (e) {
         // 私有副本清理失败不影响数据正确性（保存后的条目不经此路径），
         // 但孤儿文件必须可观测
-        debugPrint('[DEGRADE] note_media_file_delete_failed url=${m.url} error=$e');
+        debugPrint(
+          '[DEGRADE] note_media_file_delete_failed url=${m.url} error=$e',
+        );
       }
     }());
     _persistDraft();
@@ -285,8 +299,11 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
       seg.focus.requestFocus();
       final ctx = seg.key.currentContext;
       if (ctx != null) {
-        Scrollable.ensureVisible(ctx,
-            duration: const Duration(milliseconds: 180), alignment: 0.15);
+        Scrollable.ensureVisible(
+          ctx,
+          duration: const Duration(milliseconds: 180),
+          alignment: 0.15,
+        );
       }
     });
   }
@@ -336,9 +353,15 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
       for (final s in _segs)
         switch (s) {
           _TextSeg(:final ctrl) => NoteTextSegment(ctrl.text),
-          _MediaSeg(:final url, kind: NoteMediaKind.image) => NoteImageSegment(url),
-          _MediaSeg(:final url, kind: NoteMediaKind.audio) => NoteAudioSegment(url),
-          _MediaSeg(:final url, kind: NoteMediaKind.video) => NoteVideoSegment(url),
+          _MediaSeg(:final url, kind: NoteMediaKind.image) => NoteImageSegment(
+            url,
+          ),
+          _MediaSeg(:final url, kind: NoteMediaKind.audio) => NoteAudioSegment(
+            url,
+          ),
+          _MediaSeg(:final url, kind: NoteMediaKind.video) => NoteVideoSegment(
+            url,
+          ),
         },
     ];
     final body = serializeNoteMd(models, todoMode: _todoMode);
@@ -352,13 +375,15 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
     try {
       final tags = _pendingTags.isEmpty ? null : _pendingTags;
       if (noteHasMedia(models)) {
-        await widget.handler.execute(CollectCommand(
-          itemType: InboxItem.typeNote,
-          sourceApp: '速记',
-          rawContent: body,
-          humanTitle: noteTitleOf(models) ?? '图文便签',
-          tags: tags,
-        ));
+        await widget.handler.execute(
+          CollectCommand(
+            itemType: InboxItem.typeNote,
+            sourceApp: '速记',
+            rawContent: body,
+            humanTitle: noteTitleOf(models) ?? '图文便签',
+            tags: tags,
+          ),
+        );
       } else {
         await widget.collector.collectText(body, sourceApp: '速记', tags: tags);
       }
@@ -386,15 +411,18 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
   /// 拍照：复制进私有目录 → **插入光标处**（不再另立图片卡片）。
   Future<void> _photo() async {
     await _pickAndInsert(
-        () => ImagePicker().pickImage(source: ImageSource.camera, maxWidth: 2400),
-        failMsg: '图片保存失败');
+      () => ImagePicker().pickImage(source: ImageSource.camera, maxWidth: 2400),
+      failMsg: '图片保存失败',
+    );
   }
 
   /// 相册选图插入。
   Future<void> _pickAlbumImage() async {
     await _pickAndInsert(
-        () => ImagePicker().pickImage(source: ImageSource.gallery, maxWidth: 2400),
-        failMsg: '图片保存失败');
+      () =>
+          ImagePicker().pickImage(source: ImageSource.gallery, maxWidth: 2400),
+      failMsg: '图片保存失败',
+    );
   }
 
   Future<void> _pickAndInsert(
@@ -517,11 +545,13 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
         content: const Text('嵌入可能加载较慢，仍要添加吗？'),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('取消')),
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('仍要添加')),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('仍要添加'),
+          ),
         ],
       ),
     );
@@ -564,15 +594,16 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
       }
       final check = await checkNoteVideoAlbum(saved);
       if (check != null && check.blocking) {
-        messenger.showSnackBar(SnackBar(content: Text(
-          switch (check.kind) {
-            NoteVideoCheckKind.unsupportedFormat =>
-              '暂不支持该格式，建议使用 MP4 或 MOV',
-            NoteVideoCheckKind.tooLarge => '视频过大（>100MB），建议剪短后再嵌入',
-            NoteVideoCheckKind.unreadable => '视频无法读取',
-            _ => '视频校验失败',
-          },
-        )));
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(switch (check.kind) {
+              NoteVideoCheckKind.unsupportedFormat => '暂不支持该格式，建议使用 MP4 或 MOV',
+              NoteVideoCheckKind.tooLarge => '视频过大（>100MB），建议剪短后再嵌入',
+              NoteVideoCheckKind.unreadable => '视频无法读取',
+              _ => '视频校验失败',
+            }),
+          ),
+        );
         // 拦截类：已拷入私有目录的副本立即清理，防孤儿文件
         unawaited(() async {
           try {
@@ -580,7 +611,8 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
             if (await f.exists()) await f.delete();
           } catch (e) {
             debugPrint(
-                '[DEGRADE] note_video_reject_copy_delete_failed path=$saved error=$e');
+              '[DEGRADE] note_video_reject_copy_delete_failed path=$saved error=$e',
+            );
           }
         }());
         return null;
@@ -805,6 +837,10 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
           0.0,
           1.0,
         );
+    // 拉手文字比面板淡出更早（0→0.2 消隐）：收合拉手与展开正文各有一份
+    // 「记点什么…」，交叉淡化窗口若同步走，半途两个提示并存——文字先死
+    // 后生（正文提示 0.35 才浮现），任何时刻全屏最多一份提示。
+    final peekTextOpacity = (1 - clamped / 0.2).clamp(0.0, 1.0);
     final contentShift = (1 - clamped) * 24; // 内容轻微上移，增强「长出」感
 
     return Container(
@@ -834,7 +870,7 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
           children: [
             Opacity(
               opacity: (1 - contentOpacity).clamp(0.0, 1.0),
-              child: _buildPeek(scheme),
+              child: _buildPeek(scheme, textOpacity: peekTextOpacity),
             ),
             Opacity(
               opacity: contentOpacity,
@@ -850,17 +886,20 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
   }
 
   /// 收合态：只露便签顶边拉手。
-  Widget _buildPeek(ColorScheme scheme) {
+  Widget _buildPeek(ColorScheme scheme, {double textOpacity = 1}) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: Insets.md),
       child: Align(
         alignment: Alignment.centerLeft,
-        child: Text(
-          '记点什么…  ·  点按或上滑展开',
-          style: Theme.of(context).textTheme.bodyMedium
-              ?.copyWith(color: scheme.onSurfaceVariant),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+        child: Opacity(
+          opacity: textOpacity,
+          child: Text(
+            '记点什么…',
+            style: Theme.of(context).textTheme.bodyMedium
+                ?.copyWith(color: scheme.onSurfaceVariant),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
         ),
       ),
     );
@@ -891,12 +930,27 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
                   ),
                 ),
               ),
-              FilledButton.tonal(
-                onPressed: _sending ? null : _save,
-                style: FilledButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                ),
-                child: const Text('保存'),
+              // 内容感知 CTA（用户拍板）：空=实色禁用（无 M3 半透明罩，
+              // 那层 onSurface@12% 罩叠面板即「脏」的来源），有内容=点亮
+              // 橘红（橘红仅动作与选中）；白字+橘红是主题设计好的 onPrimary 对。
+              ListenableBuilder(
+                listenable: Listenable.merge([
+                  for (final s in _segs)
+                    if (s is _TextSeg) s.ctrl,
+                ]),
+                builder: (context, _) {
+                  final ready = _hasContent && !_sending;
+                  return FilledButton(
+                    onPressed: ready ? _save : null,
+                    style: FilledButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      disabledBackgroundColor: scheme.surfaceContainer,
+                      disabledForegroundColor: scheme.onSurfaceVariant
+                          .withValues(alpha: 0.6),
+                    ),
+                    child: const Text('保存'),
+                  );
+                },
               ),
             ],
           ),
@@ -911,14 +965,15 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
                   child: AudioPlaybackService(
                     controller: _audioCtl,
                     child: Padding(
-                      padding:
-                          const EdgeInsets.only(bottom: _toolLayerHeight),
+                      padding: const EdgeInsets.only(bottom: _toolLayerHeight),
                       child: ListView.builder(
                         padding: const EdgeInsets.only(top: Insets.xs),
                         itemCount: _segs.length,
                         itemBuilder: (context, i) => switch (_segs[i]) {
-                          _TextSeg s => _textFieldFor(s,
-                              showHint: i == 0 && _segs.length == 1),
+                          _TextSeg s => _textFieldFor(
+                            s,
+                            showHint: i == 0 && _segs.length == 1,
+                          ),
                           _MediaSeg m => _mediaCard(m),
                         },
                       ),
@@ -966,62 +1021,70 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
     final exists = seg.file.existsSync();
     final body = switch (seg.kind) {
       NoteMediaKind.audio => MediaAudioBar(
-          blockId: 'note-audio-${identityHashCode(seg)}',
-          source: resolveLocalMediaSrc(seg.url),
-          label: '录音',
-          showSlider: true,
-          degrade: classifyMediaUrl(seg.url) == MediaSuffix.audioDegrade,
-        ),
+        blockId: 'note-audio-${identityHashCode(seg)}',
+        source: resolveLocalMediaSrc(seg.url),
+        label: '录音',
+        showSlider: true,
+        degrade: classifyMediaUrl(seg.url) == MediaSuffix.audioDegrade,
+      ),
       // 视频占位卡（封面提取留 V2，图标占位）：**点按可预览**——复用详情
       // 同一全屏播放器，草稿态即给用户「添加了什么、能不能播」的确认机会
       // （2026-10-01 真机反馈用户提议）；保存后详情 VideoBlock 同源同链路。
       NoteMediaKind.video => ClipRRect(
-          borderRadius: BorderRadius.circular(Radii.md),
-          child: SizedBox(
-            width: double.infinity,
-            height: 220,
-            child: Container(
-              color: scheme.surfaceContainerHighest,
-              child: exists
-                  ? InkWell(
-                      onTap: () => showInlineVideoPlayer(context,
-                          url: seg.url, label: '视频预览'),
-                      child: Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.play_circle_outline,
-                                size: 40, color: scheme.primary),
-                            const SizedBox(height: Insets.xs),
-                            Text('视频（点按预览，保存后详情可播放）',
-                                style: Theme.of(context).textTheme.bodySmall),
-                          ],
-                        ),
+        borderRadius: BorderRadius.circular(Radii.md),
+        child: SizedBox(
+          width: double.infinity,
+          height: 220,
+          child: Container(
+            color: scheme.surfaceContainerHighest,
+            child: exists
+                ? InkWell(
+                    onTap: () => showInlineVideoPlayer(
+                      context,
+                      url: seg.url,
+                      label: '视频预览',
+                    ),
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.play_circle_outline,
+                            size: 40,
+                            color: scheme.primary,
+                          ),
+                          const SizedBox(height: Insets.xs),
+                          Text(
+                            '视频（点按预览，保存后详情可播放）',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ],
                       ),
-                    )
-                  : _missingCard(scheme, text: '视频文件丢失'),
-            ),
+                    ),
+                  )
+                : _missingCard(scheme, text: '视频文件丢失'),
           ),
         ),
+      ),
       NoteMediaKind.image => ClipRRect(
-          borderRadius: BorderRadius.circular(Radii.md),
-          child: SizedBox(
-            width: double.infinity,
-            height: 220,
-            child: Container(
-              color: scheme.surfaceContainerHighest,
-              child: exists
-                  ? GoodshareImage(
-                      file: seg.file,
-                      fit: BoxFit.cover,
-                      cacheWidth: (dpr * 480).round(),
-                      errorBuilder: (_, _, _) =>
-                          _missingCard(scheme, text: '图片无法读取'),
-                    )
-                  : _missingCard(scheme, text: '图片文件丢失'),
-            ),
+        borderRadius: BorderRadius.circular(Radii.md),
+        child: SizedBox(
+          width: double.infinity,
+          height: 220,
+          child: Container(
+            color: scheme.surfaceContainerHighest,
+            child: exists
+                ? GoodshareImage(
+                    file: seg.file,
+                    fit: BoxFit.cover,
+                    cacheWidth: (dpr * 480).round(),
+                    errorBuilder: (_, _, _) =>
+                        _missingCard(scheme, text: '图片无法读取'),
+                  )
+                : _missingCard(scheme, text: '图片文件丢失'),
           ),
         ),
+      ),
     };
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: Insets.xs),
@@ -1049,8 +1112,11 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.broken_image_outlined,
-              size: 18, color: scheme.onSurfaceVariant),
+          Icon(
+            Icons.broken_image_outlined,
+            size: 18,
+            color: scheme.onSurfaceVariant,
+          ),
           const SizedBox(width: Insets.xs),
           Text(text, style: Theme.of(context).textTheme.bodySmall),
         ],
@@ -1119,9 +1185,8 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
           if (_recording)
             Text(
               '录音中…',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.error,
-                  ),
+              style: Theme.of(context).textTheme.bodySmall
+                  ?.copyWith(color: Theme.of(context).colorScheme.error),
             ),
           const Spacer(),
           if (_pendingTags.isNotEmpty)

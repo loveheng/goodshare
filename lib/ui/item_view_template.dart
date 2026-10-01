@@ -7,12 +7,13 @@ import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 
 import '../ai/audio_extract.dart';
+import '../ai/capability.dart';
 import '../ai/video_clips.dart';
 import '../ai/subtitle.dart';
 import '../ai/url_extract.dart';
 import '../ai/palette_reconstructor.dart' show colorFromMachineJson;
 import '../models/item.dart';
-import 'image_annotator.dart';
+import 'block_capability_host.dart';
 import 'content_body.dart';
 import 'media_blocks.dart';
 import 'section_legend.dart';
@@ -25,7 +26,10 @@ import 'tokens.dart';
 ///
 /// 2026-09-30 Phase 1：视图函数返回 `List<Widget>`（sliver 兼容），文本类正文经
 /// `SliverList` 虚拟化，媒体类走 `SliverToBoxAdapter`，由详情页 `CustomScrollView` 统一滚动。
-typedef ItemViewBuilder = List<Widget> Function(BuildContext context, InboxItem item);
+typedef ItemViewBuilder = List<Widget> Function(
+  BuildContext context,
+  InboxItem item,
+);
 
 class ItemViewRegistry {
   ItemViewRegistry._();
@@ -79,30 +83,36 @@ class ItemViewTemplate extends StatelessWidget {
     final out = <Widget>[];
     // ① 标题置顶
     if (item.humanTitle?.isNotEmpty ?? false) {
-      out.add(SliverToBoxAdapter(
-        child: Padding(
-          padding: const EdgeInsets.only(bottom: Insets.sm),
-          child: Text(
-            item.humanTitle!,
-            style: theme.textTheme.headlineSmall
-                ?.copyWith(fontWeight: FontWeight.w600),
+      out.add(
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: Insets.sm),
+            child: Text(
+              item.humanTitle!,
+              style: theme.textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
         ),
-      ));
+      );
     }
     // ② 导语块（原 TL;DR）：骑框 legend 描边卡（ui-spec §2.3，mymind TLDR
     // 形态——小签嵌框顶边 + 延长线，共享组件 SectionLegendCard）。
     if (item.humanTldr?.isNotEmpty ?? false) {
-      out.add(SliverToBoxAdapter(
-        child: SectionLegendCard(
-          legend: 'TLDR',
-          child: Text(
-            item.humanTldr!,
-            style: theme.textTheme.bodyMedium
-                ?.copyWith(color: scheme.onSurfaceVariant),
+      out.add(
+        SliverToBoxAdapter(
+          child: SectionLegendCard(
+            legend: 'TLDR',
+            child: Text(
+              item.humanTldr!,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
           ),
         ),
-      ));
+      );
     }
     // ③ 正文：机器态 / 人类态（类型专属区）
     if (machineMode) {
@@ -111,36 +121,42 @@ class ItemViewTemplate extends StatelessWidget {
       out.addAll(ItemViewRegistry.resolve(item.itemType)(context, item));
     }
     // ④ 标签展示区（mymind MIND TAGS 形态，ui-spec §4.3）：AI 提取标签
-    // 胶囊流只读展示（骑框 legend 复用 SectionLegendCard）；无标签不渲染
+    // 圆角标签流只读展示（骑框 legend 复用 SectionLegendCard）；无标签不渲染
     // （不做假数据）。点击筛选跳主列表为 V2。
     if (!machineMode && item.tags.isNotEmpty) {
-      out.add(SliverToBoxAdapter(
-        child: SectionLegendCard(
-          legend: '标签',
-          child: Wrap(
-            spacing: Insets.sm,
-            runSpacing: Insets.sm,
-            children: [for (final t in item.tags) _tagPill(context, t)],
+      out.add(
+        SliverToBoxAdapter(
+          child: SectionLegendCard(
+            legend: '标签',
+            child: Wrap(
+              spacing: Insets.sm,
+              runSpacing: Insets.sm,
+              children: [for (final t in item.tags) _tagBadge(context, t)],
+            ),
           ),
         ),
-      ));
+      );
     }
     return out;
   }
 
-  /// 只读标签胶囊（mymind 深色胶囊无边框；选中态不存在，操作归「标签」底栏项）。
-  static Widget _tagPill(BuildContext context, String text) {
+  /// 只读标签（mymind 深色无边框；选中态不存在，操作归「标签」底栏项）。
+  /// 2026-10-01 全系统去胶囊：Stadium → md12 大圆角矩形。
+  static Widget _tagBadge(BuildContext context, String text) {
     final theme = Theme.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: ShapeDecoration(
         color: theme.colorScheme.surfaceContainerHigh,
-        shape: const StadiumBorder(),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(Radii.md),
+        ),
       ),
       child: Text(
         text,
-        style: theme.textTheme.labelSmall
-            ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
       ),
     );
   }
@@ -158,7 +174,8 @@ class ItemViewTemplate extends StatelessWidget {
         borderRadius: BorderRadius.circular(Radii.md),
       ),
       child: SelectableText(
-        const JsonEncoder.withIndent('  ').convert(jsonDecode(item.machineJson!)),
+        const JsonEncoder.withIndent('  ')
+            .convert(jsonDecode(item.machineJson!)),
         style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
       ),
     );
@@ -172,7 +189,11 @@ List<Widget> _textView(BuildContext context, InboxItem item) {
   final body = item.bodyText;
   if (body.isEmpty) return const [SliverToBoxAdapter(child: _EmptyView())];
   return [
-    ContentBodySliver(markdown: body, serif: true, emptyView: const _EmptyView())
+    ContentBodySliver(
+      markdown: body,
+      serif: true,
+      emptyView: const _EmptyView(),
+    ),
   ];
 }
 
@@ -213,8 +234,9 @@ class _OgCard extends StatelessWidget {
               fit: BoxFit.cover,
               cacheWidth: 720,
               errorBuilder: (_, _, _) => const SizedBox.shrink(),
-              loadingBuilder: (context, child, progress) =>
-                  progress == null ? child : Container(height: 8, color: scheme.surfaceContainerHighest),
+              loadingBuilder: (context, child, progress) => progress == null
+                  ? child
+                  : Container(height: 8, color: scheme.surfaceContainerHighest),
             ),
           Padding(
             padding: const EdgeInsets.all(Insets.md),
@@ -222,24 +244,36 @@ class _OgCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 if (meta.siteName != null)
-                  Text(meta.siteName!,
-                      style: theme.textTheme.labelSmall
-                          ?.copyWith(color: scheme.primary, letterSpacing: 0.5)),
+                  Text(
+                    meta.siteName!,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: scheme.primary,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
                 if (meta.title != null)
                   Padding(
-                    padding: EdgeInsets.only(top: meta.siteName != null ? Insets.xs : 0),
-                    child: Text(meta.title!,
-                        style: theme.textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w600)),
+                    padding: EdgeInsets.only(
+                      top: meta.siteName != null ? Insets.xs : 0,
+                    ),
+                    child: Text(
+                      meta.title!,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
                 if (meta.description != null)
                   Padding(
                     padding: const EdgeInsets.only(top: Insets.xs),
-                    child: Text(meta.description!,
-                        maxLines: 3,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall
-                            ?.copyWith(color: scheme.onSurfaceVariant)),
+                    child: Text(
+                      meta.description!,
+                      maxLines: 3,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
                   ),
               ],
             ),
@@ -260,59 +294,34 @@ List<Widget> _documentView(BuildContext context, InboxItem item) {
   return out;
 }
 
-/// 图片专属区：查看/标注双态（标注业务优先，UI 暂最简）。
-List<Widget> _imageView(BuildContext context, InboxItem item) =>
-    [SliverToBoxAdapter(child: _ImageView(item: item))];
+/// 图片专属区：纯展示（查看态）。标注编辑已迁三级能力页「独立能力」
+/// 入口（detail-two-zone.md §5.2 拍板 2026-10-01）——看在二级、动在三级。
+List<Widget> _imageView(BuildContext context, InboxItem item) => [
+  SliverToBoxAdapter(child: _ImageView(item: item)),
+];
 
-class _ImageView extends StatefulWidget {
+class _ImageView extends StatelessWidget {
   const _ImageView({required this.item});
   final InboxItem item;
 
   @override
-  State<_ImageView> createState() => _ImageViewState();
-}
-
-class _ImageViewState extends State<_ImageView> {
-  bool _annotating = false;
-
-  @override
   Widget build(BuildContext context) {
-    final item = widget.item;
     final scheme = Theme.of(context).colorScheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         if (item.hasAttachment)
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              FilledButton.tonalIcon(
-                onPressed: () => setState(() => _annotating = !_annotating),
-                icon: Icon(_annotating ? Icons.check : Icons.edit_outlined),
-                label: Text(_annotating ? '完成标注' : '标注图片'),
-              ),
-              if (_annotating) ...[
-                const SizedBox(width: Insets.sm),
-                Expanded(
-                  child: Text(
-                    '选上方类型后在图上拖拽绘制；文字/序号点击图上输入',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
-              ],
-            ],
-          ),
-        if (_annotating)
-          ImageAnnotator(item: item)
-        else ...[
-          if (item.hasAttachment)
+          // 顶级图片也包能力外壳（detail-two-zone.md §5.1 拍板：
+          // 长按进三级能力页——整条图片条目与行内图片块同一入口）
+          wrapWithCapabilityHost(
             ClipRRect(
               borderRadius: BorderRadius.circular(Radii.md),
               // 尺寸前置（§6.1 V1）+ 主色调占位（V3）：提前摆好版面且以图片
               // 主色铺底，解码完成无白闪、无布局跳动
               child: item.aspectRatio != null
                   ? Container(
-                      color: colorFromMachineJson(item.machineJson) ??
+                      color:
+                          colorFromMachineJson(item.machineJson) ??
                           scheme.surfaceContainerHighest,
                       child: AspectRatio(
                         aspectRatio: item.aspectRatio!,
@@ -327,16 +336,20 @@ class _ImageViewState extends State<_ImageView> {
                   : Image.file(
                       File(item.rawFilePath!),
                       fit: BoxFit.contain,
-                      errorBuilder: (_, _, _) => const _EmptyView(text: '图片文件已不存在'),
+                      errorBuilder: (_, _, _) =>
+                          const _EmptyView(text: '图片文件已不存在'),
                     ),
             ),
-          if (item.bodyText.isNotEmpty)
-            // 媒体附文与文本类正文共用 ContentBody（消除裸 SelectableText 渲染降级）
-            Padding(
-              padding: const EdgeInsets.only(top: Insets.sm),
-              child: ContentBody(markdown: item.bodyText),
-            ),
-        ],
+            kind: BlockKind.image,
+            anchorLabel: '图片条目',
+            trigger: BlockCapabilityTrigger.longPress,
+          ),
+        if (item.bodyText.isNotEmpty)
+          // 媒体附文与文本类正文共用 ContentBody（消除裸 SelectableText 渲染降级）
+          Padding(
+            padding: const EdgeInsets.only(top: Insets.sm),
+            child: ContentBody(markdown: item.bodyText),
+          ),
       ],
     );
   }
@@ -358,7 +371,15 @@ List<Widget> _audioView(BuildContext context, InboxItem item) {
               child: ContentBody(markdown: item.bodyText),
             ),
           // 走页面级播放服务单例（rich-text-media.md §6：行内块与顶级区共用唯一播放器）
-          _AudioPlayer(path: item.rawFilePath!, itemId: item.id?.toString() ?? item.rawFilePath!),
+          wrapWithCapabilityHost(
+            _AudioPlayer(
+              path: item.rawFilePath!,
+              itemId: item.id?.toString() ?? item.rawFilePath!,
+            ),
+            kind: BlockKind.audio,
+            anchorLabel: '音频条目',
+            trigger: BlockCapabilityTrigger.longPress,
+          ),
           _AudioExportRow(item: item),
           if (item.id != null) _SubtitleExportRow(itemId: item.id!),
         ],
@@ -382,16 +403,20 @@ List<Widget> _videoView(BuildContext context, InboxItem item) {
               padding: const EdgeInsets.only(bottom: Insets.sm),
               child: ContentBody(markdown: item.bodyText),
             ),
-          _VideoPlayer(
-            path: item.rawFilePath!,
-            jumpTargets: [
-              for (final c in parseClipsJson(item.clipsJson)) c.startMs,
-            ],
+          wrapWithCapabilityHost(
+            _VideoPlayer(
+              path: item.rawFilePath!,
+              jumpTargets: [
+                for (final c in parseClipsJson(item.clipsJson)) c.startMs,
+              ],
+            ),
+            kind: BlockKind.video,
+            anchorLabel: '视频条目',
+            trigger: BlockCapabilityTrigger.longPress,
           ),
           _AudioExportRow(item: item),
           if (item.id != null) _SubtitleExportRow(itemId: item.id!),
-          if (parseClipsJson(item.clipsJson).isNotEmpty)
-            _ClipsList(item: item),
+          if (parseClipsJson(item.clipsJson).isNotEmpty) _ClipsList(item: item),
         ],
       ),
     ),
@@ -421,10 +446,9 @@ class _ClipsList extends StatelessWidget {
         children: [
           Text(
             '关键区间（${clips.length}）',
-            style: Theme.of(context)
-                .textTheme
-                .labelMedium
-                ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
           ),
           const SizedBox(height: Insets.sm),
           for (final c in clips)
@@ -439,15 +463,15 @@ class _ClipsList extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('${_fmt(c.startMs)} → ${_fmt(c.endMs)}（时长 ${_fmt(c.durationMs)}）',
-                      style: Theme.of(context).textTheme.labelMedium),
+                  Text(
+                    '${_fmt(c.startMs)} → ${_fmt(c.endMs)}（时长 ${_fmt(c.durationMs)}）',
+                    style: Theme.of(context).textTheme.labelMedium,
+                  ),
                   if (c.status == kClipStatusMarked) ...[
                     const SizedBox(height: 4),
                     Text(
                       '已标记（未处理）——标记仅记时间点，处理后才算收藏完成',
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodySmall
+                      style: Theme.of(context).textTheme.bodySmall
                           ?.copyWith(color: scheme.onSurfaceVariant),
                     ),
                   ] else if ((c.text ?? '').isEmpty) ...[
@@ -458,9 +482,10 @@ class _ClipsList extends StatelessWidget {
                               ? '处理中…（AI 任务队列可查进度）'
                               : '暂无文本'),
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: c.status == kClipStatusFailed
-                              ? scheme.error
-                              : scheme.onSurfaceVariant),
+                        color: c.status == kClipStatusFailed
+                            ? scheme.error
+                            : scheme.onSurfaceVariant,
+                      ),
                     ),
                   ] else ...[
                     const SizedBox(height: 4),
@@ -478,9 +503,7 @@ class _ClipsList extends StatelessWidget {
                         padding: const EdgeInsets.only(top: 4),
                         child: Text(
                           c.note!,
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
+                          style: Theme.of(context).textTheme.bodySmall
                               ?.copyWith(color: scheme.onSurfaceVariant),
                         ),
                       ),
@@ -514,10 +537,9 @@ class _SubtitleExportRow extends StatelessWidget {
             children: [
               Text(
                 '字幕产物${files.length > 2 ? '（含译文）' : ''}',
-                style: Theme.of(context)
-                    .textTheme
-                    .labelMedium
-                    ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
               ),
               const SizedBox(height: Insets.sm),
               Wrap(
@@ -527,11 +549,14 @@ class _SubtitleExportRow extends StatelessWidget {
                   for (final f in files)
                     OutlinedButton.icon(
                       onPressed: () async {
-                        await SharePlus.instance
-                            .share(ShareParams(files: [XFile(f.path)]));
+                        await SharePlus.instance.share(
+                          ShareParams(files: [XFile(f.path)]),
+                        );
                       },
                       icon: Icon(
-                        f.lang == null ? Icons.subtitles_outlined : Icons.translate,
+                        f.lang == null
+                            ? Icons.subtitles_outlined
+                            : Icons.translate,
                         size: 18,
                       ),
                       label: Text('导出 ${f.label}'),
@@ -577,7 +602,11 @@ class _AudioExportRow extends StatelessWidget {
     if (fmt == null || !context.mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     messenger.showSnackBar(const SnackBar(content: Text('正在提取音轨…')));
-    final res = await AudioExtractor.extract(path, format: fmt, itemId: item.id);
+    final res = await AudioExtractor.extract(
+      path,
+      format: fmt,
+      itemId: item.id,
+    );
     messenger.hideCurrentSnackBar();
     if (!res.ok) {
       messenger.showSnackBar(
@@ -646,8 +675,9 @@ class _VideoPlayerState extends State<_VideoPlayer> {
     return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
   }
 
-  late final VideoPlayerController _controller =
-      VideoPlayerController.file(File(widget.path));
+  late final VideoPlayerController _controller = VideoPlayerController.file(
+    File(widget.path),
+  );
   bool _ready = false;
   bool _playing = false;
   String? _error;
@@ -656,19 +686,22 @@ class _VideoPlayerState extends State<_VideoPlayer> {
   void initState() {
     super.initState();
     _controller.addListener(_onChanged);
-    _controller.initialize().then((_) {
-      if (!mounted) return;
-      final desc = _controller.value.errorDescription;
-      setState(() {
-        _ready = true;
-        _playing = _controller.value.isPlaying;
-        // R1：失败原因原样给用户，不吞成统一文案
-        if (desc != null) _error = '视频文件加载失败：$desc';
-      });
-    }).catchError((Object e) {
-      debugPrint('[VideoPlayer] initialize failed: $e');
-      if (mounted) setState(() => _error = '视频文件加载失败：$e');
-    });
+    _controller
+        .initialize()
+        .then((_) {
+          if (!mounted) return;
+          final desc = _controller.value.errorDescription;
+          setState(() {
+            _ready = true;
+            _playing = _controller.value.isPlaying;
+            // R1：失败原因原样给用户，不吞成统一文案
+            if (desc != null) _error = '视频文件加载失败：$desc';
+          });
+        })
+        .catchError((Object e) {
+          debugPrint('[VideoPlayer] initialize failed: $e');
+          if (mounted) setState(() => _error = '视频文件加载失败：$e');
+        });
   }
 
   void _onChanged() {
@@ -713,26 +746,34 @@ class _VideoPlayerState extends State<_VideoPlayer> {
                   ),
                 )
               : !_ready
-                  ? Container(
-                      height: 160,
-                      color: theme.colorScheme.surfaceContainerHighest,
-                      child: const Center(child: CircularProgressIndicator()),
-                    )
-                  : AspectRatio(
-                      aspectRatio: _controller.value.aspectRatio,
-                      child: VideoPlayer(_controller),
-                    ),
+              ? Container(
+                  height: 160,
+                  color: theme.colorScheme.surfaceContainerHighest,
+                  child: const Center(child: CircularProgressIndicator()),
+                )
+              : AspectRatio(
+                  aspectRatio: _controller.value.aspectRatio,
+                  child: VideoPlayer(_controller),
+                ),
         ),
         if (_error == null && widget.jumpTargets.isNotEmpty)
           Padding(
-            padding: const EdgeInsets.fromLTRB(Insets.xs, Insets.xs, Insets.xs, 0),
+            padding: const EdgeInsets.fromLTRB(
+              Insets.xs,
+              Insets.xs,
+              Insets.xs,
+              0,
+            ),
             child: Wrap(
               spacing: Insets.sm,
               runSpacing: Insets.sm,
               children: [
                 for (final ms in widget.jumpTargets)
                   ActionChip(
-                    label: Text('标记 ${_fmtMs(ms)}', style: theme.textTheme.labelSmall),
+                    label: Text(
+                      '标记 ${_fmtMs(ms)}',
+                      style: theme.textTheme.labelSmall,
+                    ),
                     visualDensity: VisualDensity.compact,
                     onPressed: _ready
                         ? () => _controller.seekTo(Duration(milliseconds: ms))
@@ -756,10 +797,13 @@ class _VideoPlayerState extends State<_VideoPlayer> {
                 Expanded(
                   child: dur > Duration.zero
                       ? Slider(
-                          value: pos.inMilliseconds.toDouble()
-                              .clamp(0.0, dur.inMilliseconds.toDouble()),
-                          onChanged: (v) => _controller
-                              .seekTo(Duration(milliseconds: v.round())),
+                          value: pos.inMilliseconds.toDouble().clamp(
+                            0.0,
+                            dur.inMilliseconds.toDouble(),
+                          ),
+                          onChanged: (v) => _controller.seekTo(
+                            Duration(milliseconds: v.round()),
+                          ),
                         )
                       : const SizedBox.shrink(),
                 ),
@@ -787,7 +831,11 @@ class _FileTile extends StatelessWidget {
       contentPadding: EdgeInsets.zero,
       leading: const Icon(Icons.attach_file),
       title: Text(path!.split('/').last, overflow: TextOverflow.ellipsis),
-      subtitle: Text(path!, style: Theme.of(context).textTheme.bodySmall, maxLines: 1),
+      subtitle: Text(
+        path!,
+        style: Theme.of(context).textTheme.bodySmall,
+        maxLines: 1,
+      ),
     );
   }
 }

@@ -25,6 +25,7 @@ updated: 2026-09-30
 ## design（UI 设计规范）
 
 - [ui-spec.md](design/ui-spec.md) — UI 设计规范：Material You/M3 视觉系统、5 底 tab + FAB 导航、页面清单、设置树、组件库与双态呈现；配套约束见项目 skill `goodshare-ui`。
+- [detail-two-zone.md](design/detail-two-zone.md) — 详情页两区改版与区块能力平台设计：公共区/灵感区分工、区块能力分发（ContentCapability 自声明 + CapabilityChain 任务链）、单卡链式能力卡（不嵌套）、分享分流（截图 PNG / PDF 兜底）。
 - [asr-subtitle.md](design/asr-subtitle.md) — 音频转写与字幕生成设计：VAD 分段取时间戳的可选下载资源 `silero-vad-v5`、文本与 SRT/VTT 双产物、无 VAD 时降级为纯文本的门控；§8 为端侧翻译层（引擎接口/路由/双语字幕三模式/译文存储与命令）。
 - [ocr-cn-adaptation.md](design/ocr-cn-adaptation.md) — 中文 OCR 适配设计。
 - [ai-capabilities-overview.md](design/ai-capabilities-overview.md) — AI 能力总览。

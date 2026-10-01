@@ -1,7 +1,7 @@
 name: goodshare
 description: "A new Flutter project."
 publish_to: 'none'
-version: 1.2.0+6007 # 真机已有 6006（设备 dumpsys 实测，来源待溯），本地覆盖安装需 6007（2026-09-30 INSTALL_FAILED_VERSION_DOWNGRADE）
+version: 1.2.0+6009 # 真机已装 8008（=6008+arm64-v8a 拆分加 2000），本机 6007 覆盖安装触发 INSTALL_FAILED_VERSION_DOWNGRADE；提至 6009（打包 8009）覆盖。arm64-v8a 拆分包 versionCode=pub+2000
 
 environment:
   sdk: ^3.13.4
@@ -37,8 +37,10 @@ dependencies:
   google_mlkit_entity_extraction: ^0.17.1
   google_mlkit_document_scanner: ^0.6.1
   pdfrx: ^2.6.5
+  pdf: ^3.11.3
   flutter_staggered_grid_view: ^0.7.0
   camera: ^0.12.1
+  flutter_svg: ^2.3.0
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -58,3 +60,6 @@ flutter:
   uses-material-design: true
   assets:
     - assets/models/silero_vad_v5.onnx
+    - assets/glyphs/nautilus.svg
+    - assets/glyphs/knot_diagram.png
+    - assets/fonts/DroidSansFallbackFull.ttf

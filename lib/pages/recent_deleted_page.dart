@@ -83,6 +83,7 @@ class _RecentDeletedPageState extends State<RecentDeletedPage> with RepoAutoRelo
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        automaticallyImplyLeading: false,
         title: const Text('最近删除'),
         actions: [
           IconButton(

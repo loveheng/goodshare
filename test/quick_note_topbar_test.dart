@@ -42,7 +42,7 @@ void main() {
       ),
     ));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('记点什么…  ·  点按或上滑展开'));
+    await tester.tap(find.text('记点什么…'));
     await tester.pumpAndSettle();
     final top = tester.getTopLeft(find.byIcon(Icons.keyboard_arrow_down)).dy;
     expect(top, greaterThanOrEqualTo(40), reason: '顶栏不得顶进状态栏');

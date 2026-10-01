@@ -37,6 +37,9 @@ extension AnnotationTypeX on AnnotationType {
   static AnnotationType fromName(String? s) => const {
         'rect': AnnotationType.rect,
         'arrow': AnnotationType.arrow,
+        // 'stroke'：image-markup.md §3 的笔迹留位——与 'free' 同一几何模型
+        //（矢量一笔 points[]），读侧两名字归一，写侧维持 'free' 旧口径。
+        'stroke': AnnotationType.free,
         'free': AnnotationType.free,
         'text': AnnotationType.text,
         'number': AnnotationType.number,
@@ -53,6 +56,7 @@ class Annotation {
     this.strokeW = 0.004,
     this.text,
     this.fontSize = 0.03,
+    this.filled = false,
     int? z,
     int? createdAt,
   })  : id = id ?? InboxItem.newId(),
@@ -66,6 +70,12 @@ class Annotation {
   final double strokeW; // 相对原图短边比例
   final String? text; // type==text / number 的内容
   final double fontSize; // 相对原图短边比例
+
+  /// 实心填充态（image-markup.md §3 隐私遮挡）：仅 rect 有效——
+  /// false=空心线框（圈重点），true=纯色色块（盖头像/名字/金额）。
+  /// ⚠️ 展示级遮挡非数据级销毁：被遮像素仍在原图，导出合成图才安全。
+  final bool filled;
+
   final int z; // 叠放次序
   final int createdAt;
 
@@ -77,6 +87,7 @@ class Annotation {
         'strokeW': strokeW,
         if (text != null) 'text': text,
         'fontSize': fontSize,
+        if (filled) 'filled': true,
         'z': z,
         'createdAt': createdAt,
       };
@@ -92,6 +103,7 @@ class Annotation {
         strokeW: _toDouble(j['strokeW']) ?? 0.004,
         text: j['text'] as String?,
         fontSize: _toDouble(j['fontSize']) ?? 0.03,
+        filled: j['filled'] == true,
         z: (j['z'] as int?) ?? 0,
         createdAt: (j['createdAt'] as int?) ?? 0,
       );
@@ -103,6 +115,7 @@ class Annotation {
     double? strokeW,
     String? text,
     double? fontSize,
+    bool? filled,
     int? z,
   }) =>
       Annotation(
@@ -113,6 +126,7 @@ class Annotation {
         strokeW: strokeW ?? this.strokeW,
         text: text ?? this.text,
         fontSize: fontSize ?? this.fontSize,
+        filled: filled ?? this.filled,
         z: z ?? this.z,
         createdAt: createdAt,
       );

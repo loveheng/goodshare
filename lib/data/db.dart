@@ -16,7 +16,7 @@ class Db {
     final dir = await getDatabasesPath();
     final db = await openDatabase(
       _pathOverride ?? p.join(dir, 'goodshare.db'),
-      version: 15,
+      version: 16,
       onCreate: (db, version) => _createAll(db),
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -52,6 +52,8 @@ class Db {
         await _ensureWorkspaceTables(db);
         // 幂等补齐 inbox_items.aspect_ratio（v14→v15 图片尺寸前置，渲染免抖动）
         await _ensureAspectRatioColumn(db);
+        // 幂等补齐 inbox_items.inspiration_md（v15→v16 灵感区：用户私密碎片想法）
+        await _ensureInspirationColumn(db);
       },
       onOpen: (db) async {
         // ai_task_queue 的外键级联依赖此开关，sqflite 默认关闭
@@ -84,6 +86,7 @@ class Db {
         doc_meta_json TEXT,                         -- 归一化覆盖率与确认状态（2026-09-30 v12，content-pipeline §7）
         attach_state TEXT NOT NULL DEFAULT 'owned', -- 文件引用状态 ref/owned/lost（2026-09-30 v13）
         aspect_ratio REAL,                          -- 图片宽高比（宽/高，摄入时解码图片头探测；null=未探测）（2026-09-30 v15）
+        inspiration_md TEXT,                        -- 灵感区：用户私密碎片想法（2026-10-01 v16，detail-two-zone §3）
         tags TEXT,                                  -- JSON Array: ["前端","团建"]
         facets_json TEXT,                           -- JSON: 视角→标签数组，AI 分类页消费（V2）
         is_vault INTEGER NOT NULL DEFAULT 0,        -- 0 公开 / 1 私密保险箱
@@ -280,6 +283,20 @@ class Db {
     final has = cols.any((c) => (c['name'] as String?) == 'aspect_ratio');
     if (!has) {
       await db.execute('ALTER TABLE inbox_items ADD COLUMN aspect_ratio REAL');
+    }
+  }
+
+  /// 幂等补齐 inbox_items.inspiration_md（v15→v16，2026-10-01）。
+  ///
+  /// 灵感区=用户的私密碎片想法（detail-two-zone.md §3 重新定义后落库位）：
+  /// 自由文本，与 AI 产出区分家；分享预览默认排除（隐私红线）。
+  static Future<void> _ensureInspirationColumn(Database db) async {
+    final cols = await db.rawQuery('PRAGMA table_info(inbox_items)');
+    final has = cols.any((c) => (c['name'] as String?) == 'inspiration_md');
+    if (!has) {
+      await db.execute(
+        'ALTER TABLE inbox_items ADD COLUMN inspiration_md TEXT',
+      );
     }
   }
 

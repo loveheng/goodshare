@@ -90,6 +90,7 @@ class _TaskQueuePageState extends State<TaskQueuePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        automaticallyImplyLeading: false,
         title: const Text('AI 任务队列'),
         actions: [
           IconButton(

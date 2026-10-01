@@ -129,7 +129,8 @@ class _SearchPageState extends State<SearchPage> with RepoAutoReload {
             filled: true,
             fillColor: scheme.surfaceContainerHighest,
             border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(24),
+              // 全系统去胶囊（2026-10-01）：24 于输入框高即胶囊，改 xl20
+              borderRadius: BorderRadius.circular(Radii.xl),
               borderSide: BorderSide.none,
             ),
             suffixIcon: IconButton(
@@ -187,8 +188,11 @@ class _SearchPageState extends State<SearchPage> with RepoAutoReload {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.search,
-                size: 48, color: Theme.of(context).colorScheme.outlineVariant),
+            Icon(
+              Icons.search,
+              size: 48,
+              color: Theme.of(context).colorScheme.outlineVariant,
+            ),
             const SizedBox(height: Insets.md),
             Text(
               '输入关键词搜索\n或点上方类型浏览',
@@ -201,10 +205,7 @@ class _SearchPageState extends State<SearchPage> with RepoAutoReload {
     }
     if (_items.isEmpty) {
       return Center(
-        child: Text(
-          '没有匹配的条目',
-          style: Theme.of(context).textTheme.bodyMedium,
-        ),
+        child: Text('没有匹配的条目', style: Theme.of(context).textTheme.bodyMedium),
       );
     }
     return MasonryGridView.count(

@@ -98,9 +98,11 @@ scan_all() {
     "直接混用 WidgetsBindingObserver，退后台行为须订阅 AppLifecycleManager" \
     'with WidgetsBindingObserver' "lib/app/lifecycle_manager.dart"
   # R7 排版禁用已弃用 textScaleFactor + 裸 fontSize 字面量
+  # 白名单：pdf_export.dart——pdf 包的 TextStyle.fontSize 是 PDF 文档排版
+  # 参数（毫米级渲染），与 Flutter textTheme/textScaler 无关，规则不适用。
   scan_pattern "R7-typography" "lib/pages lib/ui" \
     "裸 fontSize/textScaleFactor 字面量，须映射 M3 textTheme 并用 textScaler" \
-    '(fontSize:|textScaleFactor:)' "lib/pages/mcp_page.dart lib/ui/image_annotator.dart"
+    '(fontSize:|textScaleFactor:)' "lib/pages/mcp_page.dart lib/ui/image_annotator.dart lib/ui/pdf_export.dart"
   return 0
 }
 

@@ -18,6 +18,19 @@ import 'mcp_page.dart';
 import 'recent_deleted_page.dart';
 import 'update_page.dart';
 
+/// tonal 按钮按压=底色实色加深（主题层按压反馈纪律的全局 pressed 色是
+/// 橘红系、只对 Filled 主色生效；tonal 底是暖棕，需局部深一档，禁半透明罩）。
+ButtonStyle _tonalPressStyle(BuildContext context) => ButtonStyle(
+  backgroundColor: WidgetStateProperty.resolveWith(
+    (states) => states.contains(WidgetState.pressed)
+        ? Color.alphaBlend(
+            Colors.black.withValues(alpha: 0.18),
+            Theme.of(context).colorScheme.secondaryContainer,
+          )
+        : null,
+  ),
+);
+
 /// 设置页（设计 §5 设置树）。
 /// AI 能力开关：首次进入触发本机检测并持久化（之后不再检测），
 /// 无能力小字提示并置灰，有能力默认开启（2026-09-27 决策）。
@@ -76,24 +89,30 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _onDownloadLanguagePack() async {
     final ok = await widget.caps.downloadLanguagePack();
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(ok ? '语言包已下载' : '下载失败（国内网络通常不可用）')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(ok ? '语言包已下载' : '下载失败（国内网络通常不可用）')));
   }
 
   /// 端侧大模型下载（1-2GB 级单文件）：失败原因必须明说，不让用户对着无反应的按钮猜。
   Future<void> _onLlmDownload(LlmModel m) async {
     final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(SnackBar(content: Text('开始下载 ${m.name}（${_humanSize(m.sizeBytes)}）…')));
+    messenger.showSnackBar(
+      SnackBar(content: Text('开始下载 ${m.name}（${_humanSize(m.sizeBytes)}）…')),
+    );
     try {
       await widget.llmModels.download(m);
       messenger.hideCurrentSnackBar();
       // 基于真实就绪态反馈：取消/未完成时不误报「已就绪」，可重试续传
-      messenger.showSnackBar(SnackBar(
-        content: Text(widget.llmModels.isReady(m)
-            ? '${m.name} 已就绪'
-            : '${m.name} 下载已取消/未完成，可重试续传'),
-      ));
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            widget.llmModels.isReady(m)
+                ? '${m.name} 已就绪'
+                : '${m.name} 下载已取消/未完成，可重试续传',
+          ),
+        ),
+      );
     } catch (e) {
       messenger.hideCurrentSnackBar();
       messenger.showSnackBar(SnackBar(content: Text('下载失败：$e（可重试或换网络环境）')));
@@ -108,8 +127,14 @@ class _SettingsPageState extends State<SettingsPage> {
         title: Text('删除 ${m.name}？'),
         content: const Text('将释放模型占用的存储空间；已生成的摘要 / 关键词不受影响。'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('删除')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('删除'),
+          ),
         ],
       ),
     );
@@ -164,7 +189,9 @@ class _SettingsPageState extends State<SettingsPage> {
     final caps = widget.caps;
     if (caps.translationAvailable == null) return '检测中…';
     if (caps.translationAvailable == false) {
-      return _translationReason.isNotEmpty ? _translationReason : '无可用引擎，产物保留原文';
+      return _translationReason.isNotEmpty
+          ? _translationReason
+          : '无可用引擎，产物保留原文';
     }
     if (!caps.translationEnabled) return '已关闭';
     return '已就绪 · 目标 ${languageLabel(caps.targetLang)}';
@@ -172,7 +199,9 @@ class _SettingsPageState extends State<SettingsPage> {
 
   String _bgProcessSubtitle() {
     if (widget.aiQueue.isMemoryPressure) return '内存紧张中，已暂停新任务（恢复后续跑）';
-    if (!widget.aiQueue.backgroundProcessingEnabled) return '关闭（退后台后队列暂停，回前台继续）';
+    if (!widget.aiQueue.backgroundProcessingEnabled) {
+      return '关闭（退后台后队列暂停，回前台继续）';
+    }
     return '退后台由前台服务保活，OCR / 转写 / 抓取继续处理';
   }
 
@@ -212,14 +241,20 @@ class _SettingsPageState extends State<SettingsPage> {
           ListTile(
             leading: Icon(
               Icons.cloud_sync_outlined,
-              color: widget.mcp.running ? Theme.of(context).colorScheme.primary : null,
+              color: widget.mcp.running
+                  ? Theme.of(context).colorScheme.primary
+                  : null,
             ),
             title: const Text('服务与连接'),
-            subtitle: Text(widget.mcp.running ? '运行中 · 端口 ${widget.mcp.port}' : '未运行'),
+            subtitle: Text(
+              widget.mcp.running ? '运行中 · 端口 ${widget.mcp.port}' : '未运行',
+            ),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.push(
               context,
-              MaterialPageRoute<void>(builder: (_) => McpPage(controller: widget.mcp)),
+              MaterialPageRoute<void>(
+                builder: (_) => McpPage(controller: widget.mcp),
+              ),
             ),
           ),
           const _SectionHeader('AI 模式'),
@@ -258,7 +293,8 @@ class _SettingsPageState extends State<SettingsPage> {
             secondary: const Icon(Icons.translate),
             title: const Text('端侧翻译'),
             subtitle: Text(_translationSubtitle()),
-            value: caps.translationEnabled && (caps.translationAvailable ?? false),
+            value:
+                caps.translationEnabled && (caps.translationAvailable ?? false),
             onChanged: caps.translationAvailable == false
                 ? null // 语言包未就绪：置灰 + 小字说明原因，不静默降级
                 : (v) => caps.setTranslationEnabled(v),
@@ -271,7 +307,10 @@ class _SettingsPageState extends State<SettingsPage> {
               value: caps.targetLang,
               items: [
                 for (final code in kTargetLanguages)
-                  DropdownMenuItem(value: code, child: Text(languageLabel(code))),
+                  DropdownMenuItem(
+                    value: code,
+                    child: Text(languageLabel(code)),
+                  ),
               ],
               onChanged: (v) {
                 if (v == null) return;
@@ -289,7 +328,10 @@ class _SettingsPageState extends State<SettingsPage> {
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: SegmentedButton<SubtitleMode>(
               segments: const [
-                ButtonSegment(value: SubtitleMode.sourceOnly, label: Text('仅原文')),
+                ButtonSegment(
+                  value: SubtitleMode.sourceOnly,
+                  label: Text('仅原文'),
+                ),
                 ButtonSegment(value: SubtitleMode.bilingual, label: Text('双语')),
                 ButtonSegment(value: SubtitleMode.separate, label: Text('分文件')),
               ],
@@ -301,20 +343,24 @@ class _SettingsPageState extends State<SettingsPage> {
             ListTile(
               leading: const Icon(Icons.download_outlined),
               title: Text('下载${languageLabel(caps.targetLang)}语言包'),
-              subtitle: const Text('ML Kit 语言包经 Google Play 下发，国内网络通常不可用；'
-                  '失败时字幕与译文保留原文，不影响其它功能'),
+              subtitle: const Text(
+                'ML Kit 语言包经 Google Play 下发，国内网络通常不可用；'
+                '失败时字幕与译文保留原文，不影响其它功能',
+              ),
               trailing: TextButton(
                 onPressed: _onDownloadLanguagePack,
                 child: const Text('下载'),
               ),
             ),
           const _SectionHeader('语音转写模型'),
-          ...asrModels.map((m) => _AsrModelTile(
-            model: m,
-            models: widget.models,
-            selected: widget.models.selectedId == m.id,
-            onSelected: _onModelSelected,
-          )),
+          ...asrModels.map(
+            (m) => _AsrModelTile(
+              model: m,
+              models: widget.models,
+              selected: widget.models.selectedId == m.id,
+              onSelected: _onModelSelected,
+            ),
+          ),
           const _SectionHeader('端侧大模型'),
           // SoC 感知目录：NPU 专包仅对应机型可见（设计 §3.1），通用包恒可见
           FutureBuilder<List<LlmModel>>(
@@ -338,8 +384,10 @@ class _SettingsPageState extends State<SettingsPage> {
             dense: true,
             leading: const Icon(Icons.psychology_alt_outlined),
             title: const Text('摘要 / 关键词提取'),
-            subtitle: const Text('下载模型后，详情页出现「摘要」「提取关键词」按钮；'
-                'iOS 走系统模型（iOS 26+，无需下载）'),
+            subtitle: const Text(
+              '下载模型后，详情页出现「摘要」「提取关键词」按钮；'
+              'iOS 走系统模型（iOS 26+，无需下载）',
+            ),
           ),
           ListTile(
             enabled: false,
@@ -353,7 +401,10 @@ class _SettingsPageState extends State<SettingsPage> {
             leading: const Icon(Icons.auto_awesome_outlined),
             title: const Text('离线 AI 双态重构（自动 / 强制 V1 / 尝试 V2）'),
             subtitle: const Text('V2 生效，当前为基础模式'),
-            trailing: const Text('V2', style: TextStyle(fontWeight: FontWeight.bold)),
+            trailing: const Text(
+              'V2',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
           ),
           const _SectionHeader('隐私与保险箱'),
           ListTile(
@@ -361,20 +412,28 @@ class _SettingsPageState extends State<SettingsPage> {
             leading: const Icon(Icons.fingerprint),
             title: const Text('FaceID 锁定保险箱'),
             subtitle: const Text('V3 生效（加密 + 生物识别门）'),
-            trailing: const Text('V3', style: TextStyle(fontWeight: FontWeight.bold)),
+            trailing: const Text(
+              'V3',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
           ),
           ListTile(
             enabled: false,
             leading: const Icon(Icons.credit_card),
             title: const Text('身份证 / 银行卡默认打码'),
             subtitle: const Text('V2 生效（AI 管线产出时打码）'),
-            trailing: const Text('V2', style: TextStyle(fontWeight: FontWeight.bold)),
+            trailing: const Text(
+              'V2',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
           ),
           const _SectionHeader('数据'),
           ListTile(
             leading: const Icon(Icons.merge_type_outlined),
             title: const Text('文本收集模式'),
-            subtitle: Text(_mode == 'merge' ? '合并（同源 5 分钟内追加为一条）' : '分散（默认，每次一条）'),
+            subtitle: Text(
+              _mode == 'merge' ? '合并（同源 5 分钟内追加为一条）' : '分散（默认，每次一条）',
+            ),
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
@@ -398,7 +457,11 @@ class _SettingsPageState extends State<SettingsPage> {
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute<void>(
-                  builder: (_) => RecentDeletedPage(handler: widget.handler, repo: widget.repo)),
+                builder: (_) => RecentDeletedPage(
+                  handler: widget.handler,
+                  repo: widget.repo,
+                ),
+              ),
             ),
           ),
           const _SectionHeader('S3 备份'),
@@ -435,15 +498,13 @@ class _SectionHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-        child: Text(
-          title,
-          style: Theme.of(context)
-              .textTheme
-              .labelLarge
-              ?.copyWith(color: Theme.of(context).colorScheme.primary),
-        ),
-      );
+    padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+    child: Text(
+      title,
+      style: Theme.of(context).textTheme.labelLarge
+          ?.copyWith(color: Theme.of(context).colorScheme.primary),
+    ),
+  );
 }
 
 /// 三档模型选择卡片：选中态 + 状态/下载进度 + 下载/取消/清除操作（2026-09-28）。
@@ -480,19 +541,24 @@ class _AsrModelTile extends StatelessWidget {
                 Row(
                   children: [
                     Icon(
-                      selected ? Icons.radio_button_checked : Icons.radio_button_off,
+                      selected
+                          ? Icons.radio_button_checked
+                          : Icons.radio_button_off,
                       size: 20,
-                      color: selected ? scheme.primary : scheme.onSurfaceVariant,
+                      color: selected
+                          ? scheme.primary
+                          : scheme.onSurfaceVariant,
                     ),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Text(model.name, style: Theme.of(context).textTheme.titleSmall),
+                      child: Text(
+                        model.name,
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
                     ),
                     Text(
                       _humanSize(model.totalBytes),
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodySmall
+                      style: Theme.of(context).textTheme.bodySmall
                           ?.copyWith(color: scheme.onSurfaceVariant),
                     ),
                   ],
@@ -500,9 +566,7 @@ class _AsrModelTile extends StatelessWidget {
                 const SizedBox(height: 6),
                 Text(
                   model.desc,
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodySmall
+                  style: Theme.of(context).textTheme.bodySmall
                       ?.copyWith(color: scheme.onSurfaceVariant),
                 ),
                 const SizedBox(height: 8),
@@ -546,15 +610,15 @@ class _AsrModelTile extends StatelessWidget {
                           child: Text(
                             '下载失败：${st.error}',
                             overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context)
-                                .textTheme
-                                .bodySmall
+                            style: Theme.of(context).textTheme.bodySmall
                                 ?.copyWith(color: scheme.error),
                           ),
                         ),
                       TextButton.icon(
                         icon: const Icon(Icons.download, size: 18),
-                        label: Text(st.phase == DownloadPhase.error ? '重试' : '下载'),
+                        label: Text(
+                          st.phase == DownloadPhase.error ? '重试' : '下载',
+                        ),
                         onPressed: () => models.download(model),
                       ),
                     ],
@@ -610,19 +674,24 @@ class _LlmModelTile extends StatelessWidget {
                 Row(
                   children: [
                     Icon(
-                      selected ? Icons.radio_button_checked : Icons.radio_button_off,
+                      selected
+                          ? Icons.radio_button_checked
+                          : Icons.radio_button_off,
                       size: 20,
-                      color: selected ? scheme.primary : scheme.onSurfaceVariant,
+                      color: selected
+                          ? scheme.primary
+                          : scheme.onSurfaceVariant,
                     ),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Text(model.name, style: Theme.of(context).textTheme.titleSmall),
+                      child: Text(
+                        model.name,
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
                     ),
                     Text(
                       _humanSize(model.sizeBytes),
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodySmall
+                      style: Theme.of(context).textTheme.bodySmall
                           ?.copyWith(color: scheme.onSurfaceVariant),
                     ),
                   ],
@@ -630,9 +699,7 @@ class _LlmModelTile extends StatelessWidget {
                 const SizedBox(height: 6),
                 Text(
                   model.desc,
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodySmall
+                  style: Theme.of(context).textTheme.bodySmall
                       ?.copyWith(color: scheme.onSurfaceVariant),
                 ),
                 const SizedBox(height: 8),
@@ -659,7 +726,11 @@ class _LlmModelTile extends StatelessWidget {
                   // 用户暂停：.part 片段保留，点「继续」从断点续传
                   Row(
                     children: [
-                      Icon(Icons.pause_circle, size: 16, color: scheme.onSurfaceVariant),
+                      Icon(
+                        Icons.pause_circle,
+                        size: 16,
+                        color: scheme.onSurfaceVariant,
+                      ),
                       const SizedBox(width: 4),
                       Expanded(
                         child: Text(
@@ -673,7 +744,10 @@ class _LlmModelTile extends StatelessWidget {
                         label: const Text('继续'),
                         onPressed: () => onDownload(model),
                       ),
-                      TextButton(onPressed: () => onRemove(model), child: const Text('删除')),
+                      TextButton(
+                        onPressed: () => onRemove(model),
+                        child: const Text('删除'),
+                      ),
                     ],
                   )
                 else if (ready && stale)
@@ -695,7 +769,10 @@ class _LlmModelTile extends StatelessWidget {
                         label: const Text('更新'),
                         onPressed: () => onDownload(model),
                       ),
-                      TextButton(onPressed: () => onRemove(model), child: const Text('删除')),
+                      TextButton(
+                        onPressed: () => onRemove(model),
+                        child: const Text('删除'),
+                      ),
                     ],
                   )
                 else if (ready)
@@ -705,7 +782,10 @@ class _LlmModelTile extends StatelessWidget {
                       const SizedBox(width: 4),
                       Text('已下载', style: Theme.of(context).textTheme.bodySmall),
                       const Spacer(),
-                      TextButton(onPressed: () => onRemove(model), child: const Text('删除')),
+                      TextButton(
+                        onPressed: () => onRemove(model),
+                        child: const Text('删除'),
+                      ),
                     ],
                   )
                 else
@@ -715,9 +795,7 @@ class _LlmModelTile extends StatelessWidget {
                         child: Text(
                           selected ? '选中后详情页即可用（摘要 / 关键词）' : '点卡片选中；下载后生效',
                           overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
+                          style: Theme.of(context).textTheme.bodySmall
                               ?.copyWith(color: scheme.onSurfaceVariant),
                         ),
                       ),
@@ -781,7 +859,9 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
     final endpoint = _endpointCtrl.text.trim();
     final bucket = _bucketCtrl.text.trim();
     if (endpoint.isEmpty || bucket.isEmpty) {
-      messenger.showSnackBar(const SnackBar(content: Text('请填写 endpoint 与 bucket')));
+      messenger.showSnackBar(
+        const SnackBar(content: Text('请填写 endpoint 与 bucket')),
+      );
       return;
     }
     try {
@@ -805,7 +885,9 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
     final endpoint = _endpointCtrl.text.trim();
     final bucket = _bucketCtrl.text.trim();
     if (endpoint.isEmpty || bucket.isEmpty) {
-      messenger.showSnackBar(const SnackBar(content: Text('请填写 endpoint 与 bucket')));
+      messenger.showSnackBar(
+        const SnackBar(content: Text('请填写 endpoint 与 bucket')),
+      );
       return;
     }
     try {
@@ -852,8 +934,14 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
           '保险箱条目从未进备份，不受影响。建议先做一次备份。',
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('确认恢复')),
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('确认恢复'),
+          ),
         ],
       ),
     );
@@ -900,7 +988,8 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
             decoration: const InputDecoration(
               labelText: 'S3 Endpoint',
               hintText: 'https://s3.example.com:9000',
-              helperText: 'MinIO / NAS / R2 / B2 / OSS 等 S3 兼容服务（path-style）；'
+              helperText:
+                  'MinIO / NAS / R2 / B2 / OSS 等 S3 兼容服务（path-style）；'
                   'R2 填 https://<账户ID>.r2.cloudflarestorage.com',
               border: OutlineInputBorder(),
               isDense: true,
@@ -979,12 +1068,17 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
           child: Row(
             children: [
               Expanded(
-                child: FilledButton.tonal(onPressed: busy ? null : _saveConfig, child: const Text('保存配置')),
+                child: FilledButton.tonal(
+                  onPressed: busy ? null : _saveConfig,
+                  style: _tonalPressStyle(context),
+                  child: const Text('保存配置'),
+                ),
               ),
               const SizedBox(width: 8),
               Expanded(
                 child: FilledButton.tonalIcon(
                   onPressed: busy ? null : _test,
+                  style: _tonalPressStyle(context),
                   icon: const Icon(Icons.network_check, size: 18),
                   label: const Text('测试连接'),
                 ),
@@ -998,15 +1092,24 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
             dense: true,
             leading: const Icon(Icons.cloud_upload_outlined),
             title: const Text('立即备份'),
-            subtitle: const Text('数据库 + 附件增量上传；视频默认不备份（详情页「整片标记」的视频例外）；保险箱条目不备份（未加密）'),
-            trailing: FilledButton(onPressed: _backupNow, child: const Text('备份')),
+            subtitle: const Text(
+              '数据库 + 附件增量上传；视频默认不备份（详情页「整片标记」的视频例外）；保险箱条目不备份（未加密）',
+            ),
+            trailing: FilledButton(
+              onPressed: _backupNow,
+              child: const Text('备份'),
+            ),
           ),
           ListTile(
             dense: true,
             leading: const Icon(Icons.cloud_download_outlined),
             title: const Text('从备份恢复'),
             subtitle: const Text('用最近一次备份覆盖本机数据（保险箱不受影响）'),
-            trailing: FilledButton.tonal(onPressed: _restore, child: const Text('恢复')),
+            trailing: FilledButton.tonal(
+              onPressed: _restore,
+              style: _tonalPressStyle(context),
+              child: const Text('恢复'),
+            ),
           ),
         ],
         if (busy) ...[
@@ -1023,9 +1126,7 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
                 const SizedBox(height: 6),
                 Text(
                   _progressLabel(backup.progress),
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodySmall
+                  style: Theme.of(context).textTheme.bodySmall
                       ?.copyWith(color: scheme.onSurfaceVariant),
                 ),
                 const SizedBox(height: 4),
@@ -1043,9 +1144,7 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: Text(
               _lastResult!,
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
+              style: Theme.of(context).textTheme.bodySmall
                   ?.copyWith(color: scheme.onSurfaceVariant),
             ),
           ),
@@ -1054,9 +1153,7 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: Text(
               '最近备份：${_fmtBackupTs(last.ts)}（${last.itemCount} 条）',
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
+              style: Theme.of(context).textTheme.bodySmall
                   ?.copyWith(color: scheme.onSurfaceVariant),
             ),
           ),

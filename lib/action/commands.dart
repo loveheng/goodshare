@@ -348,6 +348,7 @@ final class UpdateItemCommand extends ItemCommand {
     this.humanMd,
     this.machineJson,
     this.itemType,
+    this.inspirationMd,
     super.expectedVersion,
   });
 
@@ -356,6 +357,10 @@ final class UpdateItemCommand extends ItemCommand {
   final String? tldr;
   final List<String>? tags;
   final String? humanMd;
+
+  /// 灵感区文本（schema v16）：用户私密碎片想法，与 AI 产出区分家
+  /// （detail-two-zone.md §3）。
+  final String? inspirationMd;
 
   /// machine_json 原文（字符串或对象皆可，落库前过领域 Schema 强校验）。
   final String? machineJson;
@@ -369,7 +374,8 @@ final class UpdateItemCommand extends ItemCommand {
       tags == null &&
       humanMd == null &&
       machineJson == null &&
-      itemType == null;
+      itemType == null &&
+      inspirationMd == null;
 
   @override
   String get op => 'update';
@@ -387,6 +393,7 @@ final class UpdateItemCommand extends ItemCommand {
         if (humanMd != null) 'human_md': humanMd,
         if (machineJson != null) 'machine_json': machineJson,
         if (itemType != null) 'item_type': itemType,
+        if (inspirationMd != null) 'inspiration_md': inspirationMd,
         if (expectedVersion != null) 'expected_version': expectedVersion,
       };
 }
