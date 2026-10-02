@@ -221,6 +221,10 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
 
   /// 就地编辑会话（脊柱 EditSession）：进入编辑态创建，退出 / 提交后销毁。
   EditSession? _editSession;
+
+  /// 编辑态正文宿主的 GlobalKey：保存前经它 flush 空块（删光文字 = 删段，
+  /// 失焦回收在内存中完成，落库前的最后一次同步在这里补齐）。
+  final GlobalKey<_EditBodyState> _editBodyKey = GlobalKey();
   final FocusNode _titleFocus = FocusNode();
 
   @override
@@ -425,6 +429,9 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   Future<void> _commitEdit() async {
     final session = _editSession;
     if (session == null) return;
+    // 落库前最后一次同步：把仍在输入框里的空块（删光待回收）flush 掉，
+    // 保证「删光文字 = 删段」在保存时也不遗漏。
+    _editBodyKey.currentState?.flushPendingEmpties();
     final md = session.markdown;
     setState(() {
       _editSession = null;
@@ -451,16 +458,10 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 编辑态不展示——本拍板只改正文，退出编辑后照常渲染。
   List<Widget> _editBodySlivers(EditSession session) => [
         SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Text(
-              '就地编辑：修改正文块后点「保存」提交',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
+          child: KeyedSubtree(
+            key: ValueKey(session),
+            child: _EditBody(key: _editBodyKey, session: session),
           ),
-        ),
-        SliverToBoxAdapter(
-          child: _EditBody(key: ValueKey(session), session: session),
         ),
       ];
 
@@ -1595,7 +1596,10 @@ class _OverflowSheetState extends State<_OverflowSheet>
 /// 粘贴拆块拦截器：检测单次粘贴事件（含空行 `\n\n` 的整块插入，区别于逐字输入），
 /// 拒绝本次字符落入单块，延迟到帧后由 [_EditBodyState._splitPasted] 经 [SplitOp]
 /// 拆块并整体重同步控制器。仅段落/引用块会被拆，其它块由 SplitOp 原样提交。
-/// 编辑态媒体块编辑器：在 `TextField` 之外提供「预览 + 标签 + 替换媒体」。
+/// 编辑态媒体块编辑器：在 `TextField` 之外提供「预览 + 标签 + 长按替换媒体」。
+///
+/// 长按预览即替换（用户拍板）：编辑态不放常驻「替换媒体」按钮；与查看页长按
+/// （标注/菜单）语义不同步，各态各义。
 ///
 /// 护栏（用户拍板）：可视状态 100% 派生自传入的 [block]/[labelController]，不持有
 /// 任何本地私有状态（无 `_currentUrl`）；替换成功经 [onReplace] 上抛，由顶层走
@@ -1650,9 +1654,14 @@ class MediaBlockEditor extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        ClipRRect(
-          borderRadius: BorderRadius.circular(Radii.md),
-          child: preview,
+        GestureDetector(
+          // 长按预览 = 替换媒体（用户拍板）：编辑态复用查看页的物理直觉，
+          // 不再放常驻按钮；与查看页长按（标注/菜单）语义不同步，各态各义。
+          onLongPress: () => _pickAndReplace(context),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(Radii.md),
+            child: preview,
+          ),
         ),
         const SizedBox(height: 6),
         TextField(
@@ -1661,8 +1670,8 @@ class MediaBlockEditor extends StatelessWidget {
           maxLines: null,
           decoration: InputDecoration(
             isDense: true,
-            border: const OutlineInputBorder(),
-            contentPadding: const EdgeInsets.all(10),
+            border: InputBorder.none,
+            contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
             hintText: switch (block) {
               ImageBlock() => '图片说明（alt）',
               AudioBlock() => '音频标签',
@@ -1672,15 +1681,6 @@ class MediaBlockEditor extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 6),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: OutlinedButton.icon(
-            onPressed: () => _pickAndReplace(context),
-            icon: const Icon(Icons.swap_horiz, size: 18),
-            label: const Text('替换媒体'),
-          ),
-        ),
-        const SizedBox(height: 2),
         Divider(color: scheme.outlineVariant),
       ],
     );
@@ -1722,39 +1722,141 @@ class _EditBody extends StatefulWidget {
 class _EditBodyState extends State<_EditBody> {
   late List<TextEditingController> _controllers = _buildControllers();
 
+  /// 焦点节点（与控制器同序）：失焦时回收空块——「删光文字 = 删段」，
+  /// 用户心智里的删除不需要按钮；正在编辑的空块不回收（可能只是清空重写）。
+  late List<FocusNode> _focusNodes = _buildFocusNodes();
+
+  /// 待失焦回收的空块下标（onChange 记、失焦/重同步时消费）。
+  final Set<int> _pendingEmpty = {};
+
   List<TextEditingController> _buildControllers() => [
         for (var i = 0; i < widget.session.blocks.length; i++)
           TextEditingController(text: widget.session.editTextOf(i))
       ];
+
+  List<FocusNode> _buildFocusNodes() => [
+        for (var i = 0; i < widget.session.blocks.length; i++)
+          FocusNode(onKeyEvent: (node, event) => _onBlockKey(i, event))
+      ];
+
+  /// 待办块的行内勾选：替代旧块级工具栏中的 Checkbox——勾选态本来就是
+  /// 块自身的属性，贴着内容放比悬在上方一排按钮更可达。
+  Widget? _todoToggle(int i) {
+    final block = widget.session.blocks[i].block;
+    if (block is! ListBlock || block.items.length != 1) return null;
+    if (block.items.first.done == null) return null;
+    return Padding(
+      padding: const EdgeInsets.only(top: 2, right: 8),
+      child: Checkbox(
+        visualDensity: VisualDensity.compact,
+        value: widget.session.blocks[i].todoDone ?? false,
+        onChanged: (v) {
+          widget.session.apply(
+            CommitTextOp(i, widget.session.editTextOf(i), todoDone: v ?? false),
+          );
+          if (mounted) setState(() {});
+        },
+      ),
+    );
+  }
+
+  /// 键盘事件：块首退格（光标在 0 且无选区）且上方还有块时，把上方块收拢进来。
+  /// 返回 handled 阻止默认行为，避免光标停在块首不动。
+  KeyEventResult _onBlockKey(int i, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    if (event.logicalKey != LogicalKeyboardKey.backspace) {
+      return KeyEventResult.ignored;
+    }
+    final controller = _controllers[i];
+    if (controller.selection.baseOffset != 0 ||
+        controller.selection.extentOffset != 0 ||
+        i == 0) {
+      return KeyEventResult.ignored;
+    }
+    // 上方块文本 + 本块剩余文本并入上方块（物理键盘主要场景；软键盘无
+    // KeyEvent，靠删除键逐字清空 + 失焦回收兜底）。
+    final prev = widget.session.editTextOf(i - 1);
+    final cur = controller.text;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      widget.session.apply(SplitOp(i - 1, '$prev\n\n$cur'));
+      _syncAfterStructureChange();
+      _focusNodes[i - 1].requestFocus();
+    });
+    return KeyEventResult.handled;
+  }
 
   /// 重同步控制器到最新 `blocks`（结构变更后调用）。
   void _resync() {
     for (final c in _controllers) {
       c.dispose();
     }
+    for (final f in _focusNodes) {
+      f.dispose();
+    }
     _controllers = _buildControllers();
+    _focusNodes = _buildFocusNodes();
+    _pendingEmpty.clear();
+  }
+
+  /// 结构变更后的统一重同步入口。
+  void _syncAfterStructureChange() {
+    if (mounted) setState(_resync);
   }
 
   /// 文本编辑：逐字经 [CommitTextOp] 落会话；仅当清空块致 blocks 数变化时重同步
   /// （不逐字重同步，避免破坏光标）。
   void _onChanged(int i, String v) {
     widget.session.apply(CommitTextOp(i, v));
+    if (v.trim().isEmpty) {
+      _pendingEmpty.add(i);
+    } else {
+      _pendingEmpty.remove(i);
+    }
     if (widget.session.blocks.length != _controllers.length && mounted) {
       setState(_resync);
     }
   }
 
-  /// 结构操作（上移/下移/插入/删除）：应用后整体重同步控制器。
-  void _mutate(EditOp op) {
-    widget.session.apply(op);
-    if (mounted) setState(_resync);
+  /// 失焦回收：编辑框已删空且失焦的块从会话移除（至少保留一个块，防页面无落笔处）。
+  void _onFocusLost(int i) {
+    if (!_pendingEmpty.contains(i)) return;
+    _pendingEmpty.remove(i);
+    if (widget.session.blocks.length <= 1) return;
+    // 逐字删除过程中 CommitTextOp 可能已把空块移除（rebuildBlock 返回 null），
+    // 下标对不上即无需再回收。
+    if (i >= widget.session.blocks.length) return;
+    widget.session.apply(DeleteOp(i));
+    _syncAfterStructureChange();
+  }
+
+  /// 保存前由宿主调用：仍在输入框中的空块此刻一并回收，保证落库口径一致。
+  void flushPendingEmpties() {
+    if (_pendingEmpty.isEmpty) return;
+    // 从大到小删，避免下标位移；单块页面不回收（保底落笔处）。
+    final idx = _pendingEmpty.toList()..sort((a, b) => b.compareTo(a));
+    for (final i in idx) {
+      if (widget.session.blocks.length <= 1) break;
+      if (i < widget.session.blocks.length) {
+        widget.session.apply(DeleteOp(i));
+      }
+    }
+    _pendingEmpty.clear();
   }
 
   /// 粘贴拆块：经 [SplitOp] 把整段粘贴文本按空行切成多块，再整体重同步控制器。
   void _splitPasted(int i, String full) {
     if (!mounted) return;
     widget.session.apply(SplitOp(i, full));
-    setState(_resync);
+    _syncAfterStructureChange();
+  }
+
+  /// 结构操作（仅存「末尾追加」一处入口）：应用后整体重同步控制器。
+  void _mutate(EditOp op) {
+    widget.session.apply(op);
+    _syncAfterStructureChange();
   }
 
   @override
@@ -1762,69 +1864,18 @@ class _EditBodyState extends State<_EditBody> {
     for (final c in _controllers) {
       c.dispose();
     }
+    for (final f in _focusNodes) {
+      f.dispose();
+    }
     super.dispose();
-  }
-
-  Widget _toolbar(int i) {
-    final n = widget.session.blocks.length;
-    final block = widget.session.blocks[i];
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.end,
-      children: [
-        if (block.todoDone != null)
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Checkbox(
-                visualDensity: VisualDensity.compact,
-                value: block.todoDone,
-                onChanged: (v) {
-                  block.todoDone = v ?? false;
-                  widget.session.apply(
-                    CommitTextOp(i, widget.session.editTextOf(i),
-                        todoDone: v ?? false),
-                  );
-                  if (mounted) setState(() {});
-                },
-              ),
-              Text('完成', style: Theme.of(context).textTheme.bodySmall),
-            ],
-          ),
-        IconButton(
-          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-          iconSize: 18,
-          tooltip: '上移',
-          onPressed: i > 0 ? () => _mutate(MoveOp(i, -1)) : null,
-          icon: const Icon(Icons.arrow_upward),
-        ),
-        IconButton(
-          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-          iconSize: 18,
-          tooltip: '下移',
-          onPressed: i < n - 1 ? () => _mutate(MoveOp(i, 1)) : null,
-          icon: const Icon(Icons.arrow_downward),
-        ),
-        IconButton(
-          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-          iconSize: 18,
-          tooltip: '在下方插入段落',
-          onPressed: () => _mutate(InsertAfterOp(i)),
-          icon: const Icon(Icons.add),
-        ),
-        IconButton(
-          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-          iconSize: 18,
-          tooltip: '删除块',
-          onPressed: () => _mutate(DeleteOp(i)),
-          icon: const Icon(Icons.delete_outline),
-        ),
-      ],
-    );
   }
 
   /// 单个块的编辑载体：媒体块渲染 [MediaBlockEditor]（预览+标签+替换），
   /// 其余块保持 `TextField` 不变。两者均绑定 `ValueKey(blocks[i].id)`，
   /// 防结构变更（增删/移动/拆分）后 Element 错位复用。
+  ///
+  /// 无块级工具栏（用户拍板）：上移/下移/插入/删除按钮全部移除——插入靠回车
+  /// 空行与粘贴拆块，删除靠「删光文字 + 失焦回收」，结构操作退居键盘与手势。
   Widget _blockEditor(int i) {
     final id = widget.session.blocks[i].id;
     final block = widget.session.blocks[i].block;
@@ -1844,25 +1895,30 @@ class _EditBodyState extends State<_EditBody> {
         : TextField(
             key: ValueKey(id),
             controller: _controllers[i],
+            focusNode: _focusNodes[i],
             maxLines: null,
             inputFormatters: [_PasteSplitFormatter(i, this)],
             onChanged: (v) => _onChanged(i, v),
-            decoration: const InputDecoration(
+            onTapOutside: (_) => _onFocusLost(i),
+            style: Theme.of(context).textTheme.bodyMedium,
+            decoration: InputDecoration(
               isDense: true,
-              border: OutlineInputBorder(),
-              contentPadding: EdgeInsets.all(10),
+              filled: true,
+              fillColor: Colors.transparent,
+              border: InputBorder.none,
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
             ),
           );
+    final todo = _todoToggle(i);
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          _toolbar(i),
-          const SizedBox(height: 4),
-          editor,
-        ],
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+      child: todo != null
+          ? Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [todo, Expanded(child: editor)],
+            )
+          : editor,
     );
   }
 
@@ -1873,7 +1929,7 @@ class _EditBodyState extends State<_EditBody> {
           for (var i = 0; i < widget.session.blocks.length; i++) _blockEditor(i),
           if (widget.session.blocks.isEmpty)
             const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Text(
                 '正文为空，点击下方添加段落',
                 style: TextStyle(color: Colors.grey),
@@ -1881,7 +1937,7 @@ class _EditBodyState extends State<_EditBody> {
             ),
           // 常驻「添加段落」：AppendOp；兼覆盖空正文无法起笔的缺口。
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Align(
               alignment: Alignment.centerLeft,
               child: TextButton.icon(
