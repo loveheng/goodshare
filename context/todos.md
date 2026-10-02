@@ -15,9 +15,6 @@ format: v3
 
 ## goodshare
 
-- [ ] [2026-10-02] (修复)(层:L0)(重:轻) LLM 任务失败原因不可观测：`llm.dart:62` 任务 note 用同步兜底文案（「未下载模型或系统不支持」）而非 `unavailableReasonAsync()` 真值——实测 qwen25-1.5b-q8 模型完整在机（1.5GB + xnnpack 缓存，引擎曾加载成功）仍报引擎不可用，真实失败环节（疑似 engine init/生成阶段）被文案掩盖 (src: ai, 字幕管线深度评估)
-- [ ] [2026-10-02] (功能)(层:L3)(重:中) 音视频转写失败的手动重试入口：`reprocess` 对音视频走占位兜底是防堵设计（asr_reconstructor.dart:47），但转写失败后用户侧无任何重试动作；配套修「中文模型转英文音频」失败文案引导（现有空 cue 文案已覆盖，失败即终局才缺入口） (src: ai, 字幕管线深度评估)
-- [ ] [2026-10-02] (修复)(层:L0)(重:中) ASR 模型下载断点续传：ModelManager 为 `.part`→rename 方案，下载中断后重下需从头——真机实证 sensevoice 中断停在 102/239MB `.part`，「全能·多语种」档因此不可用 (src: ai, 字幕管线深度评估)
 - [ ] [2026-10-02] (风险)(层:L0)(重:中) VAD `bufferSizeInSeconds=100` 对长音源溢出：>100s 音频触发 circular buffer overflow 告警（sherpa 报「数据未丢失」，桌面复现确认），与 2026-09-28 长视频 WAV 临时文件/超时风险条目同属长视频待验族，落地时一并实测 (src: ai, 字幕管线深度评估)
 - [ ] [2026-10-02] (功能)(层:L3)(重:中) document 归一化接线：`taskActionFor(document)` 由 null 接上队列（html/plain/pdf 三 normalizer 已建，接口位已存在），文件类分享自动出可读正文；content-pipeline §9 既有 Phase，半天级 (src: ai, app-share 链路评估)
 - [ ] [2026-10-02] (功能)(层:L1)(重:中) 图文同分享文案修复：receive_sharing_intent 的 toJsonObject 只取 uri 丢文案（小红书/微博类图文帖源头发内容损失），需 fork 插件或自写 intent 解析补齐；自 misc 低优升级（app 分享为主的使用方式） (src: ai, app-share 链路评估)

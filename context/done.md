@@ -12,3 +12,4 @@ format: v2
 - [2026-10-01] 便签页内嵌视频双路径：主路径相册选择（后置校验 5min/100MB/白名单）+ 次路径相机直拍（60s 自动停），用户只感知时长；mp4/mov 直入库不转码、封面占位卡、100MB 阈值（人工打勾回收） (域: goodshare)
 - [2026-10-02] MCP 媒体加工工具补齐：transcribe_item / ocr_item 两工具落地（动作层校验/门控核已备，仅补 MCP 定义+调用分支，工具数 26→28） (域: goodshare)
 - [2026-10-02] 字幕产物对 MCP 暴露（asr-subtitle §10 待定项，方案 1）：get_item 内联 subtitles 字段（SRT/VTT+译文文件内容，>256KB 只报 size，字幕层容错不拖挂主路径） (域: goodshare)
+- [2026-10-02] LLM 任务失败原因不可观测：OnDeviceLlmEngine 增 unavailableReasonAsync 真值进任务 note（c12797c，附 3 用例单测） (域: goodshare)

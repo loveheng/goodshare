@@ -100,7 +100,7 @@ last-merge: 2026-09-30
 - [2026-10-01] 详情页两区改版拍板（用户复述评估后确认，ui-spec §4.3 已回写）：功能分两区——①公共区底栏收敛 3 项（工作区/导出 PDF/删除；摘要/标签移灵感区、分享并入导出链，多媒体原文件分享保留 ⋯ 菜单/块级）②灵感区=正文底部摘要/标签切换器（默认摘要）+刷新按钮（重复执行命令动态重生成，复用 Summarize/ExtractTags+_AiTaskStatusLine）③块级链式能力=**选中文字浮签**（Q3 拍板）触发翻译/OCR→人工调整→翻译（修订不覆盖）/转写→摘要，与预置链同构加人工修订环节。PDF 导出本批一起做（Q2）：pdf 包+中文字体内嵌。
 
 ## 断点
-- [断点] **MCP 字幕链全闭环（2026-10-02，两轮提交 c319b50+c6686e3）**：①`transcribe_item`/`ocr_item` 工具（26→28）②`get_item` 内联 `subtitles`（>256KB 只报 size）③transcribe_item 任务级 `subtitle_mode`/`target_lang` 覆盖（动作串 `transcribe_audio:<mode>:<lang>` 编码，校验下沉动作层）。**真机验收全绿**：AI 经 MCP 单次调用 `transcribe_item{subtitle_mode:bilingual, target_lang:en}` → ~10s → 主 SRT/VTT 双语产出（好的好 + ML Kit 译文）——「提取→翻译→双语字幕生成」全程只经 MCP，零手动零设置依赖。analyze 0 / 全量 385 绿。⚠️ 运维经验：重装 APK 后 monkey 首次拉起可能为僵尸态（端口 LISTEN 但 accept 不消费），验收前 force-stop 再拉起。**下一步候选**：字幕链遗留待办（LLM note 真值 / 转写重试入口 / 模型断点续传）或 document 接线（v2-requirements §1.3）
+- [断点] **MCP 字幕链全闭环 + 遗留待办清账（2026-10-02，c319b50/c6686e3/c12797c/dd4f347）**：字幕链能力齐备（transcribe_item/ocr_item 工具、get_item 内联 subtitles、任务级 subtitle_mode/target_lang 覆盖、LLM note 真值），真机验收全绿；三待办中两条核实为已有能力销项（重试入口=详情页转写按钮既有、断点续传=ModelManager Range 续传既有）。**下一步候选**：document 归一化接线（v2-requirements §1.3 顺位，半天级）或工具箱收敛+预置链人类端轻量入口。⚠️ 并行会话正在工作区改 home_shell/inbox/settings/item_detail（生物识别措辞修正+secure_window 移除在途），其文件勿代提交
 
 ## 进度（追加 6）
 - [2026-09-30] 面板头部锚定（用户拍板两轮：先 B1 搜索框水平带+sm，后看真机改「顶到状态栏」）：展开态顶缘 = 状态栏下沿，topInset = statusBar——状态栏高度改取 View 原始 padding（Scaffold 消费 body 的 MediaQuery.padding 是「避让失效」根因）+ _morphSheet 静止展开分支补显式 height。回归 test/quick_note_topbar_test.dart。analyze 0 / test 219 绿
