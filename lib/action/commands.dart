@@ -211,7 +211,12 @@ sealed class ItemCommand {
       case 'reprocess':
         return ReprocessCommand(id, expectedVersion: ev);
       case 'transcribe':
-        return TranscribeCommand(id, expectedVersion: ev);
+        return TranscribeCommand(
+          id,
+          subtitleMode: _str(json['subtitle_mode']),
+          targetLang: _str(json['target_lang']),
+          expectedVersion: ev,
+        );
       case 'summarize':
         return SummarizeCommand(id, expectedVersion: ev);
       case 'clip':
@@ -665,10 +670,25 @@ final class ExtractTagsCommand extends ItemCommand {
 /// 与 [ReprocessCommand] 的区别：reprocess 按 item_type 走通用重构（音频只占位，
 /// 不跑模型），本命令显式指定转写动作，是**唯一**会真正跑 Sherpa 转写入口
 /// （2026-09-28 用户拍板：音频不做实时 / 摄入即转写，只存文件，转写手动触发）。
+///
+/// [subtitleMode] / [targetLang] 为任务级覆盖（MCP transcribe_item 可选参数，
+/// 2026-10-02 拍板）：编码进队列动作串（`transcribe_audio:<mode>:<lang>`），缺省
+/// 沿用设置项。合法性校验下沉在 handler [_transcribe]（防呆不下放）。
 final class TranscribeCommand extends ItemCommand {
-  const TranscribeCommand(this.id, {super.expectedVersion});
+  const TranscribeCommand(
+    this.id, {
+    this.subtitleMode,
+    this.targetLang,
+    super.expectedVersion,
+  });
 
   final String id;
+
+  /// 字幕译文模式覆盖：sourceOnly / bilingual / separate；null = 沿用设置项。
+  final String? subtitleMode;
+
+  /// 字幕译文目标语言覆盖（BCP-47）；null = 沿用设置项。
+  final String? targetLang;
 
   @override
   String get op => 'transcribe';
@@ -680,6 +700,8 @@ final class TranscribeCommand extends ItemCommand {
   Map<String, Object?> toJson() => {
         'op': op,
         'id': id,
+        if (subtitleMode != null) 'subtitle_mode': subtitleMode,
+        if (targetLang != null) 'target_lang': targetLang,
         if (expectedVersion != null) 'expected_version': expectedVersion,
       };
 }

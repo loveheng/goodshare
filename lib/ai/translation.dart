@@ -246,9 +246,12 @@ class TranslationService {
 
   /// 逐条 cue 翻译：返回带 [AsrCue.translation] 的新列表。
   /// 任一条失败不影响其它条；整体不可用时返回原文（translation 全为 null）。
-  Future<List<AsrCue>> translateCues(List<AsrCue> cues) async {
+  ///
+  /// [target] 为任务级目标语言覆盖（转写动作串携带，MCP 单次指定）；为空则用
+  /// 设置项目标语言——与 [translateText] 的同名参数同口径。
+  Future<List<AsrCue>> translateCues(List<AsrCue> cues, {String? target}) async {
     if (cues.isEmpty || isEnabled?.call() == false) return cues;
-    final to = targetLang();
+    final to = (target?.trim().isNotEmpty ?? false) ? target!.trim() : targetLang();
     if (!isSupportedTarget(to)) return cues;
     final engine = await router.resolve();
     final out = <AsrCue>[];

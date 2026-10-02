@@ -141,6 +141,44 @@ class Repository extends ChangeNotifier {
     return lang.isEmpty ? null : lang;
   }
 
+  /// transcribe 任务动作串：可带字幕译文模式与目标语言后缀——
+  /// `transcribe_audio` / `transcribe_audio:bilingual` / `transcribe_audio:bilingual:en`。
+  /// 队列表无参数列，与 `translate:<lang>` / `clip:<start>-<end>` 同口径：
+  /// 把「单次指定的字幕模式 / 目标语言」编码进动作串做任务级覆盖（MCP transcribe_item），
+  /// 缺省沿用设置项。模式白名单见 [transcribeSubtitleModes]。
+  static const transcribeSubtitleModes = ['sourceOnly', 'bilingual', 'separate'];
+
+  static String transcribeTaskAction({String? subtitleMode, String? targetLang}) {
+    final mode = (subtitleMode ?? '').trim();
+    final lang = (targetLang ?? '').trim();
+    if (mode.isEmpty && lang.isEmpty) return taskTranscribeAudio;
+    final suffix = [if (mode.isNotEmpty) mode, if (lang.isNotEmpty) lang].join(':');
+    return '$taskTranscribeAudio:$suffix';
+  }
+
+  /// 是否为转写类任务动作（含带覆盖后缀的变体）。
+  static bool isTranscribeAction(String? action) =>
+      action == taskTranscribeAudio ||
+      (action?.startsWith('$taskTranscribeAudio:') ?? false);
+
+  /// 取任务动作串里携带的字幕译文模式；无 / 坏值 → null（沿用设置项）。
+  static String? transcribeSubtitleModeOf(String? action) {
+    if (action == null || !action.startsWith('$taskTranscribeAudio:')) return null;
+    final first = action.substring(taskTranscribeAudio.length + 1).split(':').first.trim();
+    return transcribeSubtitleModes.contains(first) ? first : null;
+  }
+
+  /// 取任务动作串里携带的目标语言；无 → null（沿用设置项）。
+  /// 语义与位置绑定：`transcribe_audio:<mode>:<lang>` 中 lang 恒为第二段；
+  /// mode 段缺省时动作串不会带 lang（构造端保证）。
+  static String? transcribeTargetLangOf(String? action) {
+    if (action == null || !action.startsWith('$taskTranscribeAudio:')) return null;
+    final parts = action.substring(taskTranscribeAudio.length + 1).split(':');
+    if (parts.length < 2) return null;
+    final lang = parts[1].trim();
+    return lang.isEmpty ? null : lang;
+  }
+
   /// item_type → 默认队列动作；note/document 无专属动作返回 null（消费者按类型通用重构）。
   static String? taskActionFor(String itemType) => switch (itemType) {
         InboxItem.typeUrl => taskSummarizeUrl,

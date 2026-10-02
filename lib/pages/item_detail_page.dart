@@ -77,6 +77,10 @@ String aiTaskStatusText(
       '分类已结束，但没有识别出已知标签：图片可能过于抽象、非实体内容，或类别不在常用映射表内',
     Repository.taskScanBarcode => '扫描已结束，但没有识别到条码 / 二维码：图片可能不含条码，或条码过于模糊、超出取景框',
     Repository.taskAnalyzeText => '分析已结束，但没有提取到内容：笔记可能过短，或不含可识别的语言 / 实体',
+    // 任务级覆盖变体（transcribe_audio:<mode>:<lang>，MCP transcribe_item）与裸动作同文案
+    _ when action.startsWith('${Repository.taskTranscribeAudio}:') =>
+      '转写已结束，但没有识别出任何文本。常见原因：音频不是中文（请在「设置 → 语音转写模型」'
+          '换到「全能 · 多语种」或「全球 · Whisper」）、模型未下载、音频无语音',
     _ => '处理已结束但未产出内容，可在「AI 任务队列」查看',
   };
 }
@@ -965,15 +969,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
       _SheetItem(Icons.share_outlined, '分享', () {
         _exportPdf();
       }),
-      _SheetItem(Icons.delete_outline, '删除', () {
-        _confirmDelete();
-      }, danger: true),
-      if (_machineModeEnabled)
-        _SheetItem(Icons.terminal_outlined, '机器码', () {
-          _toggleMachineMode();
-        }, checked: _machineMode),
       if (!_item.isVault || widget.vaultContext)
-        _SheetItem(Icons.workspaces_outlined, !_item.isVault ? '移入' : '移出', () {
+        _SheetItem(Icons.lock_outline, !_item.isVault ? '移入保险箱' : '移出保险箱', () {
           if (!_item.isVault) {
             _run(
               () => widget.handler.execute(SetVaultCommand(_item.id!, true)),
@@ -989,6 +986,13 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
             );
           }
         }),
+      _SheetItem(Icons.delete_outline, '删除', () {
+        _confirmDelete();
+      }, danger: true),
+      if (_machineModeEnabled)
+        _SheetItem(Icons.terminal_outlined, '机器码', () {
+          _toggleMachineMode();
+        }, checked: _machineMode),
     ];
     showModalBottomSheet<void>(
       context: context,

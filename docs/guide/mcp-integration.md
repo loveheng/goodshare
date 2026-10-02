@@ -80,7 +80,7 @@ curl -s http://127.0.0.1:8765/mcp \
 | `classify_item` | `id` `expected_version?` | 端侧 ML Kit 给图片打分类标签（与手机端「识别分类」同一入口）。**异步入队**：标签落 `facets['分类']`，随后 `get_item` 读取 `facets`；仅图片可用 |
 | `scan_barcode_item` | `id` `expected_version?` | 端侧 ML Kit 扫描图片中的条码/二维码。**异步入队**：`[类型:值]` 落 `facets['条码']`，随后 `get_item` 读取；仅图片可用 |
 | `analyze_text_item` | `id` `expected_version?` | 端侧 ML Kit 分析笔记正文：语言识别 + 实体提取（日期/邮箱/电话/地址/URL/金额）。**异步入队**：落 `facets['语言']` 与 `facets['实体']`，随后 `get_item` 读取；仅笔记可用 |
-| `transcribe_item` | `id` `expected_version?` | 端侧 Sherpa 离线转写音频/视频（与手机端「转写」按钮同一入口）。**异步入队**：文本并入 `human_md`，SRT/VTT 字幕落盘，完成后 `get_item` 读 `human_md` 与 `subtitles` 字段（`get_job_status` 可轮询）；仅音/视频可用，模型须已在手机上下载（未下载任务 note 明示） |
+| `transcribe_item` | `id` `subtitle_mode?` `target_lang?` `expected_version?` | 端侧 Sherpa 离线转写音频/视频（与手机端「转写」按钮同一入口）。**异步入队**：文本并入 `human_md`，SRT/VTT 字幕落盘，完成后 `get_item` 读 `human_md` 与 `subtitles` 字段（`get_job_status` 可轮询）；仅音/视频可用，模型须已在手机上下载（未下载任务 note 明示）；`subtitle_mode`（bilingual/separate/sourceOnly）与 `target_lang` 为单次任务覆盖——如 `subtitle_mode=bilingual` 直接产出双语字幕，省略沿用 App 设置 |
 | `ocr_item` | `id` `expected_version?` | 端侧 ML Kit 识别图片文字（与手机端「识别文字」按钮同一入口）。**异步入队**：文本并入 `human_md`，随后 `get_item` 读取；仅图片可用 |
 | `get_job_status` | `job_id?` 或 `id?` | 查询条目最近一次 AI 后台任务状态（pending/processing/completed/failed/paused/cancelled），含失败原因 `note`；耗时工具（summarize/translate/reprocess/transcribe 等）返回的 `job_id` 凭此确认进度 |
 | `list_jobs` | `limit?(≤50)` | 列出最近的 AI 后台任务（最新在前），总览队列积压或排查失败 |

@@ -217,7 +217,7 @@ flowchart LR
 | `unlock_edit` | `id` | 解除合并项编辑锁（`edit_locked`→0），随后 `update_item` 方可写入 | MVP |
 | `batch_items` | `commands[]` | **原子批量**：一次提交多条命令（如解锁+改字+打标签），全成功或全回滚；不支持 `delete_forever`（附件删除不可回滚） | MVP |
 | `append_segment` | `id, text, source_app?` | 往合并链追加一段（= 手机端连续速记并链）；仅 `collect_mode=merge` 且末段在 5 分钟窗口内可追加；合并条目 `edit_locked=1` 仍允许追加（追加是链的生长，非改写） | MVP |
-| `transcribe_item` | `id, expected_version?` | 端侧 Sherpa 离线转写音频/视频（与手机端「转写」按钮同一入口；**唯一**真正跑转写的显式入口）。**异步入队**：文本并入 `human_md`，SRT/VTT 字幕落盘，完成后 `get_item` 读 `human_md` 与 `subtitles` 字段；仅音/视频可用（校验下沉动作层） | MVP+（2026-10-02 MCP 优先拍板） |
+| `transcribe_item` | `id, subtitle_mode?, target_lang?, expected_version?` | 端侧 Sherpa 离线转写音频/视频（与手机端「转写」按钮同一入口；**唯一**真正跑转写的显式入口）。**异步入队**：文本并入 `human_md`，SRT/VTT 字幕落盘，完成后 `get_item` 读 `human_md` 与 `subtitles` 字段；仅音/视频可用（校验下沉动作层）；`subtitle_mode=bilingual`+`target_lang` 任务级覆盖=单次调用直出双语字幕（编码进队列动作串 `transcribe_audio:<mode>:<lang>`，translate:<lang> 同口径） | MVP+（2026-10-02 MCP 优先拍板） |
 | `ocr_item` | `id, expected_version?` | 端侧 ML Kit 识别图片文字（与手机端「识别文字」按钮同一入口）。**异步入队**：文本并入 `human_md`，随后 `get_item` 读取；仅图片可用（校验下沉动作层） | MVP+（2026-10-02 MCP 优先拍板） |
 
 （`execute_action` 统一入口已裁决 MVP 剔除（2026-09-27）：独立工具即结构化接口且各自带校验，避免冗余通用入口扩大校验面。`batch_items` 不是它的复活——只解决「复合操作的原子性」，不提供新的动作语义，每条命令仍走同一套校验。）

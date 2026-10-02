@@ -298,11 +298,23 @@ List<Map<String, Object?>> toolSchemas() => [
             '异步入队执行：本调用只返回入队结果（job_id），转写完成后文本并入 human_md，'
             '同时产出 SRT/VTT 字幕文件（随后 get_item 读取 human_md 与 subtitles 字段，'
             '或用 get_job_status 轮询进度）。仅音频 / 视频条目可用，非媒体条目会被拒绝；'
-            '转写模型须已在手机上下载（设置 → 语音转写模型），未下载时任务会以 note 说明。',
+            '转写模型须已在手机上下载（设置 → 语音转写模型），未下载时任务会以 note 说明。'
+            'subtitle_mode / target_lang 为单次任务覆盖（如 subtitle_mode=bilingual 直接产出双语字幕），'
+            '省略则沿用 App 设置项。',
         'inputSchema': {
           'type': 'object',
           'properties': {
             'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
+            'subtitle_mode': {
+              'type': 'string',
+              'enum': ['sourceOnly', 'bilingual', 'separate'],
+              'description': '字幕译文模式覆盖：bilingual=每条 cue 两行（原文+译文）出双语字幕；'
+                  'separate=译文另出一份 {itemId}.{lang}.srt 文件；sourceOnly=仅原文。省略=用 App 设置',
+            },
+            'target_lang': {
+              'type': 'string',
+              'description': '字幕译文目标语言（BCP-47，如 en/ja）。省略=用 App 设置',
+            },
             'expected_version': {
               'type': 'integer',
               'description': '可选乐观锁：你读取该条目时看到的 version，不一致则拒绝',
@@ -833,6 +845,8 @@ Future<List<Map<String, Object?>>> callTool(
       final r = await _guarded(() => handler.execute(
             TranscribeCommand(
               id,
+              subtitleMode: _str(args['subtitle_mode']),
+              targetLang: _str(args['target_lang']),
               expectedVersion: _int(args['expected_version']),
             ),
             actor: CommandActor.ai,

@@ -419,6 +419,33 @@ void main() {
     expect(actions, contains(Repository.taskTranscribeAudio));
   });
 
+  test('transcribe_item：subtitle_mode/target_lang 编码进动作串；非法值拒绝', () async {
+    final video = await repo.add(InboxItem(itemType: InboxItem.typeVideo, rawContent: '', createdAt: 1));
+    await callTool('transcribe_item', {'id': video.id, 'subtitle_mode': 'bilingual'}, repo);
+    await callTool('transcribe_item', {'id': video.id, 'subtitle_mode': 'separate', 'target_lang': 'en'}, repo);
+    final actions = (await repo.pendingTasks()).map((t) => t['task_action'] as String).toList();
+    expect(actions, contains('transcribe_audio:bilingual'));
+    expect(actions, contains('transcribe_audio:separate:en'));
+    // 解析回读：动作串是覆盖参数的唯一载体，解析错了整条覆盖链失效
+    expect(Repository.transcribeSubtitleModeOf('transcribe_audio:separate:en'), 'separate');
+    expect(Repository.transcribeTargetLangOf('transcribe_audio:separate:en'), 'en');
+    expect(Repository.transcribeSubtitleModeOf(Repository.taskTranscribeAudio), isNull);
+    expect(Repository.transcribeTargetLangOf('transcribe_audio:bilingual'), isNull);
+    expect(Repository.isTranscribeAction('transcribe_audio:separate:en'), isTrue);
+
+    final video2 = await repo.add(InboxItem(itemType: InboxItem.typeVideo, rawContent: '', createdAt: 2));
+    expect(
+      () => callTool('transcribe_item', {'id': video2.id, 'subtitle_mode': 'dual'}, repo),
+      throwsA(isA<McpRpcError>()),
+      reason: '非法字幕模式在动作层拒绝（防呆不下放）',
+    );
+    expect(
+      () => callTool('transcribe_item', {'id': video2.id, 'target_lang': 'xx'}, repo),
+      throwsA(isA<McpRpcError>()),
+      reason: '非法目标语言在动作层拒绝',
+    );
+  });
+
   test('ocr_item：图片入队 ocr_and_extract；非图片拒绝', () async {
     final note = await repo.add(InboxItem(itemType: InboxItem.typeNote, rawContent: 'x', createdAt: 1));
     expect(

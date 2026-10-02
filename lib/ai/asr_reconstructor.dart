@@ -45,9 +45,10 @@ class AsrReconstructor implements AiReconstructor {
     final isMedia = input.itemType == 'audio' || input.itemType == 'video';
     if (!isMedia) return false;
     // 音频 / 视频转写**仅手动触发**（2026-09-28 用户拍板：不做实时转写、摄入不自动
-    // 转写，只存文件）。仅 task_action=transcribe_audio 的任务走 ASR；摄入后的通用
-    // 重构落占位实现，避免自动跑 Sherpa 长任务长期占住队列（曾导致整队堵死）。
-    return input.taskAction == Repository.taskTranscribeAudio;
+    // 转写，只存文件）。仅 transcribe 类任务动作走 ASR（含 `transcribe_audio:<mode>:<lang>`
+    // 任务级覆盖变体——MCP transcribe_item，2026-10-02）；摄入后的通用重构落占位实现，
+    // 避免自动跑 Sherpa 长任务长期占住队列（曾导致整队堵死）。
+    return Repository.isTranscribeAction(input.taskAction);
   }
 
   @override
@@ -96,14 +97,19 @@ class AsrReconstructor implements AiReconstructor {
     }
     // 字幕译文：仅「非仅原文」模式才跑翻译；失败（引擎不可用 / 单条报错）保留原文，
     // 与「占位不卡死」同口径——字幕档位与 human_md 都不受翻译影响。
+    // 任务动作串可携带模式 / 目标语言覆盖（MCP transcribe_item），缺省沿用设置项。
     // 但「有动作无结果」要可观测（R1/R3）：把字幕翻译 / 落盘失败的原因汇总进 note，
     // 否则用户/AI 看到字幕缺译文或缺文件却不知为何。
     String? subNote;
-    final mode = subtitleMode?.call() ?? SubtitleMode.sourceOnly;
+    final modeOverride = Repository.transcribeSubtitleModeOf(input.taskAction);
+    final langOverride = Repository.transcribeTargetLangOf(input.taskAction);
+    final mode = modeOverride != null
+        ? SubtitleMode.values.byName(modeOverride)
+        : (subtitleMode?.call() ?? SubtitleMode.sourceOnly);
     final tr = translation;
     if (mode != SubtitleMode.sourceOnly && tr != null) {
       try {
-        cues = await tr.translateCues(cues);
+        cues = await tr.translateCues(cues, target: langOverride);
       } catch (e) {
         debugPrint('[AsrReconstructor] subtitle translation failed (ignored): $e');
         subNote = '字幕译文未生成（翻译引擎不可用），字幕保留原文';
@@ -115,7 +121,7 @@ class AsrReconstructor implements AiReconstructor {
         input.itemId,
         cues,
         mode: mode,
-        targetLang: tr?.targetLang(),
+        targetLang: langOverride ?? tr?.targetLang(),
       );
     } catch (e) {
       debugPrint('[AsrReconstructor] subtitle save failed (ignored): $e');

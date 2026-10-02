@@ -289,6 +289,24 @@ class ItemActionHandler {
         hint: '图片请点「重新处理」走 OCR',
       );
     }
+    // 字幕模式 / 目标语言的任务级覆盖：合法性在此下沉（AI 换入口也绕不过），
+    // 编码进动作串由 AsrReconstructor 解析（translate:<lang> 同口径）。
+    final mode = cmd.subtitleMode?.trim();
+    if (mode != null && mode.isNotEmpty && !Repository.transcribeSubtitleModes.contains(mode)) {
+      throw ActionException(
+        '不支持的字幕译文模式：$mode',
+        code: ActionErrorCode.invalidRequest,
+        hint: '可选：${Repository.transcribeSubtitleModes.join(', ')}',
+      );
+    }
+    final lang = cmd.targetLang?.trim();
+    if (lang != null && lang.isNotEmpty && !isSupportedTarget(lang)) {
+      throw ActionException(
+        '不支持的目标语言：$lang',
+        code: ActionErrorCode.invalidRequest,
+        hint: '可选：${kTargetLanguages.join(', ')}',
+      );
+    }
     await _write(
       'transcribe',
       cmd.id,
@@ -296,7 +314,11 @@ class ItemActionHandler {
       expectedVersion: cmd.expectedVersion,
       txn: txn,
     );
-    final jobId = await _repo.enqueueTask(cmd.id, Repository.taskTranscribeAudio, txn: txn);
+    final jobId = await _repo.enqueueTask(
+      cmd.id,
+      Repository.transcribeTaskAction(subtitleMode: mode, targetLang: lang),
+      txn: txn,
+    );
     onEnqueued?.call();
     return _result('transcribe', cmd.id, seeVault: seeVault, txn: txn, jobId: jobId,
         note: await _queuedNote('已开始转写'));
