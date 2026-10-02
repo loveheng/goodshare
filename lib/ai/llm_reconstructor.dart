@@ -31,7 +31,11 @@ class LlmReconstructor implements AiReconstructor {
       return ReconstructResult(humanMd: base, note: '条目没有可供大模型处理的正文');
     }
     if (!await engine.isAvailable) {
-      final reason = engine.unavailableReason ?? '端侧大模型引擎不可用';
+      // R1：任务 note 必须带真值原因——同步 unavailableReason 是桥层兜底文案，
+      // 会把「引擎初始化失败」误报成「未下载模型」（实测 qwen 模型在机仍误报）。
+      final reason = (await engine.unavailableReasonAsync()) ??
+          engine.unavailableReason ??
+          '端侧大模型引擎不可用';
       debugPrint('[Llm] unavailable (item=${input.itemId}): $reason');
       return ReconstructResult(humanMd: base, note: '未生成：$reason');
     }

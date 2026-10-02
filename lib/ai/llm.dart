@@ -21,7 +21,14 @@ abstract class OnDeviceLlmEngine {
   Future<bool> get isAvailable;
 
   /// 不可用时给人类看的原因（设置页小字）；可用时为 null。
+  ///
+  /// 同步兜底文案——真实原因走 [unavailableReasonAsync]（异步探测）。
   String? get unavailableReason;
+
+  /// 异步取真实原因（R1：任务 note 必须携带真值，否则 AI/用户被「未下载模型」
+  /// 兜底文案误导——实测模型在机仍报不可用，真因在 init/生成阶段却不可见）。
+  /// 默认回退到同步值；原生桥实现（ChannelLlmEngine）向原生取真值。
+  Future<String?> unavailableReasonAsync() async => unavailableReason;
 
   /// 文本生成。失败 / 不可用 / 空产出返回 null（不抛，翻译式降级）。
   ///
@@ -62,7 +69,8 @@ class ChannelLlmEngine implements OnDeviceLlmEngine {
     return '端侧大模型引擎不可用（未下载模型或系统不支持）';
   }
 
-  /// 异步取真值原因（设置页用）；原生侧未实现时返回兜底文案。
+  /// 异步取真值原因（设置页 / 任务 note 用）；原生侧未实现时返回兜底文案。
+  @override
   Future<String?> unavailableReasonAsync() async {
     try {
       return await channel.invokeMethod<String>('unavailableReason') ?? unavailableReason;
@@ -118,6 +126,9 @@ class UnavailableLlmEngine implements OnDeviceLlmEngine {
 
   @override
   String? get unavailableReason => reason;
+
+  @override
+  Future<String?> unavailableReasonAsync() async => reason;
 
   @override
   Future<String?> generate(String prompt, {String? system, int maxTokens = 512}) async => null;
