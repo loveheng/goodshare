@@ -193,6 +193,21 @@ class Repository extends ChangeNotifier {
     return rows.map(InboxItem.fromMap).toList();
   }
 
+  /// 引用附件清单（content-pipeline §7 迁移页）：所有 attach_state=ref 的未删条目
+  /// （含 Vault——迁移是持有态修复，与隐私可见性无关，列表页由调用方再过滤）。
+  /// 只读查询，不入写锁。
+  Future<List<InboxItem>> listRefs({int limit = 500}) async {
+    final db = await _database();
+    final rows = await db.query(
+      'inbox_items',
+      where: 'attach_state = ? AND is_deleted = 0',
+      whereArgs: [InboxItem.attachRef],
+      orderBy: 'created_at DESC',
+      limit: limit,
+    );
+    return rows.map(InboxItem.fromMap).toList();
+  }
+
   Future<int> count({String? query, String? type, bool vault = false}) async {
     final db = await _database();
     final (where, args) = _filters(query: query, type: type, vault: vault);
@@ -465,15 +480,18 @@ class Repository extends ChangeNotifier {
   Future<void> purgeAllDeleted() => purgeDeleted(retention: Duration.zero);
 
   /// 入队后台 AI 任务（摄入与 reprocess 共用）。task_action 可空＝按 item_type 通用重构。
-  Future<void> enqueueTask(String itemId, String? taskAction, {Transaction? txn}) async {
+  /// 返回 task_id（= job_id，供 CommandResult 回传、AI 经任务工具查询状态）。
+  Future<String> enqueueTask(String itemId, String? taskAction, {Transaction? txn}) async {
     final db = txn ?? await _database();
+    final taskId = InboxItem.newId();
     await db.insert('ai_task_queue', {
-      'task_id': InboxItem.newId(),
+      'task_id': taskId,
       'item_id': itemId,
       'task_action': taskAction,
       'status': 'pending',
       'updated_at': DateTime.now().millisecondsSinceEpoch,
     });
+    return taskId;
   }
 
   /// 待处理任务总数（前台服务通知进度用）。
@@ -507,9 +525,21 @@ class Repository extends ChangeNotifier {
   Future<Map<String, Object?>?> lastTaskOf(String itemId) async {
     final db = await _database();
     final rows = await db.rawQuery(
-      'SELECT task_action, status, last_note FROM ai_task_queue '
-      'WHERE item_id = ? ORDER BY rowid DESC LIMIT 1',
+      'SELECT task_id, item_id, task_action, status, updated_at, last_note '
+      'FROM ai_task_queue WHERE item_id = ? ORDER BY rowid DESC LIMIT 1',
       [itemId],
+    );
+    return rows.isEmpty ? null : rows.first;
+  }
+
+  /// 按 task_id 查单个任务（MCP `get_job_status` 用；条目已删也能查到）。
+  Future<Map<String, Object?>?> taskById(String taskId) async {
+    final db = await _database();
+    final rows = await db.query(
+      'ai_task_queue',
+      where: 'task_id = ?',
+      whereArgs: [taskId],
+      limit: 1,
     );
     return rows.isEmpty ? null : rows.first;
   }

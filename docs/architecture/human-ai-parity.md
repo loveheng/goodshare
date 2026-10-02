@@ -57,7 +57,7 @@ UI 把按钮置灰只是**快路径**，不是安全边界——AI 是瞎子，�
 |---|---|---|
 | 条目可见性（Vault / 已删） | `_require` | `not_found` |
 | 编辑锁 `edit_locked=1` | `_update` | `edit_locked` |
-| 重分类白名单（image→chatlog/document） | `_reclassifyError` | `reclassify_denied` |
+| 重分类白名单（image→document；UI 无入口，仅 AI 管线 / MCP 通道） | `_reclassifyError` | `reclassify_denied` |
 | machine_json 领域 Schema | `validateMachineJson` | `schema_invalid` |
 | 移出保险箱需 UI 主体 | `_setVault` | `forbidden` |
 | 彻底删除 / 管线回写 的主体门控 | `_gate` | `forbidden` |
@@ -144,7 +144,7 @@ UI 把按钮置灰只是**快路径**，不是安全边界——AI 是瞎子，�
 
 - 做法：动作层只把 Job 插入 `ai_task_queue` 并**立即返回**（`CommandResult` 带 `job_id`），由 `QueueConsumer` 后台跑并更新状态（`pending → processing → completed/failed`）；UI 经仓库通知 / `pendingCount()` 显示进度，AI 按 `job_id` 查状态
 - **耗时推理绝不能在 `Repository.synchronized` 锁内 `await`**——会堵死全局写队列
-- 现状：`ai_task_queue` + `QueueConsumer` 底座已在；**仍缺**「`job_id` 回传 + `get_job_status` 查询工具」，待有真实长任务场景再补，不提前建框架
+- 现状（2026-10-02 闭环）：`ai_task_queue` + `QueueConsumer` 底座之上，**job_id 全链路已通**——`enqueueTask` 返回 `task_id`，动作层 13 处入队点经 `CommandResult.jobId` 回传（`toJson` 带 `job_id`）；MCP 暴露 `get_job_status`（job_id / 条目 id 双入口，条目不可见即不回传）与 `list_jobs`（总览+失败原因），AI 可凭 `job_id` 轮询进度、凭 `note` 读失败原因自我纠正
 
 ### 4.4 责任边界
 

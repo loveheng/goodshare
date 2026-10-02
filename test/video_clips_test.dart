@@ -222,30 +222,10 @@ void main() {
       expect(seg.summary, '区间摘要');
     });
 
-    test('MarkWholeVideoCommand：整片标记开关（仅视频）', () async {
-      final repo = Repository();
-      final handler = ItemActionHandler(repo);
-      await repo.add(InboxItem(
-          itemType: InboxItem.typeVideo, rawContent: 'v', rawFilePath: '/tmp/a.mp4',
-          createdAt: 1));
-      final id = (await repo.list()).first.id!;
-
-      await handler.execute(MarkWholeVideoCommand(id, marked: true));
-      expect((await repo.byId(id))!.videoWholeMarked, isTrue);
-      await handler.execute(MarkWholeVideoCommand(id, marked: false));
-      expect((await repo.byId(id))!.videoWholeMarked, isFalse);
-
-      await repo.add(InboxItem(itemType: InboxItem.typeNote, rawContent: 'n', createdAt: 2));
-      final noteId = (await repo.list()).firstWhere((e) => e.itemType == 'note').id!;
-      await expectLater(
-        handler.execute(MarkWholeVideoCommand(noteId, marked: true)),
-        throwsA(isA<ActionException>()),
-      );
-    });
   });
 
-  group('备份白名单：视频默认排除 + 整片标记 opt-in', () {
-    test('未标记视频不进备份；整片标记的视频携带；clip_segments 产物进备份', () async {
+  group('备份白名单：过准入的视频进备份', () {
+    test('收进的视频进备份；clip_segments 产物进备份', () async {
       final dir = await Directory.systemTemp.createTemp('clip_backup_test2');
       final shares = Directory(p.join(dir.path, 'shares'))..createSync(recursive: true);
       File(p.join(shares.path, 'vid1.mp4')).writeAsStringSync('v1');
@@ -257,7 +237,7 @@ void main() {
       File(p.join(subs.path, 'vault1.srt')).writeAsStringSync('vault-srt');
 
       final items = [
-        InboxItem(id: 'vid1', itemType: InboxItem.typeVideo, videoWholeMarked: true,
+        InboxItem(id: 'vid1', itemType: InboxItem.typeVideo,
             rawFilePath: p.join(shares.path, 'vid1.mp4'), createdAt: 1),
         InboxItem(id: 'vid2', itemType: InboxItem.typeVideo,
             rawFilePath: p.join(shares.path, 'vid2.mp4'), createdAt: 2),
@@ -267,9 +247,9 @@ void main() {
       final files = await collectBackupFiles(items: items, vaultIds: {'vault1'}, docsPath: dir.path);
       final rels = files.map((f) => f.rel).toSet();
 
-      expect(rels, contains('shares/vid1.mp4'), reason: '整片标记的视频携带（opt-in）');
-      expect(rels, isNot(contains('shares/vid2.mp4')), reason: '未标记视频默认不进备份');
-      expect(rels, contains('shares/aud1.m4a'), reason: '音频体积不大照常备份');
+      expect(rels, contains('shares/vid1.mp4'), reason: '过门槛收进的视频进备份');
+      expect(rels, contains('shares/vid2.mp4'), reason: '进备份不再需要逐条目标记');
+      expect(rels, contains('shares/aud1.m4a'), reason: '音频照常备份');
       expect(rels, contains('clip_segments/vid1.0-5000.mp4'), reason: '用户提取的片段=关键产物');
       expect(rels, isNot(contains('subtitles/vault1.srt')), reason: 'Vault 派生文件排除');
 

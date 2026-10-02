@@ -81,22 +81,8 @@ class ItemViewTemplate extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final out = <Widget>[];
-    // ① 标题置顶
-    if (item.humanTitle?.isNotEmpty ?? false) {
-      out.add(
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.only(bottom: Insets.sm),
-            child: Text(
-              item.humanTitle!,
-              style: theme.textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-        ),
-      );
-    }
+    // ① 标题已上移至页面 AppBar 最顶部（2026-10-02 拍板：内容区只留导语 + 正文，
+    // 版式更干净；标题长按 = 编辑，由 AppBar 承载），此处不再渲染。
     // ② 导语块（原 TL;DR）：骑框 legend 描边卡（ui-spec §2.3，mymind TLDR
     // 形态——小签嵌框顶边 + 延长线，共享组件 SectionLegendCard）。
     if (item.humanTldr?.isNotEmpty ?? false) {
@@ -375,13 +361,12 @@ List<Widget> _audioView(BuildContext context, InboxItem item) {
             _AudioPlayer(
               path: item.rawFilePath!,
               itemId: item.id?.toString() ?? item.rawFilePath!,
+              initialDurationMs: item.mediaDurationMs,
             ),
             kind: BlockKind.audio,
             anchorLabel: '音频条目',
             trigger: BlockCapabilityTrigger.longPress,
           ),
-          _AudioExportRow(item: item),
-          if (item.id != null) _SubtitleExportRow(itemId: item.id!),
         ],
       ),
     ),
@@ -406,6 +391,7 @@ List<Widget> _videoView(BuildContext context, InboxItem item) {
           wrapWithCapabilityHost(
             _VideoPlayer(
               path: item.rawFilePath!,
+              initialDurationMs: item.mediaDurationMs,
               jumpTargets: [
                 for (final c in parseClipsJson(item.clipsJson)) c.startMs,
               ],
@@ -414,8 +400,6 @@ List<Widget> _videoView(BuildContext context, InboxItem item) {
             anchorLabel: '视频条目',
             trigger: BlockCapabilityTrigger.longPress,
           ),
-          _AudioExportRow(item: item),
-          if (item.id != null) _SubtitleExportRow(itemId: item.id!),
           if (parseClipsJson(item.clipsJson).isNotEmpty) _ClipsList(item: item),
         ],
       ),
@@ -517,119 +501,86 @@ class _ClipsList extends StatelessWidget {
   }
 }
 
-/// 「字幕产物」清单：该条目的每个字幕文件都列出来并各自可分享。
-class _SubtitleExportRow extends StatelessWidget {
-  const _SubtitleExportRow({required this.itemId});
-
-  final String itemId;
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<List<SubtitleFile>>(
-      future: SubtitleStore.listFiles(itemId),
-      builder: (context, snap) {
-        final files = snap.data;
-        if (files == null || files.isEmpty) return const SizedBox.shrink();
-        return Padding(
-          padding: const EdgeInsets.only(top: Insets.sm),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '字幕产物${files.length > 2 ? '（含译文）' : ''}',
-                style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: Insets.sm),
-              Wrap(
-                spacing: Insets.sm,
-                runSpacing: Insets.sm,
-                children: [
-                  for (final f in files)
-                    OutlinedButton.icon(
-                      onPressed: () async {
-                        await SharePlus.instance.share(
-                          ShareParams(files: [XFile(f.path)]),
-                        );
-                      },
-                      icon: Icon(
-                        f.lang == null
-                            ? Icons.subtitles_outlined
-                            : Icons.translate,
-                        size: 18,
-                      ),
-                      label: Text('导出 ${f.label}'),
-                    ),
-                ],
-              ),
-            ],
-          ),
-        );
-      },
-    );
+/// 字幕导出（视频条目切片转写产物）：列文件 → 选一个分享。
+/// 由三级能力页「字幕导出」独立能力调用（从二级详情页拆入，detail-two-zone.md §5.2）。
+Future<void> exportSubtitles(BuildContext context, String itemId) async {
+  final files = await SubtitleStore.listFiles(itemId);
+  if (!context.mounted) return;
+  if (files.isEmpty) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text('暂无字幕产物')));
+    return;
   }
+  final picked = await showModalBottomSheet<SubtitleFile>(
+    context: context,
+    showDragHandle: true,
+    builder: (ctx) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Padding(
+            padding: EdgeInsets.all(Insets.md),
+            child: Text('选择字幕文件分享'),
+          ),
+          for (final f in files)
+            ListTile(
+              leading: Icon(
+                f.lang == null ? Icons.subtitles_outlined : Icons.translate,
+                size: 18,
+              ),
+              title: Text('导出 ${f.label}'),
+              onTap: () => Navigator.pop(ctx, f),
+            ),
+        ],
+      ),
+    ),
+  );
+  if (picked == null || !context.mounted) return;
+  await SharePlus.instance.share(ShareParams(files: [XFile(picked.path)]));
 }
 
-/// 「提取音轨」入口（音频 / 视频条目）。
-class _AudioExportRow extends StatelessWidget {
-  const _AudioExportRow({required this.item});
-
-  final InboxItem item;
-
-  Future<void> _pick(BuildContext context, String path) async {
-    final fmt = await showModalBottomSheet<AudioExportFormat>(
-      context: context,
-      showDragHandle: true,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-              padding: EdgeInsets.all(Insets.md),
-              child: Text('导出为（默认无损复制，不重编码）'),
+/// 提取音轨（音频 / 视频条目）：选格式 → 提取 → 分享。
+/// 由三级能力页「提取音轨」独立能力调用（从二级详情页拆入，detail-two-zone.md §5.2）。
+Future<void> extractAudioTrack(BuildContext context, InboxItem item) async {
+  final path = item.rawFilePath;
+  if (path == null || path.isEmpty) return;
+  final fmt = await showModalBottomSheet<AudioExportFormat>(
+    context: context,
+    showDragHandle: true,
+    builder: (ctx) => SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Padding(
+            padding: EdgeInsets.all(Insets.md),
+            child: Text('导出为（默认无损复制，不重编码）'),
+          ),
+          for (final f in AudioExportFormat.values)
+            ListTile(
+              leading: const Icon(Icons.audio_file_outlined),
+              title: Text(f.label),
+              onTap: () => Navigator.pop(ctx, f),
             ),
-            for (final f in AudioExportFormat.values)
-              ListTile(
-                leading: const Icon(Icons.audio_file_outlined),
-                title: Text(f.label),
-                onTap: () => Navigator.pop(ctx, f),
-              ),
-          ],
-        ),
+        ],
       ),
+    ),
+  );
+  if (fmt == null || !context.mounted) return;
+  final messenger = ScaffoldMessenger.of(context);
+  messenger.showSnackBar(const SnackBar(content: Text('正在提取音轨…')));
+  final res = await AudioExtractor.extract(
+    path,
+    format: fmt,
+    itemId: item.id,
+  );
+  messenger.hideCurrentSnackBar();
+  if (!res.ok) {
+    messenger.showSnackBar(
+      SnackBar(content: Text('提取失败：${res.error ?? '未知原因'}')),
     );
-    if (fmt == null || !context.mounted) return;
-    final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(const SnackBar(content: Text('正在提取音轨…')));
-    final res = await AudioExtractor.extract(
-      path,
-      format: fmt,
-      itemId: item.id,
-    );
-    messenger.hideCurrentSnackBar();
-    if (!res.ok) {
-      messenger.showSnackBar(
-        SnackBar(content: Text('提取失败：${res.error ?? '未知原因'}')),
-      );
-      return;
-    }
-    await SharePlus.instance.share(ShareParams(files: [XFile(res.path!)]));
+    return;
   }
-
-  @override
-  Widget build(BuildContext context) {
-    final path = item.rawFilePath;
-    if (path == null || path.isEmpty) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(top: Insets.sm),
-      child: OutlinedButton.icon(
-        onPressed: () => _pick(context, path),
-        icon: const Icon(Icons.audiotrack_outlined, size: 18),
-        label: const Text('提取音轨'),
-      ),
-    );
-  }
+  await SharePlus.instance.share(ShareParams(files: [XFile(res.path!)]));
 }
 
 String _fmtTime(Duration d) =>
@@ -638,12 +589,19 @@ String _fmtTime(Duration d) =>
 /// 顶级音频播放器：收敛进页面级播放服务单例（rich-text-media.md §6）——
 /// 自持 `AudioPlayer` 的旧实现已废，与行内 AudioBlock 共用 [MediaAudioBar]。
 class _AudioPlayer extends StatelessWidget {
-  const _AudioPlayer({required this.path, required this.itemId});
+  const _AudioPlayer({
+    required this.path,
+    required this.itemId,
+    this.initialDurationMs,
+  });
 
   final String path;
 
   /// 播放身份（页内稳定）。
   final String itemId;
+
+  /// 预存总时长（毫秒）；非空即秒显、跳过播放前探测。
+  final int? initialDurationMs;
 
   @override
   Widget build(BuildContext context) {
@@ -653,6 +611,9 @@ class _AudioPlayer extends StatelessWidget {
         blockId: 'top-audio-$itemId',
         source: path,
         showSlider: true,
+        initialDuration: initialDurationMs != null
+            ? Duration(milliseconds: initialDurationMs!)
+            : null,
       ),
     );
   }
@@ -660,10 +621,17 @@ class _AudioPlayer extends StatelessWidget {
 
 /// 视频简单播放器：画面 + 播放/暂停 + 进度条 + 时间；加载/解码失败给错误态。
 class _VideoPlayer extends StatefulWidget {
-  const _VideoPlayer({required this.path, this.jumpTargets = const []});
+  const _VideoPlayer({
+    required this.path,
+    this.jumpTargets = const [],
+    this.initialDurationMs,
+  });
 
   final List<int> jumpTargets;
   final String path;
+
+  /// 预存总时长（毫秒）；未初始化前先以此显示总时长，避免「0:00」。
+  final int? initialDurationMs;
 
   @override
   State<_VideoPlayer> createState() => _VideoPlayerState();
@@ -720,6 +688,34 @@ class _VideoPlayerState extends State<_VideoPlayer> {
     }
   }
 
+  /// 进全屏播放：复用行内视频同一全屏播放器（`showInlineVideoPlayer`）。
+  ///
+  /// 两个必须处理的点：①**先暂停**常驻播放器——否则两个 `VideoPlayerController`
+  /// 同时解码出声；②**带当前进度进、退出后同步回来**（`startAt`/返回值），否则
+  /// 「点了全屏从头开始」「退出后进度丢失」。
+  /// 退出**不自动续播**：位置已同步，继续播放与否交给用户，避免退出后突然出声。
+  Future<void> _openFullscreen() async {
+    final from = _controller.value.position;
+    if (_controller.value.isPlaying) {
+      try {
+        await _controller.pause();
+      } catch (_) {}
+    }
+    if (!mounted) return;
+    final end = await showInlineVideoPlayer(
+      context,
+      url: widget.path,
+      label: '视频',
+      startAt: from,
+    );
+    if (!mounted || end == null) return;
+    try {
+      await _controller.seekTo(end);
+    } catch (e) {
+      if (mounted) setState(() => _error = '跳转失败：$e');
+    }
+  }
+
   @override
   void dispose() {
     _controller.removeListener(_onChanged);
@@ -732,6 +728,12 @@ class _VideoPlayerState extends State<_VideoPlayer> {
     final theme = Theme.of(context);
     final pos = _controller.value.position;
     final dur = _controller.value.duration;
+    // 未初始化前用预存时长显示总时长；初始化成功后以真实值为准
+    final total = dur > Duration.zero
+        ? dur
+        : (widget.initialDurationMs != null && widget.initialDurationMs! > 0
+            ? Duration(milliseconds: widget.initialDurationMs!)
+            : Duration.zero);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -751,9 +753,36 @@ class _VideoPlayerState extends State<_VideoPlayer> {
                   color: theme.colorScheme.surfaceContainerHighest,
                   child: const Center(child: CircularProgressIndicator()),
                 )
-              : AspectRatio(
-                  aspectRatio: _controller.value.aspectRatio,
-                  child: VideoPlayer(_controller),
+              : Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    // 点按视频 = 切换播放/暂停（与音频条同口径：**整块可点按**，
+                    // 不再有实体播放按钮）。长按仍归三级能力页（外层 Host 手势）。
+                    GestureDetector(
+                      onTap: _toggle,
+                      behavior: HitTestBehavior.opaque,
+                      child: AspectRatio(
+                        aspectRatio: _controller.value.aspectRatio,
+                        child: VideoPlayer(_controller),
+                      ),
+                    ),
+                    // 暂停态居中播放箭头（**手势提示，非按钮**——可发现性兜底）：
+                    // 静止的视频帧极易被当成一张图片，须明确「可点按播放」；样式与
+                    // media_blocks 视频块同款（半透明黑圆 + 白色播放箭头）。
+                    if (!_playing)
+                      GestureDetector(
+                        onTap: _toggle,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.black45,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          padding: const EdgeInsets.all(20),
+                          child: const Icon(Icons.play_arrow,
+                              size: 48, color: Colors.white),
+                        ),
+                      ),
+                  ],
                 ),
         ),
         if (_error == null && widget.jumpTargets.isNotEmpty)
@@ -787,9 +816,12 @@ class _VideoPlayerState extends State<_VideoPlayer> {
             padding: const EdgeInsets.symmetric(horizontal: Insets.xs),
             child: Row(
               children: [
-                IconButton.filledTonal(
-                  onPressed: _ready ? _toggle : null,
-                  icon: Icon(_playing ? Icons.pause : Icons.play_arrow),
+                // 状态指示（**非按钮**，与音频条同口径）：暂停/空闲显示播放箭头，
+                // 提示「视频可点按播放」——播放控制已移交给视频区点按手势。
+                Icon(
+                  _playing ? Icons.pause : Icons.play_arrow,
+                  size: 24,
+                  color: theme.colorScheme.onSurfaceVariant,
                 ),
                 const SizedBox(width: Insets.xs),
                 Text(_fmtTime(pos), style: theme.textTheme.bodySmall),
@@ -797,17 +829,26 @@ class _VideoPlayerState extends State<_VideoPlayer> {
                 Expanded(
                   child: dur > Duration.zero
                       ? Slider(
+                          // max **必须**显式给总时长：Slider 默认 max=1.0 而 value
+                          // 是毫秒数，漏了 max 会让 value 被钳到 1.0 —— 一播放进度
+                          // 条就跳到末尾，而不是按时间推进。
                           value: pos.inMilliseconds.toDouble().clamp(
                             0.0,
                             dur.inMilliseconds.toDouble(),
                           ),
+                          max: dur.inMilliseconds.toDouble(),
                           onChanged: (v) => _controller.seekTo(
                             Duration(milliseconds: v.round()),
                           ),
                         )
                       : const SizedBox.shrink(),
                 ),
-                Text(_fmtTime(dur), style: theme.textTheme.bodySmall),
+                Text(_fmtTime(total), style: theme.textTheme.bodySmall),
+                IconButton(
+                  tooltip: '全屏播放',
+                  onPressed: _ready ? _openFullscreen : null,
+                  icon: const Icon(Icons.fullscreen, size: 20),
+                ),
               ],
             ),
           ),

@@ -63,7 +63,7 @@ curl -s http://127.0.0.1:8765/mcp \
 | 工具 | 参数 | 说明 |
 |---|---|---|
 | `list_items` | `query?` `type?` `limit?(≤100)` `offset?` | 关键词命中标题/正文/标签，时间倒序分页 |
-| `get_item` | `id` | 全文（含人类态/机器态）；图片返回 base64 image 内容块（≤4MB） |
+| `get_item` | `id` | 全文（含人类态/机器态）；图片返回 base64 image 内容块（≤4MB）；已转写的音/视频条目带 `subtitles` 字段（SRT/VTT 与译文文件内容内联，单文件 >256KB 只报 `size`） |
 | `add_item` | `content` `title?` `tags?[]` | AI 侧写入文本/链接，自动识别纯 URL；不参与合并模式 |
 | `query_machine_data` | `query?` `type?` `limit?` `offset?` | 机器态结构化数组（仅含已有 machine_json 的条目） |
 | `get_timeline_context` | `date`（YYYY-MM-DD） | 当日多维上下文；健康/事件随 V3 健康接入填充，当前为空 |
@@ -77,6 +77,15 @@ curl -s http://127.0.0.1:8765/mcp \
 | `translate_item` | `id` `target_lang?` `expected_version?` | 端侧离线翻译条目正文（与手机端「翻译」按钮同一入口）。**异步入队**：调用只返回入队结果，译文稍后落库，随后 `get_item` 的 `translation` 字段读取；目标语言受白名单约束，条目无正文（未 OCR 的图片 / 未转写的音频）会被拒绝 |
 | `summarize_item` | `id` `expected_version?` | 端侧大模型生成条目摘要（与手机端「摘要」按钮同一入口，2026-09-28）。**异步入队**：调用只返回入队结果，摘要稍后落库，随后 `get_item` 的 `summary` 字段读取；条目无正文会被拒绝；摘要与原文并列存储，不覆盖原文 |
 | `extract_tags` | `id` `expected_version?` | 端侧大模型从条目正文提取关键词，并入既有标签（不覆盖已有标签；与手机端「提取关键词」同一入口）。**异步入队**：标签稍后落库，随后 `get_item` 的 `tags` 字段读取；条目无正文会被拒绝 |
+| `classify_item` | `id` `expected_version?` | 端侧 ML Kit 给图片打分类标签（与手机端「识别分类」同一入口）。**异步入队**：标签落 `facets['分类']`，随后 `get_item` 读取 `facets`；仅图片可用 |
+| `scan_barcode_item` | `id` `expected_version?` | 端侧 ML Kit 扫描图片中的条码/二维码。**异步入队**：`[类型:值]` 落 `facets['条码']`，随后 `get_item` 读取；仅图片可用 |
+| `analyze_text_item` | `id` `expected_version?` | 端侧 ML Kit 分析笔记正文：语言识别 + 实体提取（日期/邮箱/电话/地址/URL/金额）。**异步入队**：落 `facets['语言']` 与 `facets['实体']`，随后 `get_item` 读取；仅笔记可用 |
+| `transcribe_item` | `id` `expected_version?` | 端侧 Sherpa 离线转写音频/视频（与手机端「转写」按钮同一入口）。**异步入队**：文本并入 `human_md`，SRT/VTT 字幕落盘，完成后 `get_item` 读 `human_md` 与 `subtitles` 字段（`get_job_status` 可轮询）；仅音/视频可用，模型须已在手机上下载（未下载任务 note 明示） |
+| `ocr_item` | `id` `expected_version?` | 端侧 ML Kit 识别图片文字（与手机端「识别文字」按钮同一入口）。**异步入队**：文本并入 `human_md`，随后 `get_item` 读取；仅图片可用 |
+| `get_job_status` | `job_id?` 或 `id?` | 查询条目最近一次 AI 后台任务状态（pending/processing/completed/failed/paused/cancelled），含失败原因 `note`；耗时工具（summarize/translate/reprocess/transcribe 等）返回的 `job_id` 凭此确认进度 |
+| `list_jobs` | `limit?(≤50)` | 列出最近的 AI 后台任务（最新在前），总览队列积压或排查失败 |
+| `list_workspaces` / `create_workspace` / `rename_workspace` / `delete_workspace` | — | 工作区 CRUD（删除级联清理关系记录，条目不受影响） |
+| `add_to_workspace` / `remove_from_workspace` | `workspace_id` `id` | 条目加入/移出工作区（重复加入幂等；Vault 条目加入被拒） |
 
 **乐观锁（`expected_version`）**：`get_item` / 写工具返回值里的 `version` 即当前版本号。多步规划时把读到的 `version` 原样带回，若期间条目已被用户或他人改动，写入会被拒绝并返回 `version_conflict`（而不是静默覆盖）——此时重新 `get_item` 取最新状态再决策即可。不传则不校验。
 

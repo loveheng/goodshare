@@ -1,6 +1,6 @@
 ---
 status: draft
-updated: 2026-09-29
+updated: 2026-10-02
 ---
 
 # S3 备份与恢复设计
@@ -25,7 +25,7 @@ updated: 2026-09-29
 | Vault 排除 | 快照副本上删除 `is_vault=1` 条目（队列/drafts 连带）再 VACUUM；**Vault 条目不进备份** | DB 快照含未加密正文；上传未加密远端会击穿 Vault 物理防线（加密落盘是 V3，届时再开放） |
 | 恢复语义 | **全量替换**（云端为源，UI 二次确认明示「本地数据将被覆盖」） | 备份/恢复 ≠ 同步；merge 语义留给 V3 多端同步 |
 | 视频源文件 | **不进备份**（2026-09-29 D3 拍板：体积大头，「只备份关键的东西」）；字幕/译文/切片产物照进；恢复后视频走既有「文件缺失」降级态。**2026-10-01 收窄**：「不进备份」对象为引用型/未收进场景（SAF 引用、切片原片整片本体）；**过门槛收进来的视频（附件短视频/主体视频/轻剪辑副本）进备份**——「收进来 = 系统认可 = 进备份」，见 [video-subject.md](video-subject.md) §4 | 视频动辄几百 MB，全量备份首传过重；门槛准入后超门槛整片不存在，防御对象消失 |
-| 整片标记 opt-in | 用户在详情页「整片」标记的单个视频源文件**进备份**（2026-09-29 E3 拍板）；标记本身不触发上传，仍由手动备份携带 | 两极标记：默认排除 + 逐条目自愿携带 |
+| 整片标记 opt-in（**已移除**） | **2026-10-02 拍板：需求不存在**——UI 入口 / `MarkWholeVideoCommand` / `video_whole_marked` 列 / 备份分支**彻底清除**。视频进备份与否改由**单一条件**决定：**过门槛收进来的（文件在 app documents 内）即进备份**，见 [video-subject.md](video-subject.md) §4 | 「收进来 = 系统认可 = 进备份」；第二把钥匙（逐条目标记）消失，不留特例表，决策次数最少化 |
 | 凭证存储 | SharedPreferences（`s3_endpoint` / `s3_bucket` / `s3_region` / `s3_access_key` / `s3_secret_key`），UI 掩码显示 | 与 MCP token 同口径（同存 prefs）；安全存储（flutter_secure_storage）为后续项 |
 | 执行载体 | 独立 `BackupService`（ChangeNotifier），**不进 ai_task_queue** | 队列是条目维度（item_id 外键 NOT NULL）；备份是全局维护操作，自带进度/取消状态机 |
 
@@ -99,6 +99,7 @@ sequenceDiagram
 
 - 任一步失败：停止并回 `failed + 原因`；远端 manifest 未更新 → 旧备份仍完整可用。
 - 进度模型：`{phase: attachments|db|manifest, done, total, transferredBytes, currentRel}`，UI 进度条 + 取消按钮（取消 = 中断后续上传，远端同上述不毁旧备份）。
+- **PDF 例外（2026-10-02 拍板，content-pipeline §6）**：PDF 一律持有 owned 作事实来源，副本在 `documents/shares/` 内、类型为 document（非视频排除项）——**白名单自动覆盖，无需特判**；ref 引用附件仍不进备份。代码侧 `collectBackupFiles` 为路径制白名单，PDF 无需任何代码改动。
 
 ## 5. 恢复流程
 

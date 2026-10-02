@@ -23,6 +23,10 @@ abstract class AudioPlayerHandle {
   Future<void> pause();
   Future<void> seek(Duration position);
 
+  /// 仅取总时长（不进播放链路、不占用播放句柄）：供块 widget 在播放前展示时长。
+  /// 实现体新建临时 player 加载后取 duration 即销毁，避免常驻多实例击穿内存红线。
+  Future<Duration?> probeDuration(String source);
+
   /// 播放状态/进度流（控制器订阅后向块 widget 广播）。
   Stream<Duration> get positionStream;
   Stream<Duration?> get durationStream;
@@ -52,6 +56,21 @@ class JustAudioHandle implements AudioPlayerHandle {
     final scheme = Uri.tryParse(src)?.scheme;
     if (scheme == 'http' || scheme == 'https') return _player.setUrl(src);
     return _player.setFilePath(src);
+  }
+
+  @override
+  Future<Duration?> probeDuration(String source) async {
+    final probe = AudioPlayer();
+    try {
+      final src = resolveLocalMediaSrc(source);
+      final scheme = Uri.tryParse(src)?.scheme;
+      if (scheme == 'http' || scheme == 'https') return await probe.setUrl(src);
+      return await probe.setFilePath(src);
+    } catch (_) {
+      return null;
+    } finally {
+      await probe.dispose();
+    }
   }
 
   @override
@@ -116,6 +135,21 @@ class AudioPlaybackController extends ChangeNotifier {
   String? error;
 
   bool isActive(String blockId) => activeBlockId == blockId;
+
+  /// 会话内 url → 总时长缓存：播放前探测一次，避免重复探测 / 常驻多实例。
+  final Map<String, Duration> _durationCache = {};
+
+  /// 取某音源总时长（会话内缓存；首次触发一次性探测，不占播放句柄）。
+  Future<Duration> durationFor(String source) async {
+    final cached = _durationCache[source];
+    if (cached != null) return cached;
+    final d = await _handle.probeDuration(source) ?? Duration.zero;
+    _durationCache[source] = d;
+    return d;
+  }
+
+  /// 同步读缓存时长（未探测返回零），供块 widget 立即展示。
+  Duration cachedDuration(String source) => _durationCache[source] ?? Duration.zero;
 
   /// 点按某播放条：播它 → 暂停它；播别的 → 自动切歌（单实例天然互斥）。
   Future<void> toggle(String blockId, String source) async {

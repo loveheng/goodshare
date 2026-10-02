@@ -103,6 +103,47 @@ class BackupService extends ChangeNotifier {
 
   // ---- 备份 ----
 
+  /// 备份体积估算（**备份前可见性**：把「本次要传多少」在点「备份」之前就显性化）。
+  ///
+  /// 复用 [_collectLocalFiles]（与 [runBackup] **同一收集器**）——估算与实际上传必须
+  /// 是同一套集合，UI 另算一套就会「显示 40MB 实际传 60MB」，比不显示更失信。
+  /// 视频单独计数：它是体积大头（video-subject.md §4 过准入门槛即进备份），用户需要
+  /// 知道代价主要来自哪里（对应用户拍板的「视频 N 个 / 合计 X MB」）。
+  ///
+  /// 只读 stat，不触发任何上传；失败返回 null（UI 兜底不展示，绝不阻断备份）。
+  /// ⚠️ 这是**本地待传总量**：实际上传按「远端已存在且大小一致」增量跳过，会更少。
+  Future<BackupSizeEstimate?> estimateBackup() async {
+    try {
+      final docs = await getApplicationDocumentsDirectory();
+      final files = await _collectLocalFiles(docs);
+      final items = await _repo.list(includeDeleted: true, limit: 100000);
+      final videoIds = items
+          .where((it) => it.itemType == InboxItem.typeVideo)
+          .map((it) => it.id)
+          .whereType<String>()
+          .toSet();
+      var videoCount = 0;
+      var videoBytes = 0;
+      var totalBytes = 0;
+      for (final f in files) {
+        totalBytes += f.size;
+        // 视频条目关联文件（源视频 + 其切片产物）——两者都是视频体积
+        if (f.itemId != null && videoIds.contains(f.itemId)) {
+          videoCount++;
+          videoBytes += f.size;
+        }
+      }
+      return BackupSizeEstimate(
+        fileCount: files.length,
+        totalBytes: totalBytes,
+        videoCount: videoCount,
+        videoBytes: videoBytes,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<BackupOutcome> runBackup() async {
     if (busy) throw const S3Exception(S3ErrorKind.protocol, '已有备份/恢复正在进行');
     _transferred = 0;
@@ -125,6 +166,8 @@ class BackupService extends ChangeNotifier {
       final docs = await getApplicationDocumentsDirectory();
       final files = await _collectLocalFiles(docs);
       final total = files.length;
+      // 附件总字节（体积可见性：进度文案显示「已传/总量」，让用户看懂代价与剩余）
+      final attachBytes = files.fold<int>(0, (s, f) => s + f.size);
       var skipped = 0;
       var uploaded = 0;
       for (var i = 0; i < files.length; i++) {
@@ -136,6 +179,7 @@ class BackupService extends ChangeNotifier {
             done: i,
             currentLabel: f.rel,
             transferredBytes: _transferred,
+            totalBytes: attachBytes,
           ),
         );
         final key = '${S3Client.backupRoot}/attachments/${f.rel}';
@@ -158,6 +202,7 @@ class BackupService extends ChangeNotifier {
           done: 0,
           currentLabel: 'goodshare.db',
           transferredBytes: _transferred,
+          totalBytes: snapFile.lengthSync(),
         ),
       );
       await client.putFile(
@@ -415,8 +460,9 @@ Future<List<LocalBackupFile>> _collectInlineMediaFiles(
 }
 
 /// 备份白名单收集（可单测的文件系统扫描；2026-09-29 D3 拍板，设计 s3-backup.md §4）：
-/// - 条目原始附件：**视频源文件排除**（体积大头，「只备份关键的东西」；
-///   音频体积不大照常备份；视频的关键产物=DB 文本层 + 字幕/译文，随备份走）
+/// - 条目原始附件：**过门槛收进来的视频进备份**（video-subject.md §4「收进来 = 系统认可
+///   = 进备份」——判断条件只有一个，无特例表）；门槛已拦掉超阈值整片，故体积上界有界。
+///   未真正收进来的（SAF 引用型，路径不在 app documents 内）由下方纵深防御自然排除
 /// - annotations/：图片标注；subtitles/ + translations/：转写字幕与译文（关键产物，小体积文本）
 /// - 派生文件名首段为来源条目 id，Vault 条目的派生文件同样排除
 Future<List<LocalBackupFile>> collectBackupFiles({
@@ -429,10 +475,10 @@ Future<List<LocalBackupFile>> collectBackupFiles({
 
   for (final it in items) {
     // 行内媒体（便签作曲器产出，human_md 内 `local://` 标记，2026-09-30 拍板①）：
-    // 是条目的用户资产，随条目进备份——视频源排除策略不波及（那是 rawFilePath 的 D3 语义）
+    // 是条目的用户资产，随条目进备份——与原始附件的收进判定各走各的收集通道
     out.addAll(await _collectInlineMediaFiles(it, docsPath, seenRels));
-    // D3 + 整片标记（2026-09-29）：视频源文件默认不进备份；用户整片标记的 opt-in 携带。
-    if (it.itemType == InboxItem.typeVideo && !it.videoWholeMarked) continue;
+    // 收进判定（video-subject.md §4）：**不按 item_type 排除**——「过门槛收进来的就在
+    // 备份里」；未真正收进的（引用型，路径不在 app documents 内）由下方 isWithin 排除。
     final path = it.rawFilePath;
     if (path == null || path.isEmpty) continue;
     // 纵深防御：只收 app documents 内的路径（rawFilePath 理论上必然在内）
@@ -478,6 +524,7 @@ class BackupProgress {
     this.total = 0,
     this.done = 0,
     this.transferredBytes = 0,
+    this.totalBytes = 0,
     this.currentLabel = '',
   });
 
@@ -486,6 +533,10 @@ class BackupProgress {
   final int total;
   final int done;
   final int transferredBytes;
+
+  /// 本阶段待传总字节（0=未知）。与 [transferredBytes] 配对，供进度文案显示
+  /// 「12.3 MB / 48.2 MB」——体积可见性的「备份中」一半（用户要能看懂还剩多少）。
+  final int totalBytes;
   final String currentLabel;
 
   BackupProgress copyWith({
@@ -493,6 +544,7 @@ class BackupProgress {
     int? total,
     int? done,
     int? transferredBytes,
+    int? totalBytes,
     String? currentLabel,
   }) =>
       BackupProgress(
@@ -500,6 +552,7 @@ class BackupProgress {
         total: total ?? this.total,
         done: done ?? this.done,
         transferredBytes: transferredBytes ?? this.transferredBytes,
+        totalBytes: totalBytes ?? this.totalBytes,
         currentLabel: currentLabel ?? this.currentLabel,
       );
 }
@@ -584,6 +637,26 @@ class LastBackup {
       message: (m['message'] as String?) ?? '',
     );
   }
+}
+
+/// 备份体积估算（备份前可见性：把「本次要传多少」显性化）。
+///
+/// 由 [BackupService.estimateBackup] 产出，复用与 [runBackup] 同一收集器，
+/// 故**显示的数字 = 真正会传的集合**。
+class BackupSizeEstimate {
+  const BackupSizeEstimate({
+    required this.fileCount,
+    required this.totalBytes,
+    required this.videoCount,
+    required this.videoBytes,
+  });
+
+  final int fileCount;
+  final int totalBytes;
+
+  /// 视频条目关联文件数（源视频 + 其切片产物）——体积大头，单独可见。
+  final int videoCount;
+  final int videoBytes;
 }
 
 /// 待上传附件条目（本地收集结果）。

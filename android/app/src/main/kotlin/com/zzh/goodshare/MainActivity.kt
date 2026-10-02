@@ -24,6 +24,35 @@ class MainActivity : FlutterActivity() {
                     result.notImplemented()
                 }
             }
+        // 附件 URI 持久化权限桥（content-pipeline §7 引用模式补救）：
+        // persistUri 对 content:// 尝试 takePersistableUriPermission；
+        // 源 app 未授 FLAG_GRANT_PERSISTABLE_URI_PERMISSION 时抛 SecurityException，
+        // 返回 false 由 Dart 层降级（条目仍为 ref，走迁移清单兜底）。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "goodshare/attach")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "persistUri") {
+                    val uri = call.arguments as? String
+                    if (uri == null) {
+                        result.success(false)
+                        return@setMethodCallHandler
+                    }
+                    result.success(
+                        try {
+                            contentResolver.takePersistableUriPermission(
+                                android.net.Uri.parse(uri),
+                                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                            )
+                            true
+                        } catch (_: SecurityException) {
+                            false
+                        } catch (_: IllegalArgumentException) {
+                            false
+                        }
+                    )
+                } else {
+                    result.notImplemented()
+                }
+            }
         // 端侧 LLM 桥（docs/design/on-device-llm.md）：isAvailable/unavailableReason/
         // generate/socModel 四方法协议，实现见 LlmBridge。
         LlmBridge.register(

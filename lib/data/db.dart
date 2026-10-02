@@ -16,7 +16,7 @@ class Db {
     final dir = await getDatabasesPath();
     final db = await openDatabase(
       _pathOverride ?? p.join(dir, 'goodshare.db'),
-      version: 16,
+      version: 17,
       onCreate: (db, version) => _createAll(db),
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -42,8 +42,6 @@ class Db {
         await _ensureEmbeddingsTable(db);
         // 幂等补齐 inbox_items.clips_json（v9→v10 视频切片附属记录）
         await _ensureClipsColumn(db);
-        // 幂等补齐 inbox_items.video_whole_marked（v10→v11 整片标记=备份 opt-in）
-        await _ensureWholeMarkedColumn(db);
         // 幂等补齐 inbox_items.doc_meta_json（v11→v12 归一化覆盖率与确认状态）
         await _ensureDocMetaColumn(db);
         // 幂等补齐 inbox_items.attach_state（v12→v13 文件引用状态机）
@@ -52,6 +50,8 @@ class Db {
         await _ensureWorkspaceTables(db);
         // 幂等补齐 inbox_items.aspect_ratio（v14→v15 图片尺寸前置，渲染免抖动）
         await _ensureAspectRatioColumn(db);
+        // 幂等补齐 inbox_items.media_duration_ms（v16→v17 音视频时长预存）
+        await _ensureMediaDurationColumn(db);
         // 幂等补齐 inbox_items.inspiration_md（v15→v16 灵感区：用户私密碎片想法）
         await _ensureInspirationColumn(db);
       },
@@ -82,10 +82,10 @@ class Db {
         translate_lang TEXT,                        -- 译文语言码（BCP-47），与 translated_md 成对
         summary_md TEXT,                            -- 端侧 LLM 摘要（与 human_md 并列不覆盖，2026-09-28 v8）
         clips_json TEXT,                            -- 视频切片（关键区间）附属记录（2026-09-29 v10，lib/ai/video_clips.dart）
-        video_whole_marked INTEGER NOT NULL DEFAULT 0, -- 整片标记：1=用户认为整个视频重要，备份时携带源文件（2026-09-29 v11）
         doc_meta_json TEXT,                         -- 归一化覆盖率与确认状态（2026-09-30 v12，content-pipeline §7）
         attach_state TEXT NOT NULL DEFAULT 'owned', -- 文件引用状态 ref/owned/lost（2026-09-30 v13）
         aspect_ratio REAL,                          -- 图片宽高比（宽/高，摄入时解码图片头探测；null=未探测）（2026-09-30 v15）
+        media_duration_ms INTEGER,                   -- 音视频时长（毫秒，摄入时探测；null=未探测）（2026-10-02 v17，rich-text-media §3 预存时长）
         inspiration_md TEXT,                        -- 灵感区：用户私密碎片想法（2026-10-01 v16，detail-two-zone §3）
         tags TEXT,                                  -- JSON Array: ["前端","团建"]
         facets_json TEXT,                           -- JSON: 视角→标签数组，AI 分类页消费（V2）
@@ -233,18 +233,6 @@ class Db {
     ''');
   }
 
-  /// 幂等补齐 inbox_items.video_whole_marked（v10→v11 整片标记，2026-09-29）。
-  ///
-  /// 两极标记的「整片」极：用户认为整个视频重要 → 备份时携带源文件（D3 默认排除的
-  /// 逐条目 opt-in）。标记本身不触发上传，上传仍由手动备份触发。
-  static Future<void> _ensureWholeMarkedColumn(Database db) async {
-    final cols = await db.rawQuery('PRAGMA table_info(inbox_items)');
-    final has = cols.any((c) => (c['name'] as String?) == 'video_whole_marked');
-    if (!has) {
-      await db.execute('ALTER TABLE inbox_items ADD COLUMN video_whole_marked INTEGER NOT NULL DEFAULT 0');
-    }
-  }
-
   /// 幂等补齐 inbox_items.doc_meta_json（v11→v12，2026-09-30）。
   ///
   /// 文档归一化**是有损的**（PDF 结构靠启发式、表格降级），故每次转换都记录
@@ -283,6 +271,20 @@ class Db {
     final has = cols.any((c) => (c['name'] as String?) == 'aspect_ratio');
     if (!has) {
       await db.execute('ALTER TABLE inbox_items ADD COLUMN aspect_ratio REAL');
+    }
+  }
+
+  /// 幂等补齐 inbox_items.media_duration_ms（v16→v17，2026-10-02）。
+  ///
+  /// 音视频时长预存（rich-text-media.md §3 预存时长）：摄入时探测一次写入，
+  /// 渲染处秒显进度条总时长、省去每次播放前临时建播放器探测。专用列而非
+  /// machine_json/facets_json——AI 回写对两者整替，摄入元数据会被冲掉
+  /// （与 aspect_ratio 同款口径，见 §2/§3 红线）。
+  static Future<void> _ensureMediaDurationColumn(Database db) async {
+    final cols = await db.rawQuery('PRAGMA table_info(inbox_items)');
+    final has = cols.any((c) => (c['name'] as String?) == 'media_duration_ms');
+    if (!has) {
+      await db.execute('ALTER TABLE inbox_items ADD COLUMN media_duration_ms INTEGER');
     }
   }
 

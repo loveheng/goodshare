@@ -42,6 +42,9 @@ class _FakeHandle implements AudioPlayerHandle {
   }
 
   @override
+  Future<Duration?> probeDuration(String source) async => const Duration(seconds: 3);
+
+  @override
   Stream<Duration> get positionStream => const Stream.empty();
 
   @override
@@ -163,6 +166,9 @@ class _ThrowingHandle implements AudioPlayerHandle {
 
   @override
   Future<void> seek(Duration position) async {}
+
+  @override
+  Future<Duration?> probeDuration(String source) async => Duration.zero;
 
   @override
   Stream<Duration> get positionStream => const Stream.empty();

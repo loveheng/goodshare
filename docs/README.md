@@ -10,7 +10,7 @@ updated: 2026-09-30
 ## product（产品 / 跨域需求）
 
 - [product-requirements.md](product/product-requirements.md) — goodshare 全局 PRD：愿景、已确认架构决策、数据模型、五大模块需求、MCP 接口规范与分期路线图。
-- [v2-requirements.md](product/v2-requirements.md) — V2 需求：离线双态 AI 重构（调用系统自带模型，零下载）+ 通用截图解析接口（OCR→LLM 归一截图）；多源健康接入已推迟 V3。
+- [v2-requirements.md](product/v2-requirements.md) — V2 需求收敛版（只含未完成项）：摄入自动双态重构管线、隐私打码、截图解析、便签 AI 增强、温控节流；技术路线已对齐 LiteRT-LM 端侧 LLM。
 
 ## architecture（架构）
 
@@ -40,6 +40,7 @@ updated: 2026-09-30
 - [video-subject.md](design/video-subject.md) — 视频主体条目（宽门槛准入）：新 item_type 入口分叉、两级门槛矩阵（≤10min/≤500MB 拦截式）、100MB 通用确认对视频作废、门槛=备份准入线（收进来=系统认可=进备份）、门槛内工程防线后移。
 - [note-video.md](design/note-video.md) — 便签内嵌视频（附件态）：相册选择主路径+相机直拍次路径、附件态门槛（60s/5min/50-100MB，用户只感知时长）、封面卡懒加载与内存纪律、SAF 可持久化 URI 待实测前置依赖。
 - [content-pipeline.md](design/content-pipeline.md) — 内容管线设计：富文本归一化（lib/doc/ 接口+Registry，html/pdf/plain → Markdown 子集）与文件引用策略（引用原件不复制、attach_state 状态机、分享后弹提醒+快捷导入）；详情页「文档形态」改造与自建富文本渲染器（弃 flutter_markdown_plus）的 SSOT。
+- [attach-ownership.md](design/attach-ownership.md) — 附件持有机制说明：导入=复制/分享=引用的语义总表、persist 授权决定可达性的 Android 链路、迁移兜底、按类型分档（纯文本释放 / PDF 一律持有作事实来源 / 媒体引用+迁移）、范围拍板（不考虑微信/QQ 源）与 iOS 缺口预留位。
 - [rich-text-component.md](design/rich-text-component.md) — 富文本组件分层与结构化编辑设计：ContentBody 公共组件（sliver/inline 双面）、三层架构（规则层 RichDocument / 呈现层 / 调用层）、抹去 App 内 Markdown 用户暴露（结构化块编辑替代源码编辑，不留逃生舱）、私有块类型三出口护栏、视觉元数据前置（尺寸/OG/主色调，mymind 吸收）。
 - [rich-text-media.md](design/rich-text-media.md) — 富文本行内媒体块设计：Image/Audio/Video 三块类型的三出口语法、ContentBody 呈现（AspectRatio 占位/播放条/封面播放卡）、编辑态直接操纵、插入链路分期（音频先行，图片/视频 V2）；顶级媒体与行内媒体的边界划分。
 

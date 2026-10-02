@@ -86,7 +86,7 @@ class ActionException implements Exception {
 /// 只能靠返回值对齐「短期记忆（Context）」与数据库真实状态，
 /// 否则下一步就会基于旧数据胡言乱语。
 class CommandResult {
-  const CommandResult({required this.op, this.targetId, this.item, this.note});
+  const CommandResult({required this.op, this.targetId, this.item, this.note, this.jobId});
 
   final String op;
 
@@ -99,11 +99,16 @@ class CommandResult {
   /// 人类可读的结果说明（UI 提示 / AI 阅读共用）。
   final String? note;
 
+  /// 入队的后台任务 id（Job 化路径才有）：AI 可凭此查询任务状态，
+  /// 而不是盲等或重复触发（human-ai-parity §4.3 闭环）。
+  final String? jobId;
+
   Map<String, Object?> toJson() => {
         'ok': true,
         'op': op,
         if (targetId != null) 'id': targetId,
         if (note != null) 'note': note,
+        if (jobId != null) 'job_id': jobId,
         if (item != null) 'item': itemToJson(item!),
       };
 }
@@ -224,8 +229,6 @@ sealed class ItemCommand {
           steps: _strList(json['steps']) ?? const [],
           expectedVersion: ev,
         );
-      case 'mark_whole_video':
-        return MarkWholeVideoCommand(id, marked: _bool(json['marked']) ?? true, expectedVersion: ev);
       case 'extract_tags':
         return ExtractTagsCommand(id, expectedVersion: ev);
       case 'ocr':
@@ -242,6 +245,12 @@ sealed class ItemCommand {
         return RestoreCommand(id, expectedVersion: ev);
       case 'delete_forever':
         return DeleteForeverCommand(id, expectedVersion: ev);
+      case 'migrate_attach':
+        return MigrateAttachCommand(
+          id: _str(json['id']) ?? '',
+          ownedPath: _str(json['owned_path']) ?? '',
+          expectedVersion: ev,
+        );
       case 'collect':
         return CollectCommand(
           itemType: _str(json['item_type']) ?? InboxItem.typeNote,
@@ -317,7 +326,6 @@ sealed class ItemCommand {
     'summarize',
     'clip',
     'clip_process',
-    'mark_whole_video',
     'extract_tags',
     'ocr',
     'translate',
@@ -335,6 +343,7 @@ sealed class ItemCommand {
     'delete_workspace',
     'add_to_workspace',
     'remove_from_workspace',
+    'migrate_attach',
   ];
 }
 
@@ -751,6 +760,7 @@ final class CollectCommand extends ItemCommand {
     this.collectMode = InboxItem.modeScatter,
     this.attachState = InboxItem.attachOwned,
     this.aspectRatio,
+    this.mediaDurationMs,
   });
 
   final String itemType;
@@ -767,6 +777,10 @@ final class CollectCommand extends ItemCommand {
   /// 图片宽高比（宽/高，rich-text-component.md §6.1 V1 尺寸前置）：
   /// 摄入时解码图片头探测，渲染处 AspectRatio 占位消灭加载抖动；非图片为 null。
   final double? aspectRatio;
+
+  /// 音视频时长（毫秒，rich-text-media.md §3 预存时长）：摄入时探测写入，
+  /// 渲染处秒显进度条总时长；非音视频为 null。
+  final int? mediaDurationMs;
 
   bool get isMerge => collectMode == InboxItem.modeMerge;
 
@@ -788,7 +802,41 @@ final class CollectCommand extends ItemCommand {
         'collect_mode': collectMode,
         'attach_state': attachState,
         if (aspectRatio != null) 'aspect_ratio': aspectRatio,
+        if (mediaDurationMs != null) 'media_duration_ms': mediaDurationMs,
         };
+}
+
+/// 引用附件迁移（content-pipeline §7 引用模式兜底）：ref → owned。
+///
+/// 大文件复制属耗时 IO，**不在本命令内进行**（锁内禁重活）——调用方（迁移服务）
+/// 先把原件复制进私有目录，再发本命令完成持有态交换。防呆全部下沉动作层：
+/// 仅 ref 态条目可迁移（owned/lost 拒绝）、新副本文件必须已存在、
+/// 乐观锁 CAS 防迁移与编辑并发互踩。
+final class MigrateAttachCommand extends ItemCommand {
+  const MigrateAttachCommand({
+    required this.id,
+    required this.ownedPath,
+    super.expectedVersion,
+  });
+
+  final String id;
+
+  /// 已复制落盘的私有目录副本绝对路径（documents/shares/ 内）。
+  final String ownedPath;
+
+  @override
+  String get op => 'migrate_attach';
+
+  @override
+  String? get targetId => id;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'id': id,
+        'owned_path': ownedPath,
+        if (expectedVersion != null) 'expected_version': expectedVersion,
+      };
 }
 
 /// 往合并链末尾追加一段（= 手机端连续速记自动并链 / MCP append_segment）。
@@ -886,29 +934,6 @@ final class ClipProcessCommand extends ItemCommand {
         'start_ms': startMs,
         'end_ms': endMs,
         'steps': steps,
-        if (expectedVersion != null) 'expected_version': expectedVersion,
-      };
-}
-
-/// 整片标记（= UI「整片重要」开关）：两极标记的「整片」极——标记后该视频源文件
-/// 进备份范围（D3 默认排除的逐条目 opt-in）；标记本身不触发上传。
-final class MarkWholeVideoCommand extends ItemCommand {
-  const MarkWholeVideoCommand(this.id, {required this.marked, super.expectedVersion});
-
-  final String id;
-  final bool marked;
-
-  @override
-  String get op => 'mark_whole_video';
-
-  @override
-  String? get targetId => id;
-
-  @override
-  Map<String, Object?> toJson() => {
-        'op': op,
-        'id': id,
-        'marked': marked,
         if (expectedVersion != null) 'expected_version': expectedVersion,
       };
 }

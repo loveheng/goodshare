@@ -115,6 +115,18 @@ void main() {
     await env.server.stop();
   });
 
+  test('Origin 校验：恶意/外站 origin → 403，本机 origin 与无 origin 放行', () async {
+    final env = await spinUp();
+    final evil = await rpc(env.client, env.base, 1, 'ping', null, {'origin': 'http://evil.example.com'});
+    expect(evil.status, HttpStatus.forbidden);
+    final local = await rpc(env.client, env.base, 2, 'ping', null, {'origin': 'http://localhost:3000'});
+    expect(local.status, 200);
+    final none = await rpc(env.client, env.base, 3, 'ping');
+    expect(none.status, 200); // 桌面客户端（stdio 桥/直连）不带 origin
+    env.client.close();
+    await env.server.stop();
+  });
+
   test('token 鉴权：缺/错 401，对则放行', () async {
     final env = await spinUp(token: 's3cret');
     final noKey = await rpc(env.client, env.base, 1, 'ping');

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodshare/action/commands.dart';
 import 'package:goodshare/action/item_action_handler.dart';
@@ -103,14 +105,14 @@ void main() {
     expect(after.item!.machineJson, ok);
   });
 
-  test('重分类白名单：仅 source_type=image 可 image→chatlog/document', () async {
+  test('重分类白名单：仅 source_type=image 可 image→document（聊天场景已取消）', () async {
     final shot = await repo.add(newItem(type: InboxItem.typeImage, sourceType: InboxItem.typeImage));
-    final moved = await handler.execute(ReclassifyCommand(shot.id!, InboxItem.typeChatlog));
-    expect(moved.item!.itemType, InboxItem.typeChatlog);
+    final moved = await handler.execute(ReclassifyCommand(shot.id!, InboxItem.typeDocument));
+    expect(moved.item!.itemType, InboxItem.typeDocument);
 
     final note = await repo.add(newItem());
     expect(
-      () => handler.execute(ReclassifyCommand(note.id!, InboxItem.typeChatlog)),
+      () => handler.execute(ReclassifyCommand(note.id!, InboxItem.typeDocument)),
       throwsA(isA<ActionException>()),
     );
 
@@ -119,9 +121,14 @@ void main() {
       () => handler.execute(ReclassifyCommand(img2.id!, InboxItem.typeUrl)),
       throwsA(isA<ActionException>()),
     );
+    // 聊天场景取消：chatlog 不再是合法改判目标（2026-10-02 拍板）
+    expect(
+      () => handler.execute(ReclassifyCommand(img2.id!, InboxItem.typeChatlog)),
+      throwsA(isA<ActionException>()),
+    );
     // update 的 item_type 路径走同一校验
     expect(
-      () => handler.execute(UpdateItemCommand(id: img2.id!, itemType: InboxItem.typeChatlog)),
+      () => handler.execute(UpdateItemCommand(id: img2.id!, itemType: InboxItem.typeDocument)),
       returnsNormally,
     );
   });
@@ -450,5 +457,77 @@ void main() {
       actor: CommandActor.pipeline,
     );
     expect((await repo.byId(it2.id!))!.humanMd, 'AI 版');
+  });
+
+  // ───────── 引用附件迁移（content-pipeline §7 兜底）─────────
+
+  test('migrate_attach：ref 态 + 副本存在 → 换路径并转 owned', () async {
+    final f = File('${Directory.systemTemp.path}/migrate_test_${DateTime.now().millisecondsSinceEpoch}.jpg');
+    await f.writeAsBytes([1, 2, 3]);
+    addTearDown(() => f.deleteSync());
+    final it = await repo.add(InboxItem(
+      itemType: InboxItem.typeImage,
+      rawFilePath: 'content://share/origin.jpg',
+      attachState: InboxItem.attachRef,
+      createdAt: 1,
+    ));
+    final r = await handler.execute(MigrateAttachCommand(id: it.id!, ownedPath: f.path));
+    final fresh = (await repo.byId(it.id!))!;
+    expect(fresh.attachState, InboxItem.attachOwned);
+    expect(fresh.rawFilePath, f.path);
+    expect(r.note, contains('迁移'));
+  });
+
+  test('migrate_attach：非 ref 态拒绝（防重迁移）', () async {
+    final f = File('${Directory.systemTemp.path}/migrate_owned_${DateTime.now().millisecondsSinceEpoch}.jpg');
+    await f.writeAsBytes([1]);
+    addTearDown(() => f.deleteSync());
+    final it = await repo.add(newItem());
+    expect(
+      () => handler.execute(MigrateAttachCommand(id: it.id!, ownedPath: f.path)),
+      throwsA(isA<ActionException>().having(
+        (e) => e.code, 'code', ActionErrorCode.invalidRequest,
+      )),
+    );
+  });
+
+  test('migrate_attach：副本文件不存在拒绝（防止把引用改成断链）', () async {
+    final it = await repo.add(InboxItem(
+      itemType: InboxItem.typeImage,
+      rawFilePath: 'content://share/origin.jpg',
+      attachState: InboxItem.attachRef,
+      createdAt: 1,
+    ));
+    expect(
+      () => handler.execute(
+        MigrateAttachCommand(id: it.id!, ownedPath: '/nonexistent/copy.jpg'),
+      ),
+      throwsA(isA<ActionException>().having(
+        (e) => e.code, 'code', ActionErrorCode.invalidRequest,
+      )),
+    );
+    // 条目原样保留（仍是 ref + 原 URI）
+    final fresh = (await repo.byId(it.id!))!;
+    expect(fresh.attachState, InboxItem.attachRef);
+    expect(fresh.rawFilePath, 'content://share/origin.jpg');
+  });
+
+  test('listRefs：仅返回 ref 态未删条目，迁移后从清单消失', () async {
+    final it = await repo.add(InboxItem(
+      itemType: InboxItem.typeImage,
+      rawFilePath: 'content://share/a.jpg',
+      attachState: InboxItem.attachRef,
+      createdAt: 1,
+    ));
+    await repo.add(newItem()); // owned 条目不进清单
+    final refs = await repo.listRefs();
+    expect(refs.map((e) => e.id), contains(it.id));
+
+    // 迁移后从清单消失
+    final f = File('${Directory.systemTemp.path}/migrate_list_${DateTime.now().millisecondsSinceEpoch}.jpg');
+    await f.writeAsBytes([1]);
+    addTearDown(() => f.deleteSync());
+    await handler.execute(MigrateAttachCommand(id: it.id!, ownedPath: f.path));
+    expect((await repo.listRefs()).map((e) => e.id), isNot(contains(it.id)));
   });
 }

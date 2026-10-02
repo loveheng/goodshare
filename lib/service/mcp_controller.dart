@@ -95,6 +95,17 @@ class McpController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 冷启动自动恢复：上次为开启状态则重新 enable（进程被杀/重装后无需手动开）。
+  /// 失败不阻断启动，错误落 lastError 供 MCP 页展示（R1）。
+  Future<void> restoreIfNeeded() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool(_prefEnabled) != true) return;
+    final error = await enable();
+    if (error != null) {
+      debugPrint('[MCP] 冷启动自动恢复失败: $error');
+    }
+  }
+
   Future<void> _shutdown() async {
     try {
       await _server?.stop();

@@ -26,7 +26,10 @@ Future<void> ensureForegroundTaskInit() async {
     foregroundTaskOptions: ForegroundTaskOptions(
       eventAction: ForegroundTaskEventAction.nothing(),
       autoRunOnBoot: false,
+      // MCP 服务须在 Doze 深度休眠下仍可应答桌面客户端：持 CPU 锁防 accept 线程
+      // 被挂起，持 Wi-Fi 锁防 Wi-Fi 休眠断链（实测 force-idle 下无锁即假死超时）。
       allowWakeLock: true,
+      allowWifiLock: true,
     ),
   );
 }

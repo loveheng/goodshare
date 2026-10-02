@@ -70,9 +70,10 @@ void main() {
     expect(standaloneFor(BlockKind.image).map((c) => c.id).toList(),
         ['annotate', 'classify', 'scan_barcode']);
     expect(standaloneFor(BlockKind.video).map((c) => c.id).toList(),
-        ['clip', 'whole_mark']);
+        ['clip', 'extract_audio', 'export_subtitle']);
     expect(standaloneFor(BlockKind.text).map((c) => c.id).toList(),
         ['analyze_text']);
-    expect(standaloneFor(BlockKind.audio), isEmpty);
+    expect(standaloneFor(BlockKind.audio).map((c) => c.id).toList(),
+        ['extract_audio', 'export_subtitle']);
   });
 }

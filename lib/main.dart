@@ -76,6 +76,8 @@ Future<void> main() async {
   );
   final mcp = McpController(repo: repo);
   await mcp.load();
+  // 冷启动自动恢复 MCP 服务（上次开启过则重新拉起，含 WifiLock 修复）
+  await mcp.restoreIfNeeded();
   await RemoteConfigStore.instance.load();
   // S3 备份（2026-09-29）：独立状态机，不进 ai_task_queue；配置加载后设置页即可用
   final backup = BackupService(repo);

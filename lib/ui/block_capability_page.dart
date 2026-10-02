@@ -40,6 +40,7 @@ class BlockCapabilityPage extends StatelessWidget {
   final Widget? preview;
 
   final Map<int, String> initialOutputs;
+
   final Future<String?> Function(ContentCapability step) onRunStep;
   final Future<void> Function() onReset;
   final Future<String?> Function(String raw) onEditOutput;

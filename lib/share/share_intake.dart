@@ -5,7 +5,9 @@ import '../action/commands.dart';
 import '../action/item_action_handler.dart';
 import '../models/item.dart';
 import 'attachments.dart';
+import 'attach_uri_channel.dart';
 import 'image_aspect.dart';
+import 'media_duration.dart';
 import 'text_collector.dart';
 import 'text_parse.dart';
 
@@ -17,10 +19,12 @@ import 'text_parse.dart';
 /// 入库一律经 `ItemActionHandler`（`CollectCommand`）——与手动添加、MCP `add_item` 同源，
 /// 共享同一套防呆与入队出口（Human-AI 对称性：写必走动作层）。
 class ShareIntake {
-  ShareIntake(this._handler, this._collector, {this.referenceMode = true});
+  ShareIntake(this._handler, this._collector, {this.referenceMode = true})
+      : _attachUri = AttachUriChannel();
 
   final ItemActionHandler _handler;
   final TextCollector _collector;
+  final AttachUriChannel _attachUri;
 
   /// 引用模式（content-pipeline §6/§7）：默认 true——分享摄入**不复制**原件，
   /// 直接引用源 URI 并标记 `attachState=ref`，app 不占用户存储。
@@ -54,6 +58,11 @@ class ShareIntake {
     );
   }
 
+  /// 测试入口：[init] 事件流的处理主体（classify + 分类型入库）。
+  /// 与 [classify] 同为 @visibleForTesting 口径。
+  @visibleForTesting
+  Future<void> handleForTest(List<SharedMediaFile> medias) => _handle(medias);
+
   Future<void> _handle(List<SharedMediaFile> medias) async {
     if (_busy) return; // 事件流可能重放，防重复入库
     _busy = true;
@@ -65,9 +74,24 @@ class ShareIntake {
         // 尺寸前置（rich-text-component.md §6.1 V1）：图片摄入时解码头取宽高比，
         // 渲染处占位消灭加载抖动；探测失败为 null 不挡摄入。
         final aspect = t == InboxItem.typeImage ? await probeImageAspect(f.path) : null;
-        if (referenceMode) {
+        // 时长预存（rich-text-media.md §3）：音视频摄入时探测一次，渲染处秒显
+        // 进度条总时长、省去每次播放前临时建播放器探测；探测失败为 null 不挡摄入。
+        final durationMs = (t == InboxItem.typeAudio || t == InboxItem.typeVideo)
+            ? await probeMediaDuration(f.path, t)
+            : null;
+        // PDF 拍板（2026-10-02，content-pipeline §6）：一律持有 owned 作事实来源，
+        // 抽取文本只是派生视图（可重跑 reprocess）——有损转换 × 释放不可逆 = 信任
+        // 击穿，故持有语义与引用模式开关无关，PDF 恒走复制。
+        if (referenceMode && !_isPdf(f)) {
           // 引用模式：不复制，直接引用源 URI（content:// 或 file://），
           // 标记 ref——app 不占用户存储（content-pipeline §6）。
+          // 摄入时即刻尝试持久化读权限（takePersistableUriPermission）：
+          // 授权成功则 URI 跨重启可达，授权失败（源 app 未授 persistable
+          // flag）保持 ref 语义——失效时由迁移清单页转 owned 兜底。
+          final persisted = await _attachUri.persistUri(f.path);
+          if (!persisted) {
+            debugPrint('[ShareIntake] persistable grant unavailable: ${f.path}');
+          }
           await _handler.execute(CollectCommand(
             itemType: t,
             sourceApp: _sourceApp,
@@ -75,16 +99,20 @@ class ShareIntake {
             rawFilePath: f.path,
             attachState: InboxItem.attachRef,
             aspectRatio: aspect,
+            mediaDurationMs: durationMs,
           ));
         } else {
+          // 复制路径：PDF（恒走）或引用模式关闭时的全部附件。
+          // 源文件失效（如临时 URI 已被回收）则丢弃该附件。
           final saved = await copyToAppDir(f.path);
-          if (saved == null) continue; // 源文件失效，丢弃该附件
+          if (saved == null) continue;
           await _handler.execute(CollectCommand(
             itemType: t,
             sourceApp: _sourceApp,
             humanTitle: _baseName(f.path),
             rawFilePath: saved,
             aspectRatio: aspect,
+            mediaDurationMs: durationMs,
           ));
         }
       }
@@ -134,6 +162,14 @@ class ShareIntake {
         SharedMediaType.url => InboxItem.typeUrl,
         SharedMediaType.text => InboxItem.typeNote,
       };
+
+  /// PDF 判定：mimeType 优先（application/pdf），缺失时按扩展名兜底
+  /// （部分分享方不填 mimeType）。PDF 恒走持有路径（content-pipeline §6）。
+  bool _isPdf(SharedMediaFile f) {
+    final mime = f.mimeType?.toLowerCase();
+    if (mime != null) return mime == 'application/pdf';
+    return f.path.toLowerCase().endsWith('.pdf');
+  }
 
   String _baseName(String path) {
     final base = path.split('/').last;

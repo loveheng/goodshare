@@ -52,6 +52,13 @@ class McpServer {
   }
 
   Future<void> _onRequest(HttpRequest req) async {
+    // DNS-rebinding 防护（MCP 规范要求）：浏览器发起的请求必带 Origin，
+    // 恶意网页/DNS rebinding 场景借此被拒；桌面客户端（stdio 桥/直连）不带 Origin，不受影响。
+    final origin = req.headers.value('origin');
+    if (origin != null && !_isAllowedOrigin(origin)) {
+      await _safeJson(req, HttpStatus.forbidden, _rpcError(null, errInvalidRequest, 'Origin 不被允许: $origin'));
+      return;
+    }
     final token = tokenProvider();
     if (token != null && token.isNotEmpty && req.headers.value('x-api-key') != token) {
       await _safeJson(req, HttpStatus.unauthorized, _rpcError(null, -32001, 'X-Api-Key 校验失败（app「MCP 服务」页可查看 token）'));
@@ -139,6 +146,15 @@ class McpServer {
       default:
         throw McpRpcError(errMethodNotFound, '未知方法: $method');
     }
+  }
+
+  /// 仅放行本机来源（localhost / 127.0.0.1 / [::1]，任意端口）。
+  /// app 内如出现 WebView 类浏览器客户端需直连时，在此扩展白名单。
+  bool _isAllowedOrigin(String origin) {
+    final uri = Uri.tryParse(origin);
+    if (uri == null || uri.host.isEmpty) return false;
+    const localHosts = {'localhost', '127.0.0.1', '[::1]', '::1'};
+    return localHosts.contains(uri.host.toLowerCase());
   }
 
   Map<String, Object?> _rpcError(Object? id, int code, String message) => {

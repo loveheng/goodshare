@@ -84,7 +84,8 @@ abstract class ContentCapability {
 
 - `appliesTo` = 能力自声明，Host 只问「你适用吗」；`command()` 出口直接对接既有命令层（`OcrCommand`/`TranslateCommand`/`TranscribeCommand`/`SummarizeCommand`）——UI 按钮与 MCP 工具天然同源（R2 红线自动合规）；
 - 首发能力四项（已实装命令）：翻译/OCR/转写/摘要；「朗读」等留接口不实现。
-- **独立能力（2026-10-01 二次拍板：类型专属功能从二级详情页 chips 全部拆入三级能力页）**：`StandaloneCapability` 六项——**图片标注**/识别分类/识别条码（image；标注=全屏编辑页 `annotation_editor_page.dart`，`ImageAnnotator` 自包含宿主整体迁入，二级页内联标注双态与「标注图片」按钮随之删除——看在二级、动在三级）、分析文本（text）、切片/整片标记（video）——**链外单发**，不走产出回注（标注型写 facets，切片/整片为视频工具流）；执行经执行作用域 `onRunStandalone(id)` 分发（命令入队或打开切片工具页）。二级详情页自此**与类型无关**：正文 + 灵感区 + 底栏 3 项，内容能力唯一入口 = 划词菜单项 / 媒体长按（§5.1 四版；MCP 工具不受影响，对称性不变）。
+- **独立能力（2026-10-01 二次拍板：类型专属功能从二级详情页 chips 全部拆入三级能力页）**：`StandaloneCapability` **七项**——**图片标注**/识别分类/识别条码（image；标注=全屏编辑页 `annotation_editor_page.dart`，`ImageAnnotator` 自包含宿主整体迁入，二级页内联标注双态与「标注图片」按钮随之删除——看在二级、动在三级）、分析文本（text）、切片/提取音轨/字幕导出（音频 / 视频）——**链外单发**，不走产出回注（标注型写 facets，切片/提取音轨/字幕导出为媒体工具流）；执行经执行作用域 `onRunStandalone(id)` 分发（命令入队或打开切片工具页）。
+- **改判类型能力整体取消（2026-10-02 拍板）**：截图入库条目的「改判为聊天 / 文档·发票」这类**类型细分整体不要了**（聊天场景本就是早期没想清楚的设计）。三级页 `reclassify` 独立能力删除，二级页 `⋯` 菜单此前也已无该入口——**UI 侧不再提供任何 item_type 改判入口**。动作层 `ReclassifyCommand` 与 `_reclassifyError` 白名单（`image→document`）**保留**，仅作为 AI 管线 / MCP 通道（对外契约不变，对称性不受影响）；为之加的 `standaloneIds` 白名单机制无消费者，一并回退。
 
 ### 5.3 任务链（宿主持有，状态与 UI 分离）
 
@@ -140,8 +141,8 @@ class CapabilityChain {
 
 | 项 | 落点 | 状态 |
 |---|---|---|
-| 公共区 3 项（编辑/工作区/分享）+ ⋯ 菜单（删除/重分类/重新处理/保险箱） | `lib/pages/item_detail_page.dart` `_actionBar`/`_overflowMenu` | ✅ |
-| 机器态入口隐藏化（长按 AppBar 标题切换，双态能力保留） | `item_detail_page.dart` `_toggleMachineMode` | ✅ |
+| 公共区 2 项常显（编辑/工作区）+ ⋯ 居中（mymind 风格升起面板，非 Material 浮层；含 分享 · 删除 · 机器码 · 保险箱；横向三点；重分类 / 重新处理 / 解除编辑已摘除，解锁由底部「编辑」内含；机器码受设置开关默认关闭；顶栏改 `SliverAppBar` 随滚动隐显） | `lib/pages/item_detail_page.dart` `_actionBar`/`_overflowBarButton`/`_OverflowSheet` | ✅ |
+| 机器态入口收敛进 `⋯` 菜单（受设置「机器码」开关控制，默认关闭；开启后菜单出现「机器码」勾选项切换双态） | `item_detail_page.dart` `_toggleMachineMode` + `service/settings_store.dart` | ✅ |
 | 摘要/标签切换器 + 刷新 | `item_detail_page.dart` `_inspirationSection` | ✅（待按 §3/§4 重构：灵感区独立成文本区） |
 | PDF 导出 | `lib/ui/pdf_export.dart`（新文件） | ✅ |
 | 分享分流（截图/PDF） | `_exportPdf` 改造 + 新增截图渲染（复用 annotation_export 机制） | ⬜ |
@@ -152,7 +153,8 @@ class CapabilityChain {
 | 块级接线（行内文本/媒体块 + 顶级媒体条目） | `rich_text_view.dart` / `item_view_template.dart` | ✅ |
 | `BlockAnchorStore` 锚点注册表 + 选区菜单「AI 处理本段」（§5.1 四版） | `lib/ui/block_capability_host.dart` + `item_detail_page._selectionMenu` | ✅ |
 | 三级能力页（全屏，卡链式 UI 并入） | `lib/ui/block_capability_page.dart` + `block_capability_card.dart` | ✅ |
-| 独立能力五项拆入三级页，二级页 `_typeActions` 删除 | `lib/ai/capability.dart` `standaloneFor` + 页 `onRunStandalone` 分发 | ✅ |
+| 独立能力七项拆入三级页，二级页 `_typeActions` 删除 | `lib/ai/capability.dart` `standaloneFor` + 页 `onRunStandalone` 分发 | ✅ |
+| item_type 改判 UI 入口整体取消（动作层命令保留给 AI/MCP） | `capability.dart`（reclassify 能力删除）+ `item_detail_page`（无入口） | ✅ |
 | 灵感区文本区（重新定义后） | 独立组件，复用速记条 TextField 模式 | ✅ |
 | 摘要/标签平行并置 + 标签手动编辑（§3 拍板） | `item_detail_page.dart` `_aiOutputSection`/`_editTags` + `_TagEditorSheet` | ✅ |
 | AI 标签并集合并（只增不删，手动标签不被冲掉） | `item_action_handler.dart` `applyAiResult` | ✅ |

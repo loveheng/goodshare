@@ -41,10 +41,10 @@ class InboxItem {
     this.summaryMd,
     this.clipsJson,
     this.inspirationMd,
-    this.videoWholeMarked = false,
     this.docMetaJson,
     this.attachState = attachOwned,
     this.aspectRatio,
+    this.mediaDurationMs,
     List<String> tags = const [],
     Map<String, List<String>>? facets,
     this.isVault = false,
@@ -80,7 +80,6 @@ class InboxItem {
   /// 灵感区：用户私密碎片想法（schema v16，2026-10-01，detail-two-zone §3）。
   /// 与 AI 产出区分家；分享预览默认排除（隐私红线）。
   final String? inspirationMd;
-  final bool videoWholeMarked; // 整片标记：备份时携带源文件（schema v11，2026-09-29）
   final List<String> tags;
   final Map<String, List<String>>? facets; // 多视角聚类：视角 → 标签（AI 分类页消费，V2）
   final bool isVault;
@@ -108,6 +107,10 @@ class InboxItem {
   /// 图片宽高比（宽/高，schema v15，2026-09-30）：摄入时解码图片头探测，
   /// 渲染处 AspectRatio 占位消灭加载抖动。null=未探测（存量条目/探测失败）。
   final double? aspectRatio;
+
+  /// 音视频时长（毫秒，schema v17，2026-10-02）：摄入时探测一次写入，
+  /// 渲染处秒显进度条总时长、省去每次播放前临时建播放器探测。null=未探测。
+  final int? mediaDurationMs;
 
   bool get isImage => itemType == typeImage;
   bool get hasAttachment => rawFilePath != null && rawFilePath!.isNotEmpty;
@@ -160,10 +163,10 @@ class InboxItem {
         'summary_md': summaryMd,
         'clips_json': clipsJson,
         'inspiration_md': inspirationMd,
-        'video_whole_marked': videoWholeMarked ? 1 : 0,
         if (docMetaJson != null) 'doc_meta_json': docMetaJson,
         'attach_state': attachState,
         'aspect_ratio': aspectRatio,
+        'media_duration_ms': mediaDurationMs,
         'tags': jsonEncode(tags),
         'facets_json': facets == null ? null : jsonEncode(facets),
         'is_vault': isVault ? 1 : 0,
@@ -232,10 +235,10 @@ class InboxItem {
       summaryMd: map['summary_md'] as String?,
       clipsJson: map['clips_json'] as String?,
       inspirationMd: map['inspiration_md'] as String?,
-      videoWholeMarked: (map['video_whole_marked'] as int? ?? 0) == 1,
       docMetaJson: map['doc_meta_json'] as String?,
       attachState: (map['attach_state'] as String?) ?? attachOwned,
       aspectRatio: (map['aspect_ratio'] as num?)?.toDouble(),
+      mediaDurationMs: (map['media_duration_ms'] as int?),
       tags: tagsOf(map['tags']),
       facets: facetsOf(map['facets_json']),
       isVault: (map['is_vault'] as int? ?? 0) == 1,
@@ -266,10 +269,10 @@ class InboxItem {
     String? translateLang,
     String? summaryMd,
     String? clipsJson,
-    bool? videoWholeMarked,
     String? docMetaJson,
     String? attachState,
     double? aspectRatio,
+    int? mediaDurationMs,
     List<String>? tags,
     Map<String, List<String>>? facets,
     bool? isVault,
@@ -298,10 +301,10 @@ class InboxItem {
         translateLang: translateLang ?? this.translateLang,
         summaryMd: summaryMd ?? this.summaryMd,
         clipsJson: clipsJson ?? this.clipsJson,
-        videoWholeMarked: videoWholeMarked ?? this.videoWholeMarked,
         docMetaJson: docMetaJson ?? this.docMetaJson,
         attachState: attachState ?? this.attachState,
         aspectRatio: aspectRatio ?? this.aspectRatio,
+        mediaDurationMs: mediaDurationMs ?? this.mediaDurationMs,
         tags: tags ?? this.tags,
         facets: facets ?? this.facets,
         isVault: isVault ?? this.isVault,

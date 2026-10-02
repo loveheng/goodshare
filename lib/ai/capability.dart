@@ -158,7 +158,7 @@ List<ContentCapability> capabilitiesFor(BlockKind kind) =>
 
 /// 独立能力（detail-two-zone.md §5.2 改版 2026-10-01：类型专属功能从
 /// 二级详情页 chips 全部拆入三级能力页）：**链外单发**，不走产出回注——
-/// 分类/条码/文本分析写 facets 标注，切片/整片为视频工具流。
+/// 分类/条码/文本分析写 facets 标注，切片/提取音轨/字幕导出为媒体工具流。
 /// 执行经执行作用域 `onRunStandalone(id)` 分发（命令入队或打开工具页）。
 class StandaloneCapability {
   const StandaloneCapability(this.id, this.label, this.icon, this.appliesTo);
@@ -180,8 +180,10 @@ const List<StandaloneCapability> kStandaloneCapabilities = [
   StandaloneCapability('analyze_text', '分析文本', Icons.text_snippet_outlined,
       [BlockKind.text]),
   StandaloneCapability('clip', '切片', Icons.content_cut, [BlockKind.video]),
-  StandaloneCapability('whole_mark', '整片标记', Icons.bookmark_border,
-      [BlockKind.video]),
+  StandaloneCapability('extract_audio', '提取音轨', Icons.audiotrack_outlined,
+      [BlockKind.audio, BlockKind.video]),
+  StandaloneCapability('export_subtitle', '字幕导出', Icons.subtitles_outlined,
+      [BlockKind.audio, BlockKind.video]),
 ];
 
 /// 按块类型取适用独立能力（保清单序）。

@@ -1,16 +1,20 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import '../action/commands.dart';
 import '../action/item_action_handler.dart';
 import '../ai/language_codes.dart';
+import '../ai/subtitle.dart';
 import '../data/repository.dart';
 import '../models/item.dart';
 import 'jsonrpc.dart';
 
 /// MCP 工具集（PRD §7）：list/get/add/query_machine_data/get_timeline_context/
 /// update/delete/set_vault/reprocess/unlock_edit/batch_items/append_segment/translate_item/
-/// summarize_item/extract_tags/classify_item/analyze_text_item/scan_barcode_item 等；
+/// summarize_item/extract_tags/classify_item/analyze_text_item/scan_barcode_item/
+/// transcribe_item/ocr_item 等；
 /// 工作区：list_workspaces/create_workspace/rename_workspace/delete_workspace/
 /// add_to_workspace/remove_from_workspace；execute_action 已裁决剔除。
 /// 所有写/改动作经 ItemActionHandler（UI 与 MCP 同一套校验与实现）。
@@ -21,6 +25,10 @@ import 'jsonrpc.dart';
 /// ① 把大模型输出的 JSON 反序列化成 [ItemCommand]（与 UI 组装的同一类对象）；
 /// ② 以 [CommandActor.ai] 调用动作层；
 /// ③ 把 [CommandResult]（含最新条目快照）序列化回 JSON，让大模型上下文与数据库对齐。
+/// get_item 内联字幕内容的单文件上限：超出只报 size 不带 content（防长视频
+/// 字幕把 MCP 响应撑爆；1 小时转写约 50KB，256KB 帽余量充足）。
+const int _kSubtitleInlineMaxBytes = 256 * 1024;
+
 List<Map<String, Object?>> toolSchemas() => [
       {
         'name': 'list_items',
@@ -44,7 +52,8 @@ List<Map<String, Object?>> toolSchemas() => [
       },
       {
         'name': 'get_item',
-        'description': '读取单个收集条目的完整内容（原文 + 人类态/机器态）；图片条目会返回 base64 图像内容块。',
+        'description': '读取单个收集条目的完整内容（原文 + 人类态/机器态）；图片条目会返回 base64 图像内容块；'
+            '已转写的音/视频条目会带 subtitles 字段（SRT/VTT 及译文文件内容内联，超 256KB 只报大小）。',
         'inputSchema': {
           'type': 'object',
           'properties': {
@@ -97,6 +106,30 @@ List<Map<String, Object?>> toolSchemas() => [
             'date': {'type': 'string', 'description': '日期，YYYY-MM-DD（本机时区）'},
           },
           'required': ['date'],
+        },
+      },
+      {
+        'name': 'get_job_status',
+        'description': '查询某条目最近的 AI 后台任务状态（pending/processing/completed/failed/paused/cancelled）。'
+            'summarize_item、translate_item、reprocess_item 等耗时工具会立即返回并携带 job_id（任务已入队，产出稍后回写条目），'
+            '可凭 job_id 或条目 id 调用本工具确认进度；产出完成后用 get_item 读取最新快照。'
+            'Vault 与已删条目的任务不可见。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'job_id': {'type': 'string', 'description': '任务 id（工具返回的 job_id），与 id 二选一'},
+            'id': {'type': 'string', 'description': '条目 uuid，返回该条目最近一次任务'},
+          },
+        },
+      },
+      {
+        'name': 'list_jobs',
+        'description': '列出最近的 AI 后台任务（按最新在前），含状态与失败原因。用于总览队列积压或排查哪条任务失败。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'limit': {'type': 'integer', 'default': 20, 'maximum': 50},
+          },
         },
       },
       {
@@ -247,6 +280,43 @@ List<Map<String, Object?>> toolSchemas() => [
         'description': '用端侧 ML Kit 给图片打分类标签（与手机端「识别分类」按钮同一入口）。'
             '异步入队执行：本调用只返回入队结果，标签稍后落库到 facets，'
             '随后用 get_item 读取 facets 字段。仅图片条目可用，非图片会被拒绝。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
+            'expected_version': {
+              'type': 'integer',
+              'description': '可选乐观锁：你读取该条目时看到的 version，不一致则拒绝',
+            },
+          },
+          'required': ['id'],
+        },
+      },
+      {
+        'name': 'transcribe_item',
+        'description': '对音频 / 视频条目执行端侧离线转写（Sherpa，与手机端「转写」按钮同一入口）。'
+            '异步入队执行：本调用只返回入队结果（job_id），转写完成后文本并入 human_md，'
+            '同时产出 SRT/VTT 字幕文件（随后 get_item 读取 human_md 与 subtitles 字段，'
+            '或用 get_job_status 轮询进度）。仅音频 / 视频条目可用，非媒体条目会被拒绝；'
+            '转写模型须已在手机上下载（设置 → 语音转写模型），未下载时任务会以 note 说明。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
+            'expected_version': {
+              'type': 'integer',
+              'description': '可选乐观锁：你读取该条目时看到的 version，不一致则拒绝',
+            },
+          },
+          'required': ['id'],
+        },
+      },
+      {
+        'name': 'ocr_item',
+        'description': '对图片条目执行端侧 OCR 文字识别（ML Kit，与手机端「识别文字」按钮同一入口）。'
+            '异步入队执行：本调用只返回入队结果（job_id），识别完成后文本并入 human_md，'
+            '随后 get_item 读取 human_md 字段（或 get_job_status 轮询进度）。'
+            '仅图片条目可用，非图片会被拒绝。',
         'inputSchema': {
           'type': 'object',
           'properties': {
@@ -481,6 +551,28 @@ Future<List<Map<String, Object?>>> callTool(
           if (task['last_note'] != null) 'note': task['last_note'],
         };
       }
+      // 字幕产物内联（asr-subtitle.md §10 待定项，2026-10-02 拍板方案 1）：字幕是
+      // 纯文件产物不进条目表，AI 经此字段拿到时间轴与译文文件内容，免二次取文件。
+      // 文件极小（短音源每条目字节级）直接内联；超长音源超帽只报大小防响应膨胀。
+      // DEGRADE: 字幕目录不可得（如无平台通道的测试环境）跳过字段——字幕是增强
+      // 层，不得拖挂条目主读取路径；留日志可观测。
+      try {
+        final subs = <Map<String, Object?>>[];
+        for (final f in await SubtitleStore.listFiles(it.id ?? '')) {
+          final file = File(f.path);
+          if (!await file.exists()) continue;
+          final len = await file.length();
+          subs.add({
+            'ext': f.ext,
+            if (f.lang != null) 'lang': f.lang,
+            'size': len,
+            if (len <= _kSubtitleInlineMaxBytes) 'content': await file.readAsString(),
+          });
+        }
+        if (subs.isNotEmpty) itemJson['subtitles'] = subs;
+      } catch (e) {
+        debugPrint('[McpTools] subtitle list failed (ignored): $e');
+      }
       final blocks = <Map<String, Object?>>[_text(jsonEncode(itemJson))];
       final f = it.rawFilePath;
       if (f != null && f.isNotEmpty) {
@@ -566,6 +658,60 @@ Future<List<Map<String, Object?>>> callTool(
           ],
         })),
       ];
+
+    case 'get_job_status': {
+      final jobId = _str(args['job_id']);
+      final itemId = _str(args['id']);
+      if ((jobId == null || jobId.trim().isEmpty) && (itemId == null || itemId.trim().isEmpty)) {
+        throw McpRpcError(errInvalidParams, '参数 job_id 与 id 至少提供一个');
+      }
+      Map<String, Object?>? task;
+      if (jobId != null && jobId.trim().isNotEmpty) {
+        task = await repo.taskById(jobId.trim());
+        // job_id 查到的任务若其条目不可见（Vault/已删），不回传内容
+        final owner = task?['item_id'] as String?;
+        if (owner != null && await repo.byId(owner) == null) task = null;
+      } else {
+        // 按条目查最近任务：条目可见才回传（byId 默认排除 Vault 与已删）
+        final it = await repo.byId(itemId!.trim());
+        if (it == null) {
+          return [_text(jsonEncode({'found': false, 'hint': '条目不存在或不可见（Vault/已删）；可先 list_jobs 查看最近任务'}))];
+        }
+        task = await repo.lastTaskOf(it.id ?? '');
+      }
+      if (task == null) {
+        return [_text(jsonEncode({'found': false, 'hint': '任务不存在或条目不可见；可先 list_jobs 查看最近任务'}))];
+      }
+      return [_text(jsonEncode({
+        'found': true,
+        'job_id': task['task_id'],
+        'item_id': task['item_id'],
+        'action': task['task_action'] ?? '',
+        'status': task['status'] ?? '',
+        'updated_at': _iso(task['updated_at'] as int? ?? 0),
+        if (task['last_note'] != null) 'note': task['last_note'],
+      }))];
+    }
+
+    case 'list_jobs': {
+      final limit = _clampInt(args['limit'], 20, 1, 50);
+      final rows = await repo.listTasks(limit: limit);
+      return [_text(jsonEncode({
+        'count': rows.length,
+        'jobs': [
+          for (final t in rows)
+            {
+              'job_id': t['task_id'],
+              'item_id': t['item_id'],
+              'item_title': t['human_title'],
+              'action': t['task_action'] ?? '',
+              'status': t['status'] ?? '',
+              'updated_at': _iso(t['updated_at'] as int? ?? 0),
+              if (t['last_note'] != null) 'note': t['last_note'],
+            },
+        ],
+      }))];
+    }
 
     case 'update_item':
       final id = _str(args['id']);
@@ -674,6 +820,30 @@ Future<List<Map<String, Object?>>> callTool(
       if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
       final r = await _guarded(() => handler.execute(
             ClassifyCommand(
+              id,
+              expectedVersion: _int(args['expected_version']),
+            ),
+            actor: CommandActor.ai,
+          ));
+      return [_text(jsonEncode(r.toJson()))];
+
+    case 'transcribe_item':
+      final id = _str(args['id']);
+      if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      final r = await _guarded(() => handler.execute(
+            TranscribeCommand(
+              id,
+              expectedVersion: _int(args['expected_version']),
+            ),
+            actor: CommandActor.ai,
+          ));
+      return [_text(jsonEncode(r.toJson()))];
+
+    case 'ocr_item':
+      final id = _str(args['id']);
+      if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      final r = await _guarded(() => handler.execute(
+            OcrCommand(
               id,
               expectedVersion: _int(args['expected_version']),
             ),

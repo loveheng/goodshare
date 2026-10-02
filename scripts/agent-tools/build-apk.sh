@@ -143,6 +143,7 @@ else
 fi
 
 STEPS=(
+  "版本防降级守卫（bump-version --guard，设备已装版本更高时自动抬 build 号）"
   "flutter pub get"
   "flutter analyze（0 issue 门槛）"
   "$BUILD_CMD"
@@ -161,6 +162,15 @@ if [ "$DRY_RUN" = 1 ]; then
 fi
 
 i=1; total=${#STEPS[@]}
+
+echo "[$i/$total] 版本防降级守卫"
+TOOLBOX_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -x "$TOOLBOX_DIR/bump-version.sh" ]; then
+  "$TOOLBOX_DIR/bump-version.sh" --guard || { echo "FAIL: 版本守卫异常，中止构建（防装包降级）"; exit 1; }
+else
+  echo "  跳过：未找到 bump-version.sh"
+fi
+i=$((i+1))
 [ "$FRESH_DAEMON" = 1 ] && {
   echo "[$i/$total] 停掉 gradle 守护进程"
   (cd android && ./gradlew --stop >/dev/null 2>&1 || true)

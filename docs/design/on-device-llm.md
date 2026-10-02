@@ -25,23 +25,35 @@ updated: 2026-09-28
 
 ```mermaid
 flowchart TD
-    A["UI / Command / MCP"] --> B["OnDeviceLlmEngine (Dart 接口)"]
+    A["UI / Command / MCP"] --> B["OnDeviceLlmEngine (Dart 接口, 后端无关)"]
     B --> C["Android 桥 (MethodChannel → Kotlin)"]
     B --> D["iOS 桥 (MethodChannel → Swift)"]
-    C --> E["LiteRT-LM Kotlin (Stable)"]
-    E --> F{"ro.soc.model"}
-    F -->|SM8750| G["NPU 包 (QNN V73)"]
-    F -->|MT6991| H["NPU 包 (MTK 官方预编译)"]
-    F -->|其他| I["GPU/CPU 通用包"]
+    C --> R{"LlmRouter (原生侧后端路由)<br/>SoC 命中 + NPU 包在位?"}
+    R -->|8 Gen 3+ 命中| Q["QualcommQnnBackend<br/>(ExecuTorch QNN, .pte)"]
+    R -->|天玑 9400+ 命中| M["MediaTeaNpuBackend<br/>(LiteRT MTK CompiledModel, 谷歌路线)"]
+    R -->|未命中 / NPU 包缺| L["LiteRtLmBackend<br/>(GPU/CPU 通用包, 现状直绑收编为其中一实现)"]
     D --> J["FoundationModels (iOS 26+)"]
     J --> K{"SystemLanguageModel<br/>.availability"}
-    K -->|available| L["系统 ~3B 模型 (零下载)"]
-    K -->|不可用| M["降级: 占位 + 明示原因"]
+    K -->|available| L2["系统 ~3B 模型 (零下载)"]
+    K -->|不可用| M2["降级: 占位 + 明示原因"]
 ```
 
 - 接口方法：`isAvailable` / `generate` / `generateStream`（流式可选实现）。
 - **isAvailable 语义分端**：Android = 模型包已下载且引擎初始化成功；iOS = Apple Intelligence 可用性探测。**均动态探测、不做一次性持久化**（沿用翻译层「语言包状态动态，避免 OCR 误判锁死」口径）。
 - 降级链统一：不可用 → 占位完成 + 可观测反馈（沿用队列「降级不卡死」+「结果可观测」双原则——新增异步 AI 动作必须配状态反馈）。
+
+### 2.1 原生后端路由（2026-10-02 拍板：为节能充分发挥 NPU，突破 LiteRT-LM 单栈）
+
+**动因**：NPU 的节能收益（decode 快数倍 + 发热大降，高频短任务与后台批量的关键）要求绕开 LiteRT-LM 的 NPU 生态窄（官方 NPU 包以 Gemma 系为主、Qwen NPU 化无官方方案）的限制——**接口抽象上移到原生后端层，各厂商 NPU 方案各 自实装**。
+
+- **Dart 层零改动**：`OnDeviceLlmEngine` 与 `goodshare/llm` 通道协议（四方法）天然后端无关；可选增补 `backendName` 字段供设置页展示与可观测。
+- **原生侧抽象**：Kotlin 定义 `LlmBackend` 内部接口（同四方法语义），`LlmBridge` 改为 `LlmRouter`——按「SoC 命中 + 对应后端模型包在位」选后端，全部未命中落 `LiteRtLmBackend`（现直绑实现收编为其中一实现，GPU/CPU 行为不变）。运行时校验失败自动落 GPU（既有 LiteRT fallback 口径），不置死信。
+- **两厂商后端载体（2026-10-02 拍板：按家族各用其最成熟方案，评估过程见本轮讨论）**：
+  - **QualcommQnnBackend → ExecuTorch QNN backend 作载体**（Meta 官方维护的 QNN 包装层，A8W8/A16W4 量化、`.pte` 导出、LLM `--use_qnn` 导出路径齐备；1.4/1.5 版补批量调度 + off-graph KV cache）——替代原「自研 QNN C++/JNI 管线」设想，省掉最大块包装工程。已知生产坑：QNN NPU-offload LLM 在部分目标芯片有退化输出（degenerate output）社区报告，**逐芯片验证不可省**；Qwen3-4B→`.pte`→QNN 编译需自跑（AI Hub 官方示例以 Llama/Gemma 为主）。
+  - **MediaTeaNpuBackend → LiteRT MTK CompiledModel API（谷歌路线）**：ExecuTorch MTK backend 存在但早期阶段，联发科自己更生产化的 NPU 路径反而是 LiteRT/MTK 协作路线（Google AI Edge 官方文档）；且 MTK 封闭、社区资料稀少（用户拍板依据之一），选谷歌协同路线文档与维护最有保障。**红利：与兜底档同属 LiteRT 栈——全项目仅两个运行时**（LiteRT 管联发科 NPU + 通用 GPU/CPU 兜底，ExecuTorch 专管高通 NPU）。
+  - 共同成本：**双栈双格式**（`.litertlm` + `.pte`）、模型目录加 backend 维度、双下载管理、切换内存成本；QAIRT 运行库（`libQnnHtp*.so`）随 ExecuTorch QNN 引入，体积与再分发许可待核（§3.3）。
+- **任务路由**：NPU 后端命中后优先派「高频短输出」任务（打标/分类/结构化抽取）——快且省电；长 ctx 摘要类仍可路由 LiteRT GPU 档（NPU 包 ctx 上限小）。按后端 × 任务分档，不是整体切换。
+- **实施分期**：①`LlmBackend` 接口 + `LlmRouter` 骨架（架构不可逆部分先锁，LiteRT 收编）→ ②QualcommQnnBackend（ExecuTorch QNN，用户真机 8 Gen 3 优先：`.pte` 导出验证 + 跑分 + 退化输出检查）→ ③MediaTeaNpuBackend（LiteRT MTK CompiledModel，真机核实 API 可用性）。各后端独立排期，接口冻结后互不阻塞。
 
 ## 3. Android 侧：SoC 感知模型包
 
@@ -54,6 +66,37 @@ flowchart TD
 | 骁龙 8 Elite | SM8750 | **官方 NPU 包在列**：Gemma3-1B 4bit 1280ctx **~658MB**（SM8750 专包直下）；Qwen NPU 档二阶段 | **官方预编译直下** |
 | 天玑 9400 | MT6991 | **官方 NPU 包在列**：Gemma3-1B 4bit 1280ctx ~986MB；Qwen 档二阶段 | **官方预编译直下** |
 | 其他 | — | **Qwen2.5-1.5B 8bit 通用 `.litertlm`**（GPU/CPU，4096 ctx） | HuggingFace LiteRT 社区（国内走 R2 自托管镜像） |
+
+### 3.1a 设备基线与分档拍板（2026-10-02，覆盖上表分档策略）
+
+讨论链（4B 能力评估 → NPU 生态核实 → 用户划基线）收敛出的最终模型策略：
+
+1. **设备基线**：SoC ≥ **高通 8 Gen 3（SM8650，支持 QNN 构建——用户确认）/ 天玑 9400（MT6991）**，RAM ≥ **12GB**（与 minSdk=34 同级的兼容基线决策）。
+2. **基线内设备**：**4B 档为默认**（Qwen3-4B/3B int4 GPU 包，~2-2.5GB 权重 / 3-4GB 内存峰值，12GB 从容）——OCR 修正、结构化抽取（R3）、翻译润色的可靠执行者；QNN/NPU 后端可行（目标芯片只剩高通/联发科两家族，NPU 档从碎片化彩蛋变为两条编译管线可覆盖的规划项），定位为同模型的加速后端，适合高频短输出任务。
+3. **基线下设备**：**本地不再维护 1.5B 兜底档，LLM 重能力全部交给外部 AI 客户端经 MCP 跑**（「MCP 优先」拍板的自然延伸）——模型路线收敛为「4B 单档 + QNN 后端演进」；1.5B 条目可留目录作轻任务/省电可选档，不再是兼容性负担。
+4. **ML Kit / Sherpa 确定性能力**（OCR / 翻译 / 分类 / 条码 / 转写）不受基线约束，所有设备保留。
+5. **待实测（定 R1/R3 实现深度）**：Qwen 4B int4 GPU 包在 8 Gen 3 真机跑分（decode tk/s、内存峰值、发热）+ OCR 修正小样评估（命中率/误改率）。
+6. RAM 档位检测：`ActivityManager.MemoryInfo`（MethodChannel 一条），并入 `AiQueueService` 门控体系，基线下设备 LLM 入口预检直接不可用。
+
+### 3.1b 模型能力门槛与任务分档（2026-10-02 拍板：起步即 4B）
+
+**决策**：4B 为可用模型的起步档——主档 4B 不留兼容性妥协；实测加 Qwen3-1.7B 对照位（达标则设「省电轻任务档」）；0.6B/1.5B 旧代际档正式出局，不再投入兼容。
+
+**决策说明**（为什么 4B 是门槛、以及为什么这么表述）：
+
+1. **参数量的悬崖不在「聪明度」，在「稳定性」**。对管线而言，模型产出格式的稳定性比智能水平更重要——结构化 JSON 坏了（漏字段/类型错/夹带解释文字）整条链白跑，OCR 修正误改比不改更糟。小模型的典型失败模式正是格式漂移与幻觉改写，而非「不会做」。
+2. **按任务圈定门槛，不搞一刀切**：
+
+| 任务圈 | 参数量门槛 | 说明 |
+|---|---|---|
+| 关键词 / 打标 / 简单分类 | ≥1.5B 可用 | 输出短、容错高（现有 1.5B 真机已在做） |
+| 摘要 / 聊天降噪（R1） | ≥3B 稳 | 需理解上下文组织段落；1.5B 会丢要点、口语化漂移 |
+| 结构化 JSON 产出（R3 发票/名片） | **≥4B 可靠** | 悬崖所在：格式漂移是主要失败模式 |
+| OCR 修正 / 翻译润色 | **≥4B** | 需「判断对错但不越界改写」的精细控制力 |
+
+3. **4B 之上收益骤减**：对拾贝任务圈，8B 相对 4B 的增益远小于 1.5B→4B 这一跳，且内存翻倍、速度减半——12GB 基线下无必要上探。
+4. **参数量不是唯一标尺，代际同样重要**：Qwen3-1.7B（新代际）的指令遵循与格式稳定性大概率好过 Qwen2.5-1.5B（旧代际）——小模型天花板随训练数据质量上移。「低于 4B 不行」是当前代际的现实，不是物理定律；故留 1.7B 实测对照位，数据达标则多一档省电选择，不达标不影响主线。
+5. **与既有拍板的衔接**：4B 起步依赖 §3.1a 设备基线（12GB RAM 从容承载 4B int4 峰值 3-4GB）；agent/工具调用编排即使 4B 仍不可靠，V4「固定工作流起步」的结论不因此改变。
 
 ### 3.2 分发与下载
 

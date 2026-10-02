@@ -153,7 +153,7 @@ CREATE VIRTUAL TABLE search_index USING fts5(
 | 锁屏/桌面小组件（录音转待办 / 相机 OCR） | V3 | `home_widget` |
 | 静默抓取 Health / 日历 | V3 | `health` + `device_calendar` → 写 `daily_metrics` |
 
-> **AI 派生类型约束**：聊天 / 发票等常来自截图，入库暂记 `source_type='image'`、`item_type` provisional 为 `image`；经 AI 管线（V2 §3.8）识别后重分类为 `chatlog` / `document`（发票），侧边栏「聊天 / 文档」分类以 AI 派生 `item_type` 为准。未处理截图在侧边栏归「图片」。无 AI 可用时（多数 Android），提供手动重分类（详情 BottomSheet）与 MCP `update_item(item_type)` 白名单纠正，避免分类永久滞留「图片」。
+> **AI 派生类型约束**（2026-10-02 修订：**聊天场景取消**，`chatlog` 不再是产出目标）：发票 / 文档等常来自截图，入库暂记 `source_type='image'`、`item_type` provisional 为 `image`；经 AI 管线（V2 §3.8）识别后重分类为 `document`，侧边栏「文档」分类以 AI 派生 `item_type` 为准。未处理截图在侧边栏归「图片」。人工改判入口已于 2026-10-02 取消（UI 不提供类型细分改判）；仅保留 MCP `update_item(item_type)` 白名单纠正（仅 `image→document`）作为 AI / PC 侧通道。
 
 ### 模块二：端侧 AI 双态重构管线
 
@@ -210,13 +210,15 @@ flowchart LR
 | `add_item` | `content, title?, tags?` | PC→手机写回（即 `sync_thought_to_mobile`） | MVP |
 | `query_machine_data` | `query, type?('url'\|'image'\|'video'\|'audio'\|'chatlog'\|'note'\|'document')` | 返回 `machine_json` 结构化数组，**过滤 Vault 与已删条目**；`type` 与 `item_type` 同源（canonical 枚举，见 §5.3），废弃旧 `invoice` 伪类型 | MVP |
 | `get_timeline_context` | `date` | 返回 `{ health, events, ingested_items }`；MVP/V2 阶段 `health`/`events` 恒为空（健康/日历 V3 接入） | MVP |
-| `update_item` | `id, patch{title?,tldr?,tags?,human_md?,machine_json?,item_type?}` | 编辑（= UI 详情 / 侧边栏编辑），写回并可触发重处理；`machine_json` 落库前须通过对应领域 Schema 校验（如 `invoice.v1`），失败整单拒写；`item_type` 仅允许白名单方向 `image→chatlog/document` 且要求 `source_type='image'`（人工/PC 纠正通道，2026-09-27 决策） | MVP |
+| `update_item` | `id, patch{title?,tldr?,tags?,human_md?,machine_json?,item_type?}` | 编辑（= UI 详情 / 侧边栏编辑），写回并可触发重处理；`machine_json` 落库前须通过对应领域 Schema 校验（如 `invoice.v1`），失败整单拒写；`item_type` 仅允许白名单方向 `image→document`（发票/文档截图）且要求 `source_type='image'`（人工/PC 纠正通道，2026-09-27 决策；2026-10-02 修订：聊天场景取消，`chatlog` 目标移除） | MVP |
 | `delete_item` | `id` | 软删除（`is_deleted`→1，关联 `ai_task_queue` 任务取消；30 天后物理清理，期间可恢复） | MVP |
 | `set_vault` | `id, on:bool` | 移入保险箱（置 `is_vault`；真实加密 V3）；**MCP 仅可移入（on=true）——移出走 UI 生物识别后操作，防大模型自行解除 Vault 隔离（实现期明确，与隐私硬约束同源）** | MVP |
 | `reprocess_item` | `id` | 重新入 `ai_task_queue`（= UI「重新处理」；MVP 占位管线下为幂等重跑） | MVP |
 | `unlock_edit` | `id` | 解除合并项编辑锁（`edit_locked`→0），随后 `update_item` 方可写入 | MVP |
 | `batch_items` | `commands[]` | **原子批量**：一次提交多条命令（如解锁+改字+打标签），全成功或全回滚；不支持 `delete_forever`（附件删除不可回滚） | MVP |
 | `append_segment` | `id, text, source_app?` | 往合并链追加一段（= 手机端连续速记并链）；仅 `collect_mode=merge` 且末段在 5 分钟窗口内可追加；合并条目 `edit_locked=1` 仍允许追加（追加是链的生长，非改写） | MVP |
+| `transcribe_item` | `id, expected_version?` | 端侧 Sherpa 离线转写音频/视频（与手机端「转写」按钮同一入口；**唯一**真正跑转写的显式入口）。**异步入队**：文本并入 `human_md`，SRT/VTT 字幕落盘，完成后 `get_item` 读 `human_md` 与 `subtitles` 字段；仅音/视频可用（校验下沉动作层） | MVP+（2026-10-02 MCP 优先拍板） |
+| `ocr_item` | `id, expected_version?` | 端侧 ML Kit 识别图片文字（与手机端「识别文字」按钮同一入口）。**异步入队**：文本并入 `human_md`，随后 `get_item` 读取；仅图片可用（校验下沉动作层） | MVP+（2026-10-02 MCP 优先拍板） |
 
 （`execute_action` 统一入口已裁决 MVP 剔除（2026-09-27）：独立工具即结构化接口且各自带校验，避免冗余通用入口扩大校验面。`batch_items` 不是它的复活——只解决「复合操作的原子性」，不提供新的动作语义，每条命令仍走同一套校验。）
 
@@ -247,8 +249,9 @@ sequenceDiagram
 ## 9. 分期路线图
 
 - **MVP（本次目标）**：重建 Schema（§5.3，含 `facets_json`；v1 旧表功能未经设计，直接弃旧数据重建、不做迁移）→ Share 入库 + 入队 → 扩展 MCP 机器态工具（§7）→ UI（时光机轻量版［=按天分组内容线］+ 全部·分类视图 + 详情 + MCP 设置页）→ AI 队列脚手架（§6 模块二 v1 行为；图片 OCR 与速记转写已提前实现（2026-09-27），LLM 双态重构仍为占位）。铁三角：*数据进得来、双态存得下、PC 读得到*。**MVP 不含**：Vault 真加密（V3）、离线双态 AI 重构（V2，仅接口与占位）、AI 多视角聚类（V2，facets 为空时 AI 分类空态）。导航 5 tab 全展示，但 AI 分类 / 保险箱 MVP 为占位空态，V2/V3 填充。
-- **V2**：双态 AI 重构（调用系统自带模型：iOS Foundation Models / Android AICore Gemini Nano，零下载；不可用设备回退 V1）、通用截图解析（发票/名片/聚会）、剪贴板嗅探、便签编辑器、Timeline、FTS5 检索。
-- **V3**：Vault AES 加密、Health/日历静默抓取、锁屏/桌面组件、鸿蒙适配。
+- **V2**：以 `v2-requirements.md`（2026-10-02 收敛版）为准——媒体文本 MCP 优先加工（document 接线 + MCP 工具补齐）、摄入自动双态重构管线（R1）+ 隐私打码（R2）、通用截图解析（R3）、便签 AI 增强（R4）、温控节流（R5）；FTS 检索演进随量级触发（vector-embeddings.md 三步走）。
+- **V3**：Vault AES 加密、Health/日历静默抓取、锁屏/桌面组件、鸿蒙适配、**MCP 客户端分域授权**（客户端注册表：按客户端发 token + 三维权限域［工具域 tools/list 过滤 / 数据域类型·工作区白名单 / 内容形态 raw·processed，processed 与 V2 打码层协同］；V2 维持单 token + Vault 隔离信任模型，先把 MCP 加工链路走通——2026-10-02 拍板）。
+- **V4**：**app 内 agent/自动化引擎**——app 兼作 MCP host（命令层新增第四 `CommandActor.agent` 槽位），对外连接其他本地 MCP 服务（日历等），跨 app 编排收进端侧；起步走**固定工作流引擎**（确定性管道 + 局部 LLM 判断点，离线可靠），通用 LLM agent 后置（端侧 1.5B 多步工具调用可靠性不足、云端 API 破坏离线承诺）；独特价值=住进手机生命周期（充电/后台/定时触发，复用 AiQueueService 前台服务基建），补「桌面 host 不在线不交换」空档。硬纪律：独立成层、业务层零耦合，其他 app 只出现在工作流配置数据里。前置：V2 素材加工（event.v1 等结构化产物）与 V3 分域授权（agent host 属信任客户端档）。2026-10-02 拍板。
 
 ## 10. 风险与开放问题
 

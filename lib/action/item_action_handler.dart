@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:sqflite/sqflite.dart';
 
@@ -90,7 +91,6 @@ class ItemActionHandler {
       final AnalyzeTextCommand c => _analyzeText(c, seeVault, txn),
       final ClipCommand c => _clip(c, seeVault, txn),
       final ClipProcessCommand c => _clipProcess(c, seeVault, txn),
-      final MarkWholeVideoCommand c => _markWholeVideo(c, seeVault, txn),
       final TranslateCommand c => _translate(c, seeVault, txn),
       final UnlockEditCommand c => _unlockEdit(c, seeVault, txn),
       final RestoreCommand c => _restore(c, seeVault, txn),
@@ -103,6 +103,7 @@ class ItemActionHandler {
         final DeleteWorkspaceCommand c => _deleteWorkspace(c),
         final AddToWorkspaceCommand c => _addToWorkspace(c, seeVault, txn),
         final RemoveFromWorkspaceCommand c => _removeFromWorkspace(c),
+        final MigrateAttachCommand c => _migrateAttach(c, txn),
       };
 
   /// 原子批量执行：一条命令失败则整批回滚，杜绝「字改了但标签没打上」的脏数据。
@@ -175,7 +176,7 @@ class ItemActionHandler {
         throw ActionException(
           err,
           code: ActionErrorCode.reclassifyDenied,
-          hint: '人工/AI 客户端仅允许 image→chatlog / document，且须 source_type=image',
+          hint: '人工/AI 客户端仅允许 image→document（发票 / 文档截图），且须 source_type=image',
         );
       }
       values['item_type'] = cmd.itemType;
@@ -239,7 +240,7 @@ class ItemActionHandler {
       throw ActionException(
         err,
         code: ActionErrorCode.reclassifyDenied,
-        hint: '可选目标：${InboxItem.typeChatlog} / ${InboxItem.typeDocument}',
+        hint: '可选目标：${InboxItem.typeDocument}（发票 / 文档截图）',
       );
     }
     await _write(
@@ -266,9 +267,9 @@ class ItemActionHandler {
     final action = item.itemType == InboxItem.typeImage
         ? Repository.taskOcrAndExtract
         : Repository.taskActionFor(item.itemType);
-    await _repo.enqueueTask(cmd.id, action, txn: txn);
+    final jobId = await _repo.enqueueTask(cmd.id, action, txn: txn);
     onEnqueued?.call();
-    return _result('reprocess', cmd.id, seeVault: seeVault, txn: txn, note: '已重新入队');
+    return _result('reprocess', cmd.id, seeVault: seeVault, txn: txn, note: '已重新入队', jobId: jobId);
   }
 
   /// 手动转写音频 / 视频：显式入队 transcribe_audio（2026-09-28 用户拍板——
@@ -295,9 +296,9 @@ class ItemActionHandler {
       expectedVersion: cmd.expectedVersion,
       txn: txn,
     );
-    await _repo.enqueueTask(cmd.id, Repository.taskTranscribeAudio, txn: txn);
+    final jobId = await _repo.enqueueTask(cmd.id, Repository.taskTranscribeAudio, txn: txn);
     onEnqueued?.call();
-    return _result('transcribe', cmd.id, seeVault: seeVault, txn: txn,
+    return _result('transcribe', cmd.id, seeVault: seeVault, txn: txn, jobId: jobId,
         note: await _queuedNote('已开始转写'));
   }
 
@@ -325,9 +326,9 @@ class ItemActionHandler {
       expectedVersion: cmd.expectedVersion,
       txn: txn,
     );
-    await _repo.enqueueTask(cmd.id, Repository.taskOcrAndExtract, txn: txn);
+    final jobId = await _repo.enqueueTask(cmd.id, Repository.taskOcrAndExtract, txn: txn);
     onEnqueued?.call();
-    return _result('ocr', cmd.id, seeVault: seeVault, txn: txn,
+    return _result('ocr', cmd.id, seeVault: seeVault, txn: txn, jobId: jobId,
         note: await _queuedNote('已开始识别文字'));
   }
 
@@ -354,9 +355,9 @@ class ItemActionHandler {
       expectedVersion: cmd.expectedVersion,
       txn: txn,
     );
-    await _repo.enqueueTask(cmd.id, Repository.taskClassifyImage, txn: txn);
+    final jobId = await _repo.enqueueTask(cmd.id, Repository.taskClassifyImage, txn: txn);
     onEnqueued?.call();
-    return _result('classify', cmd.id, seeVault: seeVault, txn: txn,
+    return _result('classify', cmd.id, seeVault: seeVault, txn: txn, jobId: jobId,
         note: await _queuedNote('已开始识别分类'));
   }
 
@@ -382,9 +383,9 @@ class ItemActionHandler {
       expectedVersion: cmd.expectedVersion,
       txn: txn,
     );
-    await _repo.enqueueTask(cmd.id, Repository.taskScanBarcode, txn: txn);
+    final jobId = await _repo.enqueueTask(cmd.id, Repository.taskScanBarcode, txn: txn);
     onEnqueued?.call();
-    return _result('scan_barcode', cmd.id, seeVault: seeVault, txn: txn,
+    return _result('scan_barcode', cmd.id, seeVault: seeVault, txn: txn, jobId: jobId,
         note: await _queuedNote('已开始识别条码'));
   }
 
@@ -410,9 +411,9 @@ class ItemActionHandler {
       expectedVersion: cmd.expectedVersion,
       txn: txn,
     );
-    await _repo.enqueueTask(cmd.id, Repository.taskAnalyzeText, txn: txn);
+    final jobId = await _repo.enqueueTask(cmd.id, Repository.taskAnalyzeText, txn: txn);
     onEnqueued?.call();
-    return _result('analyze_text', cmd.id, seeVault: seeVault, txn: txn,
+    return _result('analyze_text', cmd.id, seeVault: seeVault, txn: txn, jobId: jobId,
         note: await _queuedNote('已开始分析文本'));
   }
 
@@ -496,9 +497,9 @@ class ItemActionHandler {
       expectedVersion: cmd.expectedVersion,
       txn: txn,
     );
-    await _repo.enqueueTask(cmd.id, Repository.translateTaskAction(lang), txn: txn);
+    final jobId = await _repo.enqueueTask(cmd.id, Repository.translateTaskAction(lang), txn: txn);
     onEnqueued?.call();
-    return _result('translate', cmd.id, seeVault: seeVault, txn: txn,
+    return _result('translate', cmd.id, seeVault: seeVault, txn: txn, jobId: jobId,
         note: await _queuedNote('已开始翻译'));
   }
 
@@ -526,9 +527,9 @@ class ItemActionHandler {
       expectedVersion: cmd.expectedVersion,
       txn: txn,
     );
-    await _repo.enqueueTask(cmd.id, Repository.taskLlmSummarize, txn: txn);
+    final jobId = await _repo.enqueueTask(cmd.id, Repository.taskLlmSummarize, txn: txn);
     onEnqueued?.call();
-    return _result('summarize', cmd.id, seeVault: seeVault, txn: txn,
+    return _result('summarize', cmd.id, seeVault: seeVault, txn: txn, jobId: jobId,
         note: await _queuedNote('已开始生成摘要'));
   }
 
@@ -553,9 +554,9 @@ class ItemActionHandler {
       expectedVersion: cmd.expectedVersion,
       txn: txn,
     );
-    await _repo.enqueueTask(cmd.id, Repository.taskLlmTags, txn: txn);
+    final jobId = await _repo.enqueueTask(cmd.id, Repository.taskLlmTags, txn: txn);
     onEnqueued?.call();
-    return _result('extract_tags', cmd.id, seeVault: seeVault, txn: txn,
+    return _result('extract_tags', cmd.id, seeVault: seeVault, txn: txn, jobId: jobId,
         note: await _queuedNote('已开始提取关键词'));
   }
 
@@ -632,6 +633,7 @@ class ItemActionHandler {
         collectMode: cmd.collectMode,
         attachState: cmd.attachState,
         aspectRatio: cmd.aspectRatio,
+        mediaDurationMs: cmd.mediaDurationMs,
         // 合并链：新链即锁定（须先「解除编辑」），首段同样记入 appendix（设计 §4.9）
         editLocked: merge,
         appendix: merge && cmd.rawContent != null
@@ -641,8 +643,8 @@ class ItemActionHandler {
       ),
       txn: txn,
     );
-    await _repo.enqueueTask(item.id!, Repository.taskActionFor(item.itemType), txn: txn);
-    return CommandResult(op: 'collect', targetId: item.id, item: item, note: '已收集');
+    final jobId = await _repo.enqueueTask(item.id!, Repository.taskActionFor(item.itemType), txn: txn);
+    return CommandResult(op: 'collect', targetId: item.id, item: item, note: '已收集', jobId: jobId);
   }
 
   /// 往合并链追加一段。**合并条目 `edit_locked=1` 仍允许追加**——追加是链的持续生长，
@@ -688,8 +690,8 @@ class ItemActionHandler {
       expectedVersion: cmd.expectedVersion,
       txn: txn,
     );
-    await _repo.enqueueTask(cmd.id, Repository.taskActionFor(item.itemType), txn: txn);
-    return _result('append_segment', cmd.id, seeVault: seeVault, txn: txn, note: '已追加到合并链');
+    final jobId = await _repo.enqueueTask(cmd.id, Repository.taskActionFor(item.itemType), txn: txn);
+    return _result('append_segment', cmd.id, seeVault: seeVault, txn: txn, note: '已追加到合并链', jobId: jobId);
   }
 
   /// 视频切片处理：对已标记区间执行用户勾选的链路子集（提取/转写/摘要）。
@@ -741,35 +743,10 @@ class ItemActionHandler {
       expectedVersion: cmd.expectedVersion,
       txn: txn,
     );
-    await _repo.enqueueTask(cmd.id, Repository.clipTaskAction(cmd.startMs, cmd.endMs, steps), txn: txn);
+    final jobId = await _repo.enqueueTask(cmd.id, Repository.clipTaskAction(cmd.startMs, cmd.endMs, steps), txn: txn);
     onEnqueued?.call();
-    return _result('clip_process', cmd.id, seeVault: seeVault, txn: txn,
+    return _result('clip_process', cmd.id, seeVault: seeVault, txn: txn, jobId: jobId,
         note: await _queuedNote('已开始处理切片'));
-  }
-
-  /// 整片标记：用户认为整个视频重要 → 源文件进备份范围（D3 默认排除的 opt-in）。
-  /// 标记本身不触发上传，上传仍由手动备份触发（用户拍板「处理之后才能备份」）。
-  Future<CommandResult> _markWholeVideo(
-    MarkWholeVideoCommand cmd,
-    bool seeVault,
-    Transaction? txn,
-  ) async {
-    final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
-    if (item.itemType != InboxItem.typeVideo) {
-      throw ActionException(
-        '只有视频能整片标记（当前类型：${item.itemType}）',
-        code: ActionErrorCode.invalidRequest,
-      );
-    }
-    await _write(
-      'mark_whole_video',
-      cmd.id,
-      {'video_whole_marked': cmd.marked ? 1 : 0},
-      expectedVersion: cmd.expectedVersion,
-      txn: txn,
-    );
-    return _result('mark_whole_video', cmd.id, seeVault: seeVault, txn: txn,
-        note: cmd.marked ? '已标记整片：下次备份将携带此视频源文件' : '已取消整片标记');
   }
 
   /// AI 管线回写产出。Actor 已门控为 [CommandActor.pipeline]——
@@ -984,6 +961,35 @@ class ItemActionHandler {
         hint: '重新读取条目取最新 version，再带 expected_version 重试',
       );
 
+  /// 引用附件迁移（ref → owned）：大文件复制已由调用方在锁外完成，
+  /// 此处只做持有态交换的防呆与 DB 写——校验 ref 态、副本文件存在、
+  /// 乐观锁 CAS，三道防线全在动作层（UI/MCP 同源）。
+  Future<CommandResult> _migrateAttach(MigrateAttachCommand cmd, Transaction? txn) async {
+    final item = await _require(cmd.id, seeVault: true, txn: txn);
+    if (!item.isRef) {
+      throw ActionException(
+        '条目不是引用态，无需迁移：attach_state=${item.attachState}',
+        code: ActionErrorCode.invalidRequest,
+        hint: '仅 attach_state=ref（引用原件）的条目可迁移',
+      );
+    }
+    if (cmd.ownedPath.isEmpty || !File(cmd.ownedPath).existsSync()) {
+      throw ActionException(
+        '迁移副本不存在：${cmd.ownedPath}',
+        code: ActionErrorCode.invalidRequest,
+        hint: '先把原件复制进私有目录，再发本命令',
+      );
+    }
+    final ok = await _repo.update(
+      cmd.id,
+      {'raw_file_path': cmd.ownedPath, 'attach_state': InboxItem.attachOwned},
+      expectedVersion: cmd.expectedVersion,
+      txn: txn,
+    );
+    if (!ok) throw _conflict('migrate_attach');
+    return _result('migrate_attach', cmd.id, seeVault: true, txn: txn, note: '已迁移为本地持有');
+  }
+
   /// 主体门控：越权在此拦截，不由传输层判断。
   void _gate(ItemCommand cmd, CommandActor actor) {
     final allowed = switch (cmd) {
@@ -1013,8 +1019,10 @@ class ItemActionHandler {
     if (item.sourceType != InboxItem.typeImage || item.itemType != InboxItem.typeImage) {
       return '仅图片入库（source_type=image）的条目可重分类';
     }
-    if (to != InboxItem.typeChatlog && to != InboxItem.typeDocument) {
-      return '仅允许 image→chatlog / document';
+    // 目标只剩 document（2026-10-02 拍板：**聊天场景取消**——chatlog 是早期
+    // 没想清楚的设计，不再作为可改判目标；旧 chatlog 数据仍照常渲染）。
+    if (to != InboxItem.typeDocument) {
+      return '仅允许 image→document（发票 / 文档截图）';
     }
     return null;
   }
@@ -1038,10 +1046,11 @@ class ItemActionHandler {
     required bool seeVault,
     Transaction? txn,
     String? note,
+    String? jobId,
   }) async {
     final fresh = await _repo.byId(id, includeDeleted: true, includeVault: true, txn: txn);
-    if (fresh == null) return CommandResult(op: op, targetId: id, note: note);
+    if (fresh == null) return CommandResult(op: op, targetId: id, note: note, jobId: jobId);
     final visible = seeVault || !fresh.isVault;
-    return CommandResult(op: op, targetId: id, item: visible ? fresh : null, note: note);
+    return CommandResult(op: op, targetId: id, item: visible ? fresh : null, note: note, jobId: jobId);
   }
 }

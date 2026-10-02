@@ -13,7 +13,9 @@ import '../ai/model_manager.dart';
 import '../ai/subtitle.dart';
 import '../share/text_collector.dart';
 import '../service/mcp_controller.dart';
+import '../service/settings_store.dart';
 import '../sync/backup_service.dart';
+import 'attach_migration_page.dart';
 import 'mcp_page.dart';
 import 'recent_deleted_page.dart';
 import 'update_page.dart';
@@ -66,6 +68,7 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   late String _mode = widget.collector.mode;
   String _translationReason = '';
+  bool _machineModeEnabled = false;
 
   @override
   void initState() {
@@ -77,6 +80,9 @@ class _SettingsPageState extends State<SettingsPage> {
     widget.backup.addListener(_onBackupChanged);
     widget.caps.ensureDetected(); // 首次检测后持久化；此后幂等
     _refreshTranslation(); // 翻译可用性与语言包状态是动态的，每次进入实时查
+    getMachineModeEnabled().then((v) {
+      if (mounted) setState(() => _machineModeEnabled = v);
+    });
   }
 
   Future<void> _refreshTranslation() async {
@@ -288,6 +294,17 @@ class _SettingsPageState extends State<SettingsPage> {
             value: widget.aiQueue.backgroundProcessingEnabled,
             onChanged: (v) => widget.aiQueue.setBackgroundProcessingEnabled(v),
           ),
+          const _SectionHeader('高级'),
+          SwitchListTile(
+            secondary: const Icon(Icons.code_outlined),
+            title: const Text('机器码（JSON 调试入口）'),
+            subtitle: const Text('默认关闭；开启后详情页 ⋯ 菜单出现「机器码」项，切换人类态 / 机器态'),
+            value: _machineModeEnabled,
+            onChanged: (v) async {
+              await setMachineModeEnabled(v);
+              if (mounted) setState(() => _machineModeEnabled = v);
+            },
+          ),
           const _SectionHeader('翻译'),
           SwitchListTile(
             secondary: const Icon(Icons.translate),
@@ -447,6 +464,21 @@ class _SettingsPageState extends State<SettingsPage> {
                 setState(() => _mode = selection.first);
                 widget.collector.setMode(selection.first);
               },
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.folder_copy_outlined),
+            title: const Text('附件迁移'),
+            subtitle: const Text('把引用的分享原件转为本地持有，防源失效'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(
+                builder: (_) => AttachMigrationPage(
+                  handler: widget.handler,
+                  repo: widget.repo,
+                ),
+              ),
             ),
           ),
           ListTile(
@@ -835,6 +867,8 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
   final _skCtrl = TextEditingController();
   bool _obscure = true;
   String? _lastResult;
+  BackupSizeEstimate? _estimate; // 备份前体积估算（null=未算出/算不出）
+  bool _estimating = false;
 
   @override
   void initState() {
@@ -842,6 +876,8 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
     _endpointCtrl.text = widget.backup.endpoint ?? '';
     _bucketCtrl.text = widget.backup.bucket ?? '';
     _regionCtrl.text = widget.backup.region ?? '';
+    // 体积估算要 stat 全部待传附件，放首帧后异步跑，不拖慢进入设置页
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadEstimate());
   }
 
   @override
@@ -919,6 +955,9 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
       setState(() => _lastResult = r.message);
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text('备份启动失败：$e')));
+    } finally {
+      // 备份后附件集合可能变化（如新收进的视频），估算随之刷新
+      await _loadEstimate();
     }
   }
 
@@ -930,7 +969,7 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
         title: const Text('从 S3 恢复？'),
         content: const Text(
           '将用备份覆盖本机全部数据（条目 / 附件 / 草稿 / 任务队列）。\n'
-          '视频源文件不在备份内（恢复后该条目显示文件缺失，重新分享收集即可回填）；\n'
+          '已收进的视频作为原始附件随备份恢复（引用型/未收进的仍需重新分享收集）；\n'
           '保险箱条目从未进备份，不受影响。建议先做一次备份。',
         ),
         actions: [
@@ -955,6 +994,38 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
     }
   }
 
+  /// 字节体积人类可读（体积可见性：让用户看懂「多大」，而不是一串字节数）。
+  String _fmtBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    final kb = bytes / 1024;
+    if (kb < 1024) return '${kb.toStringAsFixed(1)} KB';
+    final mb = kb / 1024;
+    if (mb < 1024) return '${mb.toStringAsFixed(1)} MB';
+    return '${(mb / 1024).toStringAsFixed(2)} GB';
+  }
+
+  /// 计算待上传体积（备份前可见性）。与 runBackup 同一收集器，只读 stat 不上传。
+  Future<void> _loadEstimate() async {
+    if (!widget.backup.hasConfig || _estimating) return;
+    setState(() => _estimating = true);
+    final est = await widget.backup.estimateBackup();
+    if (!mounted) return;
+    setState(() {
+      _estimate = est;
+      _estimating = false;
+    });
+  }
+
+  String _estimateLabel() {
+    if (_estimating && _estimate == null) return '正在计算待上传体积…';
+    final e = _estimate;
+    if (e == null) return '暂无法估算待上传体积';
+    final video = e.videoCount > 0
+        ? '（视频 ${e.videoCount} 个 · ${_fmtBytes(e.videoBytes)}）'
+        : '';
+    return '待上传 ${e.fileCount} 个文件 · ${_fmtBytes(e.totalBytes)}$video；远端已有的会增量跳过';
+  }
+
   String _progressLabel(BackupProgress p) {
     final phase = switch (p.phase) {
       'snapshot' => '生成数据库快照',
@@ -967,8 +1038,12 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
       _ => '',
     };
     final total = p.total > 0 ? ' $p.done/$p.total' : '';
+    // 体积可见性的「备份中」一半：已传/总量，让用户看懂剩下多少
+    final bytes = p.totalBytes > 0
+        ? ' · ${_fmtBytes(p.transferredBytes)}/${_fmtBytes(p.totalBytes)}'
+        : '';
     final cur = p.currentLabel.isNotEmpty ? '（${p.currentLabel}）' : '';
-    return '$phase$total$cur';
+    return '$phase$total$bytes$cur';
   }
 
   @override
@@ -1093,11 +1168,32 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
             leading: const Icon(Icons.cloud_upload_outlined),
             title: const Text('立即备份'),
             subtitle: const Text(
-              '数据库 + 附件增量上传；视频默认不备份（详情页「整片标记」的视频例外）；保险箱条目不备份（未加密）',
+              '数据库 + 附件增量上传；已收进的视频随备份上传（体积较大，首次备份较慢）；保险箱条目不备份（未加密）',
             ),
             trailing: FilledButton(
               onPressed: _backupNow,
               child: const Text('备份'),
+            ),
+          ),
+          // 体积可见性（备份前）：把「本次要传多少、视频占多少」在点备份之前显性化——
+          // 视频过准入门槛即进备份（video-subject.md §4），代价必须让用户先看见再决定。
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 2, 16, 0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _estimateLabel(),
+                    style: Theme.of(context).textTheme.bodySmall
+                        ?.copyWith(color: scheme.onSurfaceVariant),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.refresh, size: 16),
+                  tooltip: '重新计算',
+                  onPressed: _estimating ? null : _loadEstimate,
+                ),
+              ],
             ),
           ),
           ListTile(
