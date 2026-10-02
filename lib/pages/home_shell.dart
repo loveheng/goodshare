@@ -1,4 +1,3 @@
-import 'dart:async';
 
 import 'package:flutter/material.dart';
 
@@ -9,7 +8,6 @@ import '../ai/llm_model_manager.dart';
 import '../ai/model_manager.dart';
 import '../data/repository.dart';
 import '../service/mcp_controller.dart';
-import '../service/secure_window.dart';
 import '../share/text_collector.dart';
 import '../sync/backup_service.dart';
 import '../ui/quick_note_bar.dart';
@@ -63,17 +61,13 @@ class _HomeShellState extends State<HomeShell> {
   @override
   void initState() {
     super.initState();
-    // 启动时处于普通视图：确保 FLAG_SECURE 关闭，普通页面可截图分享。
-    unawaited(SecureWindow.setVaultTabVisible(false));
   }
 
-  /// 保险箱视图切换 → 同步防截图（FLAG_SECURE）。
+  /// 保险箱视图切换：仅切换列表过滤状态（显示保险箱条目）。
   ///
-  /// 原实现绑定 tab 索引（`_vaultIndex`），保险箱不再占 tab 后改为按「当前是否
-  /// 处于保险箱视图」判定——这是本次改版的连带改动。
+  /// 保险箱子页面不再屏蔽截图，安全等级与普通页面一致（2026-10-02 拍板）。
   void _setVaultOnly(bool v) {
     setState(() => _vaultOnly = v);
-    unawaited(SecureWindow.setVaultTabVisible(v));
   }
 
   void _openVault() {

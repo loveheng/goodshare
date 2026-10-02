@@ -178,7 +178,7 @@ List<Map<String, Object?>> toolSchemas() => [
       {
         'name': 'set_vault',
         'description': '把条目移入保险箱（用户私密区，之后对 MCP 物理不可见，返回值不再含条目内容）。'
-            '注意：MCP 只能移入；移出须用户在手机上生物识别后操作。',
+            '注意：MCP 只能移入；移出须用户在手机端 UI 操作（非 AI 入口，无生物识别门禁）。',
         'inputSchema': {
           'type': 'object',
           'properties': {

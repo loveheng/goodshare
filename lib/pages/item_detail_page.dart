@@ -15,7 +15,6 @@ import '../doc/attach.dart';
 
 import '../doc/edit_session.dart';
 import '../models/item.dart';
-import '../service/secure_window.dart';
 import '../service/settings_store.dart';
 import '../ui/annotation_editor_page.dart';
 import '../ui/clip_editor_sheet.dart';
@@ -238,9 +237,6 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     getMachineModeEnabled().then((v) {
       if (mounted) setState(() => _machineModeEnabled = v);
     });
-    // Vault 敏感内容：开启 FLAG_SECURE 防截屏（离开时清除）。用 detail 维度计数，
-    // 与保险箱 tab 维度互不干扰——叠在保险箱 tab 上也不会被本页 dispose 提前解除。
-    if (widget.vaultContext) unawaited(SecureWindow.enterVaultDetail());
   }
 
   @override
@@ -250,7 +246,6 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     // 灵感区失焦即存，dispose 兜底最后一笔（速记条同款语义）
     _saveInspiration();
     _inspirationCtrl.dispose();
-    if (widget.vaultContext) unawaited(SecureWindow.exitVaultDetail());
     _titleCtrl.dispose();
     _titleFocus.dispose();
     super.dispose();

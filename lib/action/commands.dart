@@ -29,7 +29,7 @@ import '../models/item.dart';
 /// | MCP / 大模型 / 未来聊天机器人外壳 | [ai] |
 /// | 端侧 AI 管线（QueueConsumer） | [pipeline] |
 enum CommandActor {
-  /// 手机 UI。唯一可「移出保险箱」「彻底删除」的主体（生物识别 / 二次确认在其上）。
+  /// 手机 UI。唯一可「移出保险箱」「彻底删除」的主体（AI 被动作层拒绝；UI 入口不加生物识别 / 二次确认）。
   ui,
 
   /// MCP / 大模型。Vault 只进不出，无彻底删除权。

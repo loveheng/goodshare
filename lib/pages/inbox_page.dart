@@ -46,7 +46,7 @@ class InboxPage extends StatefulWidget {
   /// 仅显示保险箱条目（安全域视图）。由侧边栏入口或本页「保险箱」chip 切换。
   final bool vaultOnly;
 
-  /// 保险箱视图切换回调：home_shell 据此同步 `SecureWindow`（FLAG_SECURE）。
+  /// 保险箱视图切换回调：home_shell 据此切换列表过滤状态（显示保险箱条目）。
   final ValueChanged<bool>? onVaultOnlyChanged;
 
   @override

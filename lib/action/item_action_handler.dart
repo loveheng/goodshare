@@ -28,7 +28,7 @@ import 'machine_json_validator.dart';
 /// | 命令 | ui | ai | pipeline |
 /// |---|---|---|---|
 /// | update / delete / reprocess / unlock_edit / collect / append_segment / restore / set_vault(on) | ✓ | ✓ | — |
-/// | set_vault(off) 移出保险箱 | ✓ | ✗ 需生物识别 | — |
+/// | set_vault(off) 移出保险箱 | ✓（UI 无门禁）| ✗ 仅 ui actor 可 | — |
 /// | delete_forever 彻底删除 | ✓ | ✗ 不可逆 | — |
 /// | apply_ai_result 管线回写 | ✗ | ✗ | ✓ 独享重分类特权 |
 ///
@@ -206,7 +206,7 @@ class ItemActionHandler {
       throw ActionException(
         '移出保险箱须用户在手机上操作',
         code: ActionErrorCode.forbidden,
-        hint: 'AI 只能移入（set_vault on=true）；移出需用户在手机端生物识别',
+        hint: 'AI 只能移入（set_vault on=true）；移出须用户在手机端 UI 操作（actor=ui，无生物识别门禁）',
       );
     }
     if (!cmd.on && !item.isVault) {

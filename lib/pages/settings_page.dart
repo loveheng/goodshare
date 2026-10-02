@@ -426,16 +426,6 @@ class _SettingsPageState extends State<SettingsPage> {
           const _SectionHeader('隐私与保险箱'),
           ListTile(
             enabled: false,
-            leading: const Icon(Icons.fingerprint),
-            title: const Text('FaceID 锁定保险箱'),
-            subtitle: const Text('V3 生效（加密 + 生物识别门）'),
-            trailing: const Text(
-              'V3',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-          ),
-          ListTile(
-            enabled: false,
             leading: const Icon(Icons.credit_card),
             title: const Text('身份证 / 银行卡默认打码'),
             subtitle: const Text('V2 生效（AI 管线产出时打码）'),
