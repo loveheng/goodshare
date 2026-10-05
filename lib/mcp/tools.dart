@@ -7,14 +7,16 @@ import '../action/commands.dart';
 import '../action/item_action_handler.dart';
 import '../ai/language_codes.dart';
 import '../ai/subtitle.dart';
+import '../data/block_artifacts.dart';
 import '../data/repository.dart';
 import '../models/item.dart';
 import 'jsonrpc.dart';
 
 /// MCP 工具集（PRD §7）：list/get/add/query_machine_data/get_timeline_context/
-/// update/delete/set_vault/reprocess/unlock_edit/batch_items/append_segment/translate_item/
+/// update/delete/set_vault/set_pin/reprocess/unlock_edit/batch_items/append_segment/translate_item/
 /// summarize_item/extract_tags/classify_item/analyze_text_item/scan_barcode_item/
-/// transcribe_item/ocr_item 等；
+/// transcribe_item/ocr_item/block_transcribe_item（+ block_ocr/translate/summarize/
+/// extract_audio_item 四个块能力变体，§7 与 UI 三级页同入口）等；
 /// 工作区：list_workspaces/create_workspace/rename_workspace/delete_workspace/
 /// add_to_workspace/remove_from_workspace；execute_action 已裁决剔除。
 /// 所有写/改动作经 ItemActionHandler（UI 与 MCP 同一套校验与实现）。
@@ -53,7 +55,9 @@ List<Map<String, Object?>> toolSchemas() => [
       {
         'name': 'get_item',
         'description': '读取单个收集条目的完整内容（原文 + 人类态/机器态）；图片条目会返回 base64 图像内容块；'
-            '已转写的音/视频条目会带 subtitles 字段（SRT/VTT 及译文文件内容内联，超 256KB 只报大小）。',
+            '已转写的音/视频条目会带 subtitles 字段（SRT/VTT 及译文文件内容内联，超 256KB 只报大小）；'
+            '行内媒体块的派生产物清单在 block_artifacts 字段（block_key/kind/file_path），'
+            '块任务进度在 block_tasks 字段（action/block_key/status/note）。',
         'inputSchema': {
           'type': 'object',
           'properties': {
@@ -189,6 +193,19 @@ List<Map<String, Object?>> toolSchemas() => [
         },
       },
       {
+        'name': 'set_pin',
+        'description': '置顶 / 取消置顶条目（显示层能力，对应手机端全部页顶部置顶区）。'
+            '返回条目最新快照（is_pinned 字段反映结果）。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '条目 uuid'},
+            'on': {'type': 'boolean', 'description': 'true 置顶；false 取消置顶'},
+          },
+          'required': ['id', 'on'],
+        },
+      },
+      {
         'name': 'reprocess_item',
         'description': '重新触发某条目的双态重构（重置处理态并重新入队）。返回条目最新快照。',
         'inputSchema': {
@@ -216,7 +233,7 @@ List<Map<String, Object?>> toolSchemas() => [
         'description': '原子批量执行多条条目操作（复合操作专用）：全部成功才一次性提交，任一条失败则整体回滚，'
             '不会出现「字改了但标签没打上」的半成品。适合一次完成解锁编辑 + 改标题 + 打标签这类组合改动。'
             '每条命令形如 {"op":"update","id":"<uuid>","title":"..."}，'
-            '可用 op：update / delete / set_vault / reclassify / reprocess / unlock_edit / collect / restore；'
+            '可用 op：update / delete / set_vault / set_pin / reclassify / reprocess / unlock_edit / collect / restore；'
             '不支持 delete_forever（不可逆）。返回每条命令的结果与最终条目快照。',
         'inputSchema': {
           'type': 'object',
@@ -321,6 +338,123 @@ List<Map<String, Object?>> toolSchemas() => [
             },
           },
           'required': ['id'],
+        },
+      },
+      {
+        'name': 'block_transcribe_item',
+        'description': '对**条目正文中的行内音 / 视频媒体块**执行端侧离线转写（§7 MCP 契约：'
+            '与三级能力页该块的「转写」按钮同一入口，Human-AI 对称）。'
+            'block_key 取自正文媒体行的 `local://` 路径（逐字相等，可用 get_item 的 text 字段确认），'
+            '一步双产物（transcript 文本 + SRT/VTT 字幕文件）落块级产物表，**不改动条目正文 human_md**。'
+            '异步入队执行：本调用立即返回 queued + task_id，稍后用 get_item 读 block_artifacts 字段取产出'
+            '（task_id 可查 get_job_status）。'
+            '前置授权：该条目须已开启「允许 AI 处理」（手机端详情页开关，AI 不可自行开启），'
+            '否则入队前即被拒绝——块能力对 AI 主体**不豁免**门禁。'
+            '同一块同一任务已在队列中时会拒绝重复入队（不必重试）；换参数请先取消原任务。'
+            '其余块能力（识别文字 / 翻译 / 摘要 / 提取音轨）经 batch_items 发送同名字段（带 block_key）同样可达。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
+            'block_key': {
+              'type': 'string',
+              'description': '正文媒体行的 local:// 路径（如 local://media/a.mp4），须逐字相等',
+            },
+            'subtitle_mode': {
+              'type': 'string',
+              'enum': ['sourceOnly', 'bilingual', 'separate'],
+              'description': '字幕译文模式覆盖；省略=用 App 设置',
+            },
+            'target_lang': {
+              'type': 'string',
+              'description': '字幕译文目标语言（BCP-47，如 en/ja）。省略=用 App 设置',
+            },
+            'expected_version': {
+              'type': 'integer',
+              'description': '可选乐观锁：你读取该条目时看到的 version，不一致则拒绝',
+            },
+          },
+          'required': ['id', 'block_key'],
+        },
+      },
+      {
+        'name': 'block_ocr_item',
+        'description': '对**条目正文中的行内图片块**执行端侧 OCR 文字识别（与三级能力页该块「识别文字」同一入口）。'
+            'block_key 取自正文媒体行的 `local://` 路径（逐字相等），产 ocr_text 落块级产物表，'
+            '**不改动条目正文 human_md**。异步入队：返回 queued + task_id，'
+            '稍后用 get_item 读 block_artifacts 字段取产出（task_id 可查 get_job_status）。'
+            '前置授权：该条目须已开启「允许 AI 处理」（AI 不可自行开启），否则入队前即被拒绝。'
+            '同块同任务已在队列时拒绝重复入队，不必重试。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
+            'block_key': {'type': 'string', 'description': '正文媒体行的 local:// 路径，须逐字相等'},
+            'expected_version': {'type': 'integer', 'description': '可选乐观锁：读到的 version，不一致则拒绝'},
+          },
+          'required': ['id', 'block_key'],
+        },
+      },
+      {
+        'name': 'block_translate_item',
+        'description': '翻译**块已有的文本产物**（转写文本 transcript / OCR 文本 ocr_text / 字幕 subtitle 三选一为源），'
+            '与三级能力页该块「翻译」同一入口。block_key 取自正文媒体行的 `local://` 路径；'
+            '`source_kind` 必填（源产物不存在或为空会被拒绝，提示先转写/识别文字）；'
+            '产 translation 落块级产物表，不改动条目正文。异步入队：返回 queued + task_id，'
+            '产出稍后由 get_item 的 block_artifacts 字段读取。'
+            '前置授权：条目须已开「允许 AI 处理」，否则入队前即被拒绝。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
+            'block_key': {'type': 'string', 'description': '正文媒体行的 local:// 路径，须逐字相等'},
+            'source_kind': {
+              'type': 'string',
+              'enum': [BlockArtifactKind.transcript, BlockArtifactKind.ocrText, BlockArtifactKind.subtitle],
+              'description': '源产物类型，必填',
+            },
+            'target_lang': {
+              'type': 'string',
+              'description': '目标语言（BCP-47，如 en/ja）。省略=用 App 设置',
+            },
+            'expected_version': {'type': 'integer', 'description': '可选乐观锁：读到的 version，不一致则拒绝'},
+          },
+          'required': ['id', 'block_key', 'source_kind'],
+        },
+      },
+      {
+        'name': 'block_summarize_item',
+        'description': '用端侧大模型为**块的文本产物**（transcript / ocr_text）生成摘要，'
+            '与三级能力页该块「摘要」同一入口。block_key 取自正文媒体行的 `local://` 路径；'
+            '块上没有可摘要的文本产物会被拒绝（提示先转写/识别文字）。'
+            '产 summary 落块级产物表，不改动条目正文。异步入队：返回 queued + task_id，'
+            '产出稍后由 get_item 的 block_artifacts 字段读取。'
+            '前置授权：条目须已开「允许 AI 处理」，否则入队前即被拒绝。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
+            'block_key': {'type': 'string', 'description': '正文媒体行的 local:// 路径，须逐字相等'},
+            'expected_version': {'type': 'integer', 'description': '可选乐观锁：读到的 version，不一致则拒绝'},
+          },
+          'required': ['id', 'block_key'],
+        },
+      },
+      {
+        'name': 'block_extract_audio_item',
+        'description': '从**条目正文中的行内视频块**提取音轨（产 audio_file 产物，播放/导出/「以此继续处理」皆可为），'
+            '与三级能力页该块「提取音轨」同一入口。block_key 取自正文媒体行的 `local://` 路径；'
+            '非视频块（音频/图片）会被拒绝。异步入队：返回 queued + task_id，'
+            '产出稍后由 get_item 的 block_artifacts 字段读取。'
+            '前置授权：条目须已开「允许 AI 处理」，否则入队前即被拒绝。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
+            'block_key': {'type': 'string', 'description': '正文视频媒体行的 local:// 路径，须逐字相等'},
+            'expected_version': {'type': 'integer', 'description': '可选乐观锁：读到的 version，不一致则拒绝'},
+          },
+          'required': ['id', 'block_key'],
         },
       },
       {
@@ -441,7 +575,10 @@ List<Map<String, Object?>> toolSchemas() => [
       },
       {
         'name': 'delete_workspace',
-        'description': '删除工作区（关系记录随外键级联清理，条目本身不受影响）。',
+        'description':
+            '删除工作区（关系记录随外键级联清理，条目本身不受影响）。'
+            '非空工作区会被拒绝：删除须人类在手机端长按工作区卡确认（明示条数），'
+            'AI 不可代删；空工作区可直接删。',
         'inputSchema': {
           'type': 'object',
           'properties': {
@@ -495,6 +632,21 @@ int? _int(Object? v) => switch (v) {
       _ => null,
     };
 
+/// 块能力工具（`block_*_item`）的统一返回契约（block-artifact-workflow.md §7）：
+/// 调用即返 `queued + task_id + message`，产出落点一致（块级 `block_artifacts`）——
+/// 与 `transcribe_item` 的 job_id 模式同构，让模型「看到任务在跑」而自我抑制重复发起；
+/// 与动作层 §6.6 入队互斥（硬拒绝）互补：软引导治「以为没成功」，硬拒绝治「连发刷队」。
+/// 门禁（AI 须 aiProcess）与块类型校验一律由动作层发出，本层不复制。
+List<Map<String, Object?>> _blockQueued(CommandResult r, String what) => [
+      _text(jsonEncode({
+        'status': 'queued',
+        if (r.jobId != null) 'task_id': r.jobId,
+        'message': '$what已入队，稍后用 get_item 读 block_artifacts 字段取产出'
+            '（task_id 可查 get_job_status）；同块同任务重复调用会被拒绝，不必重试',
+        ...r.toJson(),
+      })),
+    ];
+
 /// 动作层拒绝（校验不过/不可见/越权）→ MCP 参数错误。
 /// 原样透出 code + hint：大模型不只是「看到报错」，还能读懂原因并自我纠正
 /// （如收到 edit_locked 会先调 unlock_edit 再重试）。
@@ -523,8 +675,8 @@ Future<List<Map<String, Object?>>> callTool(
       final type = args['type'] is String ? args['type'] as String : null;
       final limit = _clampInt(args['limit'], 20, 1, 100);
       final offset = _clampInt(args['offset'], 0, 0, 1 << 30);
-      final items = await repo.list(query: query, type: type, limit: limit, offset: offset);
-      final total = await repo.count(query: query, type: type);
+      final items = await repo.list(query: query, type: type, limit: limit, offset: offset, aiVisible: true);
+      final total = await repo.count(query: query, type: type, aiVisible: true);
       return [
         _text(jsonEncode({
           'total': total,
@@ -549,7 +701,7 @@ Future<List<Map<String, Object?>>> callTool(
     case 'get_item':
       final id = args['id'] is String ? args['id'] as String : '${args['id']}';
       if (id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
-      final it = await repo.byId(id); // 默认排除 Vault 与已删条目
+      final it = await repo.byId(id, aiVisible: true); // 排除 Vault 与已删，且 AI 仅可见 ai_visible=1 条目
       if (it == null) throw McpRpcError(errInvalidParams, '条目不存在: id=$id');
       // 与命令结果共用同一序列化口径：AI 上下文里只有一种 item 形状
       final itemJson = itemToJson(it);
@@ -585,6 +737,44 @@ Future<List<Map<String, Object?>>> callTool(
       } catch (e) {
         debugPrint('[McpTools] subtitle list failed (ignored): $e');
       }
+      // 块附件通道摘要（block-artifact-workflow.md §7 MCP 契约）：行内媒体块的
+      // 派生产物清单（kind + 元信息；文本内容不内联——块产物可能很大，AI 需要
+      // 时经 block_* 动作串触发或由用户复制）。状态可见性走兄弟字段 block_tasks
+      //（拍板：不混进产物清单——产物是数据、任务是进度，两类信息分轨）。
+      try {
+        final arts = await repo.blockArtifacts.listForItem(it.id ?? '');
+        if (arts.isNotEmpty) {
+          itemJson['block_artifacts'] = [
+            for (final a in arts)
+              {
+                'block_key': a.blockKey,
+                'kind': a.kind,
+                if (a.text?.trim().isNotEmpty ?? false)
+                  'text_size': a.text!.length,
+                if (a.filePath?.isNotEmpty ?? false) 'file_path': a.filePath,
+                if (a.metaJson?.isNotEmpty ?? false) 'meta': a.metaJson,
+              },
+          ];
+        }
+        // block_tasks 只报 active（pending/processing）：回答「还在跑吗」，
+        // 已产出 / 失败态归 block_artifacts 与 last_note 两条通道（§7）。
+        final blockTasks = <Map<String, Object?>>[];
+        for (final t in await repo.activeBlockTasksOf(it.id ?? '')) {
+          final parsed = Repository.parseBlockAction(t['task_action'] as String?);
+          if (parsed == null) continue;
+          blockTasks.add({
+            'job_id': t['task_id'],
+            'action': parsed.$1,
+            'block_key': parsed.$2,
+            'status': t['status'] ?? '',
+            'enqueued_at': _iso(t['updated_at'] as int? ?? 0),
+            if (t['last_note'] != null) 'note': t['last_note'],
+          });
+        }
+        if (blockTasks.isNotEmpty) itemJson['block_tasks'] = blockTasks;
+      } catch (e) {
+        debugPrint('[McpTools] block artifacts/tasks list failed (ignored): $e');
+      }
       final blocks = <Map<String, Object?>>[_text(jsonEncode(itemJson))];
       final f = it.rawFilePath;
       if (f != null && f.isNotEmpty) {
@@ -612,6 +802,7 @@ Future<List<Map<String, Object?>>> callTool(
             CollectCommand(
               itemType: type,
               sourceApp: 'MCP (AI 写入)',
+              author: InboxItem.authorAi, // AI 建条入口：标记作者为 AI（默认对 AI 可见且可编辑）
               rawContent: content.trim(),
               humanTitle: _str(args['title']),
               tags: tags,
@@ -626,7 +817,7 @@ Future<List<Map<String, Object?>>> callTool(
       final type = args['type'] is String ? args['type'] as String : null;
       final limit = _clampInt(args['limit'], 20, 1, 100);
       final offset = _clampInt(args['offset'], 0, 0, 1 << 30);
-      final all = await repo.list(query: query, type: type, limit: limit, offset: offset);
+      final all = await repo.list(query: query, type: type, limit: limit, offset: offset, aiVisible: true);
       final withMachine = [
         for (final it in all)
           if (it.machineJson != null && it.machineJson!.isNotEmpty) it,
@@ -651,7 +842,7 @@ Future<List<Map<String, Object?>>> callTool(
       if (date is! String || !RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(date)) {
         throw McpRpcError(errInvalidParams, '参数 date 必须是 YYYY-MM-DD');
       }
-      final items = await repo.listByDate(date);
+      final items = await repo.listByDate(date, aiVisible: true);
       return [
         _text(jsonEncode({
           'date': date,
@@ -682,10 +873,10 @@ Future<List<Map<String, Object?>>> callTool(
         task = await repo.taskById(jobId.trim());
         // job_id 查到的任务若其条目不可见（Vault/已删），不回传内容
         final owner = task?['item_id'] as String?;
-        if (owner != null && await repo.byId(owner) == null) task = null;
+        if (owner != null && await repo.byId(owner, aiVisible: true) == null) task = null;
       } else {
         // 按条目查最近任务：条目可见才回传（byId 默认排除 Vault 与已删）
-        final it = await repo.byId(itemId!.trim());
+        final it = await repo.byId(itemId!.trim(), aiVisible: true);
         if (it == null) {
           return [_text(jsonEncode({'found': false, 'hint': '条目不存在或不可见（Vault/已删）；可先 list_jobs 查看最近任务'}))];
         }
@@ -762,6 +953,14 @@ Future<List<Map<String, Object?>>> callTool(
       if (on is! bool) throw McpRpcError(errInvalidParams, '参数 on 必须是布尔值');
       // 移出校验不在本层：已下沉到动作层（AI 换个入口也绕不过）
       final r = await _guarded(() => handler.execute(SetVaultCommand(id, on), actor: CommandActor.ai));
+      return [_text(jsonEncode(r.toJson()))];
+
+    case 'set_pin':
+      final id = _str(args['id']);
+      final on = args['on'];
+      if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      if (on is! bool) throw McpRpcError(errInvalidParams, '参数 on 必须是布尔值');
+      final r = await _guarded(() => handler.execute(PinCommand(id, on), actor: CommandActor.ai));
       return [_text(jsonEncode(r.toJson()))];
 
     case 'reprocess_item':
@@ -852,6 +1051,87 @@ Future<List<Map<String, Object?>>> callTool(
             actor: CommandActor.ai,
           ));
       return [_text(jsonEncode(r.toJson()))];
+
+    case 'block_transcribe_item':
+      final id = _str(args['id']);
+      final key = _str(args['block_key']);
+      if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      if (key == null || key.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 block_key 不能为空');
+      }
+      final r = await _guarded(() => handler.execute(
+            TranscribeCommand(
+              id,
+              blockKey: key.trim(),
+              subtitleMode: _str(args['subtitle_mode']),
+              targetLang: _str(args['target_lang']),
+              expectedVersion: _int(args['expected_version']),
+            ),
+            actor: CommandActor.ai,
+          ));
+      return _blockQueued(r, '该块的转写任务');
+
+    case 'block_ocr_item':
+      final id = _str(args['id']);
+      final key = _str(args['block_key']);
+      if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      if (key == null || key.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 block_key 不能为空');
+      }
+      final r = await _guarded(() => handler.execute(
+            OcrCommand(id, blockKey: key.trim(), expectedVersion: _int(args['expected_version'])),
+            actor: CommandActor.ai,
+          ));
+      return _blockQueued(r, '该块的文字识别任务');
+
+    case 'block_translate_item':
+      final id = _str(args['id']);
+      final key = _str(args['block_key']);
+      final src = _str(args['source_kind']);
+      if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      if (key == null || key.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 block_key 不能为空');
+      }
+      if (src == null || src.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 source_kind 不能为空');
+      }
+      final r = await _guarded(() => handler.execute(
+            TranslateCommand(
+              id,
+              blockKey: key.trim(),
+              sourceKind: src.trim(),
+              targetLang: _str(args['target_lang']),
+              expectedVersion: _int(args['expected_version']),
+            ),
+            actor: CommandActor.ai,
+          ));
+      return _blockQueued(r, '该块的翻译任务');
+
+    case 'block_summarize_item':
+      final id = _str(args['id']);
+      final key = _str(args['block_key']);
+      if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      if (key == null || key.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 block_key 不能为空');
+      }
+      final r = await _guarded(() => handler.execute(
+            SummarizeCommand(id, blockKey: key.trim(), expectedVersion: _int(args['expected_version'])),
+            actor: CommandActor.ai,
+          ));
+      return _blockQueued(r, '该块的摘要任务');
+
+    case 'block_extract_audio_item':
+      final id = _str(args['id']);
+      final key = _str(args['block_key']);
+      if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      if (key == null || key.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 block_key 不能为空');
+      }
+      final r = await _guarded(() => handler.execute(
+            ExtractAudioCommand(id, blockKey: key.trim(), expectedVersion: _int(args['expected_version'])),
+            actor: CommandActor.ai,
+          ));
+      return _blockQueued(r, '该块的音轨提取任务');
 
     case 'ocr_item':
       final id = _str(args['id']);

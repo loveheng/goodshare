@@ -34,12 +34,24 @@ description: 拾贝 goodshare（Flutter/Dart 分享收集器+内嵌 MCP 服务�
 export PATH="$HOME/flutter/bin:$PATH" ANDROID_HOME="$HOME/android-sdk"
 flutter pub get                 # 依赖（pub.dev 直连偶发停滞，重跑即可）
 flutter analyze                 # 静态检查 → 0 issue 为交付线
-flutter test                    # 单测（MCP 协议/文本归一/自更新）→ 全过为交付线
+flutter test --timeout 60s      # 单测→全过为交付线（⚠️ 务必带 --timeout，见「测试超时」）
 node mcp-bridge/e2e-check.mjs   # 桥接端到端 → E2E PASS
 flutter build apk --debug       # 构建 → build/app/outputs/flutter-apk/app-debug.apk
 flutter build apk --release     # 自更新发布用整包（debug 签名，个人使用可用）
 adb reverse tcp:8765 tcp:8765   # USB 场景让桌面访问手机端 /mcp
 ```
+
+## 测试超时（2026-10-05 拍板，排查实录见 context/lessons.md）
+
+- **widget 测试（`testWidgets`）的默认超时是 10 分钟**（`flutter_test/lib/src/binding.dart:2240`），普通 `test()` 才是 30 秒；`pumpAndSettle` 的 settle 超时恰好也是 10 分钟且文案同为「Test timed out after …」。后果：**任何"卡死类"故障都要等满 10 分钟才报，且 stack 全是 `<asynchronous suspension>`，看不出断点**，极易被误诊为「页面里有无限动画」。
+- **本机与 CI 一律跑 `flutter test --timeout 60s`**：把 10 分钟兜底压到 60 秒，卡死类问题分钟级暴露（2026-10-05 实测：同一故障从 10:42 变成 ~1 分钟报错）。
+- 看到「某个 widget 测试卡满超时」的第一嫌疑 = FakeAsync 里 await 了依赖真实时钟的东西（sqlite / 网络 / 未 mock 的插件通道），**先查 `await` 链，别先查动画**。断点定位手法：`print` 会被 reporter 缓冲不可靠，用**每步同步写文件的日志**（`File.writeAsStringSync(…, mode: append)`），卡死也能读到最后一步。
+
+## ABI 约束（2026-10-03 用户拍板）
+
+- **只保 arm64-v8a**：`android/gradle.properties` 设 `disable-abi-filtering=true` + `app/build.gradle.kts` defaultConfig `ndk.abiFilters=arm64-v8a`。机制：FlutterPlugin.configureAbiWithoutSplits 默认 clear 用户 abiFilters 强注入全 ABI，禁用后用户过滤才生效（源码 FlutterPlugin.kt:561-598）。
+- `flutter build apk --release`（整包）与 `--split-per-abi --target-platform=android-arm64`（发布流水线拆分包）**均恒为 arm64 纯净产物（147.7MB）**：前者走 ndk.abiFilters（gradle.kts 内已按 `split-per-abi` 属性门控，避免与 AGP splits 并存冲突），后者走 AGP splits 分区；**x86_64 模拟器不可 run**（真机调试）。
+- 升级 Flutter 时必须核实 `disable-abi-filtering` / `split-per-abi` 属性名仍有效（grep FlutterPlugin.kt）。
 
 ## 环境硬约束
 
@@ -58,7 +70,7 @@ adb reverse tcp:8765 tcp:8765   # USB 场景让桌面访问手机端 /mcp
 - `google_mlkit_text_recognition` 0.17.1：`TextRecognizer(script: TextRecognitionScript.chinese)` + `InputImage.fromFilePath`；Android 走 Play 服务（模型按需下载，首次需联网），**无 GMS 设备不可用**（bundled 变体适配待做）
 - `speech_to_text` 7.5.0：`initialize()` + `listen(onResult:, listenOptions: SpeechListenOptions(onDevice: true))`；**仅实时流、无文件转写**——速记录音转写在采集时与录音同步完成，转写文本随 raw 层入库
 - `google_mlkit_translation` 0.15.1：`OnDeviceTranslator(sourceLanguage:, targetLanguage:)` + `translateText(text)` + `close()`；`OnDeviceTranslatorModelManager`（`isModelDownloaded`/`downloadModel`/`deleteModel`，模型名 = BCP-47 码）；语言包经 Play 动态下发，**国内通常不可达**——`isAvailable` 必须查语言包就绪，未就绪即落 Noop 保留原文。**翻译无 bundled 变体**（依赖即 `com.google.mlkit:translate`，只有 thin 一种，不像 OCR 的 `text-recognition-chinese` 可打进 APK），API 也没有指定本地模型路径的入口，**语言包不能侧载**；语言包一旦下载完成，翻译本身纯端侧、断网可用。**语言包不可导出再分发**（Google 知识产权 + Play 服务条款；且落在 GMS 私有目录、由 GMS 校验，孤立文件无法被 API 加载）——要「可分发给别人」的离线翻译只能走开源模型自托管（OPUS-MT / NLLB）
-- `ffmpeg_kit_flutter_new_min` 3.6.2（底层 `com.antonkarpenko:ffmpeg-kit-min:2.2.2`）：**min 变体无任何外部库**（README 包表 min 列 = `-`）——可编码仅 ffmpeg 内置者（`aac` / `flac` / `pcm_s16le` / `alac`），**mp3 / vorbis / opus 编码不可用**（需 lame / libvorbis / libopus，只在 `ffmpeg_kit_flutter_new_audio` 及以上变体）。**流复制 `-c:a copy` 不需要编码器**，故源为 mp3/opus/vorbis 时照样能导出 mp3/ogg（无损、秒出）——这是 min 变体下「多支持格式」的唯一正解。含 `FFprobeKit`（探源编码用），`FFmpegKit.executeWithArguments` + `ReturnCode.isSuccess(code)`（可空安全）
+- **ffmpeg_kit 全系已退役（2026-10-03，media-native P1-P5）**：探测/转写解码/切片/音轨导出全走平台原生——`lib/media/`（MediaToolkit 接口）+ `MediaBridge.kt`（goodshare/media 通道：videoDurationMs/audioCodec/decodeMonoPcm/trimVideo/exportAudio）+ media3-transformer 1.9.2（切片硬编）。时长/编码探测失败 null 非阻断；冷门格式（ac3/wma 等）导出/转写降级「暂不支持」文案，云端处理后续规划。ADR：context/decisions.md「media-native」
 - `record` 7.1.1：`AudioRecorder()` + `hasPermission()` + `start(RecordConfig(encoder: AudioEncoder.aacLc), path:)` + `stop()` 返回落盘路径
 
 ## 开发规约（硬规则）
@@ -72,3 +84,6 @@ adb reverse tcp:8765 tcp:8765   # USB 场景让桌面访问手机端 /mcp
 - **R3 异步队列「降级不卡死」必须配「结果可观测」（2026-09-28，翻译 + 转写两次踩坑）**：占位 / 兜底不要记成「成功」（`is_processed=1`）；「完成但无产出」要单独成档并明示原因（如转写空产出 = 语言与所选模型不匹配），否则静默成功与失败在用户眼里完全一样，等于把不确定性转嫁给用户。R1 与 R3 同一脉络：**可观测是降级的必要条件**。
 
 - **R4 用户约束优先、不擅自换依赖 / SDK 版本**：用户明确「不换依赖 / 不改 SDK 版本」时，先在原约束内寻出路（如 ffmpeg min 变体用 `-c:a copy` 流复制而非升级 audio 变体；国内语言包不可达就落 Noop 保留原文而非换库）；需突破约束先询问。
+
+- **R5 widget 测试不得在 FakeAsync 下 await 真实异步（2026-10-05 用户拍板加固）**：`testWidgets` 跑在 FakeAsync（Timer 被假化），sqlite / 网络 / 未 mock 插件通道这类依赖**真实时钟或 isolate 消息**的调用在此环境里永不完成，`Future.timeout` 也救不了（Timer 同样被假化）——在测试体里裸 `await repo.add(...)` / `await Db.instance()` 的现象就是整个测试卡满超时且无有效 stack。写法：①**UI 无关的真实异步一律 `tester.runAsync(() async { … })` 包裹**（种子数据、落库断言、`DraftStore.load` 之类 DB 读同理；需在 tap 与 pumpAndSettle 之间给真实事件循环让位时插 `await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)))`）；②**页面级「UI + 真实 sqlite」组合原则上不写 widget 测试**——即使补了 runAsync，sqflite `txnSynchronized` 内部的 10s Timer 仍会让框架收尾报 *Pending timers*，且 FutureBuilder 每次 rebuild 再造新 timer，靠 `pump(Duration)` 推进也收敛不了；这类场景拆成「数据侧普通 `test()`」+「UI 侧纯组件 widget 测试」两处守（先例：标签 = `action_handler_test`(写路径) + `tag_editor_sheet_test`(组件)）。
+

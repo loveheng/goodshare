@@ -51,6 +51,7 @@ void main() {
     final it = await repo.add(InboxItem(
       itemType: InboxItem.typeNote,
       rawContent: '原始脏数据',
+      aiProcess: true, // 授权管线处理（默认关闭，测试显式开启）
       createdAt: 1,
     ));
     await repo.enqueueTask(it.id!, null);
@@ -71,6 +72,7 @@ void main() {
       sourceType: InboxItem.typeImage,
       rawContent: null,
       rawFilePath: '/tmp/a.jpg',
+      aiProcess: true, // 授权管线处理
       createdAt: 1,
     ));
     await repo.enqueueTask(it.id!, Repository.taskOcrAndExtract);
@@ -99,6 +101,7 @@ void main() {
     final it = await repo.add(InboxItem(
       itemType: InboxItem.typeNote,
       rawContent: 'x',
+      aiProcess: true, // 授权管线处理
       createdAt: 1,
     ));
     await repo.enqueueTask(it.id!, null);
@@ -116,6 +119,7 @@ void main() {
     final it = await repo.add(InboxItem(
       itemType: InboxItem.typeNote,
       rawContent: 'x',
+      aiProcess: true, // 授权管线处理
       createdAt: 1,
     ));
     await repo.enqueueTask(it.id!, null);
@@ -134,6 +138,7 @@ void main() {
     final it = await repo.add(InboxItem(
       itemType: InboxItem.typeNote,
       rawContent: '再处理一次',
+      aiProcess: true, // 授权管线处理
       createdAt: 1,
     ));
     await repo.update(it.id!, {'is_processed': 1, 'human_md': '旧产出'});
@@ -147,7 +152,7 @@ void main() {
 
   test('OcrReconstructor：非图片走占位复制；图片 OCR 不可用时优雅降级不置死信', () async {
     // 非图片：占位复制
-    final note = await repo.add(InboxItem(itemType: InboxItem.typeNote, rawContent: '普通文本', createdAt: 1));
+    final note = await repo.add(InboxItem(itemType: InboxItem.typeNote, rawContent: '普通文本', aiProcess: true, createdAt: 1));
     await repo.enqueueTask(note.id!, null);
     await QueueConsumer(
       repo,
@@ -161,6 +166,7 @@ void main() {
       itemType: InboxItem.typeImage,
       sourceType: InboxItem.typeImage,
       rawFilePath: '/tmp/nonexistent.jpg',
+      aiProcess: true, // 授权管线处理
       createdAt: 2,
     ));
     await repo.enqueueTask(img.id!, Repository.taskOcrAndExtract);
@@ -180,6 +186,7 @@ void main() {
       sourceType: InboxItem.typeImage,
       rawContent: '图片附带的文字',
       rawFilePath: '/tmp/whatever.jpg',
+      aiProcess: true, // 授权管线处理
       createdAt: 3,
     ));
     await repo.enqueueTask(img.id!, Repository.taskOcrAndExtract);
@@ -216,6 +223,7 @@ void main() {
       itemType: InboxItem.typeImage,
       sourceType: InboxItem.typeImage,
       rawFilePath: '/tmp/a.jpg',
+      aiProcess: true, // 授权管线处理
       createdAt: 1,
     ));
     await repo.enqueueTask(it.id!, Repository.taskOcrAndExtract);
@@ -247,8 +255,25 @@ void main() {
     expect(await repo.pendingCount(), 1, reason: '门控关闭：任务不被认领，仍为 pending（留待时机续跑）');
     expect((await repo.byId(it.id!))!.humanMd, isNull, reason: '门控关闭时管线未执行，条目保持未处理');
     expect((await repo.byId(it.id!))!.isProcessed, isNot(-1), reason: '非失败：未置死信');
-  });
-}
+    });
+
+    test('管线回写门禁：ai_process=false → 任务 skipped、不写库、不标失败', () async {
+    final it = await repo.add(InboxItem(
+    itemType: InboxItem.typeNote,
+    rawContent: '未授权内容',
+    createdAt: 1,
+    )); // 默认 ai_process=false
+    await repo.enqueueTask(it.id!, null);
+    await QueueConsumer(repo, ReconstructorRegistry.defaultRegistry(), handler).pollOnce();
+
+    final after = await repo.byId(it.id!);
+    expect(after!.humanMd, isNull, reason: '未授权 → 管线不写回');
+    expect(after.isProcessed, isNot(-1), reason: '未授权 ≠ 失败');
+    final task = await repo.lastTaskOf(it.id!);
+    expect(task?['status'], 'skipped', reason: '队列侧 skip 该任务');
+    expect(task?['last_note'], contains('未授权 AI 处理'));
+    });
+    }
 
 class FakeReconstructor implements AiReconstructor {
   FakeReconstructor({

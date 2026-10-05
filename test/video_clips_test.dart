@@ -101,14 +101,10 @@ void main() {
       expect(Repository.parseClipTaskAction('clip:abc'), isNull);
     });
 
-    test('ffmpeg 参数：音频 16k wav / 片段精确重编码（E1 libx264）', () {
-      final audio = buildClipAudioArgs('/tmp/v.mp4', '/tmp/o.wav', 1500, 62000);
-      expect(audio, containsAllInOrder(['-ss', '1.500', '-i', '/tmp/v.mp4', '-t', '60.500']));
-      expect(audio, contains('pcm_s16le'));
-
-      final cut = buildClipCutArgs('/tmp/v.mp4', '/tmp/c.mp4', 1500, 62000);
-      expect(cut, containsAllInOrder(['-ss', '1.500', '-i', '/tmp/v.mp4', '-t', '60.500']));
-      expect(cut, containsAllInOrder(['-c:v', 'libx264', '-crf', '23', '-c:a', 'aac']));
+    test('切片链已全原生（P2/P3）：无 ffmpeg 参数构造函数残留', () {
+      // buildClipCutArgs/buildClipAudioArgs 已随 media-native 退役（lib/media 接管），
+      // 此用例锁「不回潮」：video_clips.dart 只剩纯模型与任务动作编解码。
+      expect(Repository.parseClipTaskAction('clip:1500-62000:et'), isNotNull);
     });
 
     test('mergeClipResult：精确匹配替换，未命中追加', () {
@@ -190,7 +186,7 @@ void main() {
       final handler = ItemActionHandler(repo);
       await repo.add(InboxItem(
           itemType: InboxItem.typeVideo, rawContent: 'v', rawFilePath: '/tmp/a.mp4',
-          createdAt: 1));
+          aiProcess: true, createdAt: 1)); // 授权管线回写（默认关闭）
       final id = (await repo.list()).first.id!;
       await handler.execute(ClipCommand(id, startMs: 0, endMs: 5000));
 

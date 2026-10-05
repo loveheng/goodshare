@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../data/repository.dart';
+import '../ui/confirm_dialog.dart';
+import '../ui/feedback_views.dart';
 
 /// AI 任务队列：查看端侧 AI 处理任务（OCR / 转写 / 链接抓取）的状态**并管理**。
 ///
@@ -69,16 +71,12 @@ class _TaskQueuePageState extends State<TaskQueuePage> {
   }
 
   Future<void> _confirmDelete(String taskId) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('删除这个任务？'),
-        content: const Text('仅从队列移除，不会删除对应条目。'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('删除')),
-        ],
-      ),
+    final ok = await confirmDialog(
+      context,
+      title: '删除这个任务？',
+      content: '仅从队列移除，不会删除对应条目。',
+      confirmText: '删除',
+      danger: true,
     );
     if (ok != true) return;
     await widget.repo.deleteTask(taskId);
@@ -92,32 +90,35 @@ class _TaskQueuePageState extends State<TaskQueuePage> {
       appBar: AppBar(
         automaticallyImplyLeading: false,
         title: const Text('AI 任务队列'),
-        actions: [
-          IconButton(
-            tooltip: '刷新',
-            icon: const Icon(Icons.refresh),
-            onPressed: _reload,
-          ),
-        ],
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _tasks.isEmpty
-              ? Center(
-                  child: Text('暂无任务', style: Theme.of(context).textTheme.bodySmall))
-              : ListView.builder(
-                  itemCount: _tasks.length,
-                  itemBuilder: (context, i) {
-                    final t = _tasks[i];
-                    final id = t['task_id'] as String? ?? '';
-                    return _TaskTile(
-                      task: t,
-                      onPause: () => _pause(id),
-                      onResume: () => _resume(id),
-                      onDelete: () => _confirmDelete(id),
-                    );
-                  },
-                ),
+          ? const LoadingView()
+          // 下拉刷新（含空态：AlwaysScrollable 保证空列表也能拉起）。
+          : RefreshIndicator(
+              onRefresh: _reload,
+              child: _tasks.isEmpty
+                  ? ListView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      children: const [
+                        SizedBox(height: 200),
+                        Center(child: EmptyStateView(text: '暂无任务')),
+                      ],
+                    )
+                  : ListView.builder(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      itemCount: _tasks.length,
+                      itemBuilder: (context, i) {
+                        final t = _tasks[i];
+                        final id = t['task_id'] as String? ?? '';
+                        return _TaskTile(
+                          task: t,
+                          onPause: () => _pause(id),
+                          onResume: () => _resume(id),
+                          onDelete: () => _confirmDelete(id),
+                        );
+                      },
+                    ),
+            ),
     );
   }
 }

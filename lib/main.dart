@@ -12,6 +12,7 @@ import 'ai/capabilities.dart';
 import 'ai/llm.dart';
 import 'ai/llm_model_manager.dart';
 import 'ai/llm_reconstructor.dart';
+import 'ai/block_extract_audio_reconstructor.dart';
 import 'ai/clip_reconstructor.dart';
 import 'ai/model_manager.dart';
 import 'ai/ocr_reconstructor.dart';
@@ -25,6 +26,7 @@ import 'ai/reconstructor.dart';
 import 'ai/translate_reconstructor.dart';
 import 'ai/translation.dart';
 import 'ai/translation_mlkit.dart';
+import 'data/block_artifacts.dart' show BlockArtifactKind;
 import 'data/db.dart';
 import 'data/repository.dart';
 import 'pages/home_shell.dart';
@@ -115,11 +117,20 @@ Future<void> main() async {
         models: models,
         translation: translationService,
         subtitleMode: () => caps.subtitleMode,
+        // §2.5 输入源优先级：块转写优先消费已有 audio_file 产物（省一次解码）
+        blockAudioFileOf: (itemId, blockKey) async {
+          final a = await repo.blockArtifacts.get(
+            itemId, blockKey, BlockArtifactKind.audioFile,
+          );
+          return a?.filePath;
+        },
       ),
       TranslationReconstructor(service: translationService),
       // 端侧 LLM（2026-09-28）：摘要（summary_md）与关键词提取，均由显式命令入队
       // 视频切片（2026-09-29）：区间音轨→ASR→LLM 摘要，产出合并进 clips_json
       LlmReconstructor(engine: llmEngine),
+      // 块附件通道（2026-10-05 v21）：行内视频块提取音轨（block_extract_audio）
+      const BlockExtractAudioReconstructor(),
       ClipReconstructor(
         engine: llmEngine,
         models: models,

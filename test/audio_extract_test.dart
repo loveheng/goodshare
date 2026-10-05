@@ -4,10 +4,10 @@ import 'package:goodshare/data/repository.dart';
 import 'package:goodshare/models/item.dart';
 import 'package:goodshare/pages/item_detail_page.dart';
 
-/// 音轨提取的格式契约单测（2026-09-28）。
+/// 音轨提取的格式契约单测（2026-09-28 建；media-native P4 起导出走原生）。
 ///
-/// 只测**纯函数**部分（容器选择与命令构造）——ffmpeg 调用本身需要真机，
-/// 本机无设备；而最容易出错、也最需要守护的正是「源编码 → 目标容器」这张映射表：
+/// 只测**纯函数**部分（容器选择）——原生导出调用需真机，本机无设备；
+/// 而最容易出错、也最需要守护的正是「源编码 → 目标容器」这张映射表：
 /// 映射错了，流复制会失败或产出打不开的文件。
 void main() {
   group('extensionForCodec（流复制的容器选择）', () {
@@ -21,38 +21,24 @@ void main() {
       expect(extensionForCodec('pcm_s16le'), 'wav');
     });
 
-    test('未知 / 缺失回落 m4a（aac 内置编码器可兜底）', () {
+    test('未知 / 缺失回落 m4a（aac 系统编码器可兜底）', () {
       expect(extensionForCodec(null), 'm4a');
       expect(extensionForCodec(''), 'm4a');
       expect(extensionForCodec('wmav2'), 'm4a');
     });
 
-    test('大小写不敏感（ffprobe 输出不保证大小写）', () {
+    test('大小写不敏感（探测输出不保证大小写）', () {
       expect(extensionForCodec('AAC'), 'm4a');
       expect(extensionForCodec('MP3'), 'mp3');
     });
   });
 
-  group('buildExtractArgs', () {
-    test('只取首条音轨、丢视频轨', () {
-      final args = buildExtractArgs('/in.mp4', '/out.m4a', 'copy');
-      expect(args.first, '-y');
-      expect(args, contains('-vn'));
-      expect(args.sublist(args.indexOf('-map')), ['-map', '0:a:0', '-c:a', 'copy', '/out.m4a']);
-    });
-
-    test('重编码时用指定编码器', () {
-      final args = buildExtractArgs('/in.mp4', '/out.flac', 'flac');
-      expect(args.sublist(args.indexOf('-c:a')), ['-c:a', 'flac', '/out.flac']);
-    });
-  });
-
-  group('AudioExportFormat 编码器映射', () {
-    test('copy 为 null（走流复制），其余用内置编码器', () {
-      expect(AudioExportFormat.copy.encoder, isNull);
-      expect(AudioExportFormat.m4a.encoder, 'aac');
-      expect(AudioExportFormat.flac.encoder, 'flac');
-      expect(AudioExportFormat.wav.encoder, 'pcm_s16le');
+  group('AudioExportFormat（枚举 name 即通道 format 参数）', () {
+    test('copy/m4a/flac/wav 与原生协议字符串同名', () {
+      expect(AudioExportFormat.copy.name, 'copy');
+      expect(AudioExportFormat.m4a.name, 'm4a');
+      expect(AudioExportFormat.flac.name, 'flac');
+      expect(AudioExportFormat.wav.name, 'wav');
     });
   });
 

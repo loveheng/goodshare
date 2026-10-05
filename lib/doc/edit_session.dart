@@ -1,3 +1,6 @@
+// DEPRECATED（2026-10-03 编辑器统一）：详情页编辑态已切换到统一作曲编辑器
+// （lib/ui/note_composer_editor.dart + noteMdToDraftRows），本块模型不再被 UI 消费，
+// 仅 MCP/机器态的历史契约与单测保留。清偿待办见 context/todos.md。
 import 'rich_text.dart';
 
 // ---------- 块 ↔ 编辑文本 映射（纯函数，可单测） ----------
@@ -27,6 +30,7 @@ String blockEditText(RichBlock block) => switch (block) {
       ImageBlock(:final alt) => alt,
       AudioBlock(:final label) => label,
       VideoBlock(:final label) => label,
+      TableBlock() => serializeBlock(block),
     };
 
 /// 编辑文本 → 新块（保存回写）。
@@ -75,6 +79,12 @@ RichBlock? rebuildBlock(
       return AudioBlock(url: url, label: editedText);
     case VideoBlock(:final url):
       return VideoBlock(url: url, label: editedText);
+    case TableBlock():
+      if (editedText.trim().isEmpty) return null;
+      final parsed = parser.parse(editedText);
+      return parsed.length == 1 && parsed.first is TableBlock
+          ? parsed.first
+          : ParagraphBlock(parser.parseInline(editedText));
   }
 }
 
@@ -139,6 +149,12 @@ class EditBlock {
 
   /// 仅当块是「单项待办」时非 null（true=已完成）。
   bool? todoDone;
+
+  /// 样式化编辑层（block-format-input §4 slice-2）：段落/标题块的纯文本与
+  /// 纯文本坐标 run（非 null = 该块走 span 编辑）。与 [block] 的 inline 树
+  /// 恒同步（applySpanInput 同步重建），[markdown] 序列化出口不受影响。
+  String? inlinePlain;
+  List<InlineRun>? inlineRuns;
 }
 
 /// 编辑事务（undo 地基）：**所有块变更的唯一入口**，可记录、可回放。
@@ -208,6 +224,26 @@ final class ReplaceMediaOp extends EditOp {
 
   final int index;
   final String newUrl;
+}
+
+/// 样式化输入提交（block-format-input §4 slice-2）：纯文本 + run 随动结果
+/// 一次性落会话（[EditSession.applySpanInput] 组装），log 记账同源。
+final class CommitSpansOp extends EditOp {
+  const CommitSpansOp(this.index, this.text, this.runs);
+
+  final int index;
+  final String text;
+  final List<InlineRun> runs;
+}
+
+/// 块级格式切换（block-format-input.md §2 拍板「先选后打」的块级部分）：
+/// 段落 ↔ 标题互转，保留行内结构；[level] 0=正文、1/2=标题档。
+/// 仅段落/标题可互转——媒体/列表/代码块不是格式目标（UI 层按钮对它们不触发）。
+final class SetHeadingOp extends EditOp {
+  const SetHeadingOp(this.index, this.level);
+
+  final int index;
+  final int level;
 }
 
 /// 编辑会话：持有可变块树，所有变更经 [apply] 事务入口，产出统一序列化出口。
@@ -322,6 +358,30 @@ class EditSession {
           _ => null,
         };
         if (replaced != null) blocks[index].block = replaced;
+      case CommitSpansOp(:final index, :final text, :final runs):
+        // 随动结果已由 applySpanInput 算好，这里只落块（事务记账在 apply 尾部）
+        if (index < 0 || index >= blocks.length) return;
+        final b = blocks[index];
+        b.inlinePlain = text;
+        b.inlineRuns = runs;
+        final inline = inlineNodesOf(text, runs);
+        final block = b.block;
+        if (block is HeadingBlock) {
+          b.block = HeadingBlock(level: block.level, inline: inline);
+        } else if (block is ParagraphBlock) {
+          b.block = ParagraphBlock(inline);
+        }
+      case SetHeadingOp(:final index, :final level):
+        if (index < 0 || index >= blocks.length) return;
+        final inline = switch (blocks[index].block) {
+          ParagraphBlock(:final inline) => inline,
+          HeadingBlock(:final inline) => inline,
+          _ => null,
+        };
+        if (inline == null) return;
+        blocks[index].block = level <= 0
+            ? ParagraphBlock(inline)
+            : HeadingBlock(level: level, inline: inline);
     }
     log.add(op);
   }
@@ -329,6 +389,89 @@ class EditSession {
   /// 块 → 可编辑文本（激活块时预填编辑框）。
   String editTextOf(int index) =>
       index >= 0 && index < blocks.length ? blockEditText(blocks[index].block) : '';
+
+  /// 段落/标题块播种为 span 编辑态（样式化编辑层 slice-2）：控制器文本换
+  /// 纯文本（标记剥除），runs 由源 md 投影。非文本块不动（回落 md 编辑路径）。
+  /// 播种不改 [markdown]——plain ≡ inlineToPlain（同源护栏单测锁定）。
+  void seedSpanBlock(int index) {
+    if (index < 0 || index >= blocks.length) return;
+    final b = blocks[index];
+    if (b.inlinePlain != null) return;
+    final inline = switch (b.block) {
+      ParagraphBlock(:final inline) => inline,
+      HeadingBlock(:final inline) => inline,
+      _ => null,
+    };
+    if (inline == null) return;
+    final spans = inlineSpansOf(serializeInline(inline));
+    b.inlinePlain = spans.plain;
+    b.inlineRuns = spans.runs;
+  }
+
+  bool isSpanBlock(int index) =>
+      index >= 0 &&
+      index < blocks.length &&
+      blocks[index].inlinePlain != null;
+
+  /// span 块的编辑文本（= 纯文本；控制器事实源）。
+  String spanEditTextOf(int index) {
+    if (!isSpanBlock(index)) return editTextOf(index);
+    return blocks[index].inlinePlain ?? '';
+  }
+
+  /// span 块回车拆段（slice-3）：光标前留在原块（标题档保持），光标后落入
+  /// 新正文段落，runs 按区间分配到两侧。经事务 op 序列（CommitSpans +
+  /// InsertAfter + CommitSpans），取消即整体回滚。
+  void splitSpanBlock(int index, int offset) {
+    if (index < 0 || index >= blocks.length) return;
+    final b = blocks[index];
+    final plain = b.inlinePlain;
+    if (plain == null) return;
+    final runs = b.inlineRuns ?? const <InlineRun>[];
+    final before = plain.substring(0, offset);
+    final after = plain.substring(offset);
+    final leftRuns = [
+      for (final r in runs)
+        if (r.start < offset)
+          InlineRun(r.start, r.end < offset ? r.end : offset, r.mark, url: r.url),
+    ];
+    final rightRuns = [
+      for (final r in runs)
+        if (r.end > offset)
+          InlineRun(
+            r.start > offset ? r.start - offset : 0,
+            r.end - offset,
+            r.mark,
+            url: r.url,
+          ),
+    ];
+    apply(CommitSpansOp(index, before, leftRuns));
+    apply(InsertAfterOp(index));
+    apply(CommitSpansOp(index + 1, after, rightRuns));
+  }
+
+  /// 样式化输入入口：文字变更 → run 随动（[adjustRuns]）→ 激活样式落 run
+  /// → 同步重建 inline 树（[markdown] 出口恒一致）。[active] 为工具条的
+  /// 行内格式激活态（先选后打拍板；收口时机由 UI 宿主管理）。
+  void applySpanInput(int index, String newText,
+      {required Set<InlineMark> active}) {
+    if (index < 0 || index >= blocks.length) return;
+    final b = blocks[index];
+    final old = b.inlinePlain;
+    if (old == null) return;
+    final (start, oldEnd) = spanChangeRange(old, newText);
+    // 插入长度 = 总长差 + 被删长度
+    final insertLen = newText.length - old.length + (oldEnd - start);
+    var runs = adjustRuns(b.inlineRuns ?? const [], start, oldEnd, insertLen);
+    // 纯插入且有激活样式 → 插入段逐 mark 落 run（重叠模型允许叠加）
+    final inserted = insertLen > 0;
+    if (inserted) {
+      for (final m in active) {
+        runs.add(InlineRun(start, start + insertLen, m));
+      }
+    }
+    apply(CommitSpansOp(index, newText, runs));
+  }
 
   /// 行内解析（粘贴拆块等场景复用会话的解析器，保证与解析阶段同口径）。
   List<InlineNode> parseInline(String text) => _parser.parseInline(text);

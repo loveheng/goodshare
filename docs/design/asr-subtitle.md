@@ -1,6 +1,6 @@
 ---
 status: draft
-updated: 2026-09-28
+updated: 2026-10-03
 ---
 
 # 音频转写与字幕生成设计
@@ -9,7 +9,7 @@ updated: 2026-09-28
 
 ## 1. 背景与现状
 
-音频链路已于 2026-09-28 落地（`lib/ai/asr.dart`、`lib/ai/model_manager.dart`、`lib/ai/asr_reconstructor.dart`）：入库音频经队列 → ffmpeg 转 16kHz 单声道 WAV → worker isolate 跑 sherpa-onnx 识别 → 文本写入 `human_md`。该管线**只有文本产物**，没有时间轴。
+音频链路已于 2026-09-28 落地（`lib/ai/asr.dart`、`lib/ai/model_manager.dart`、`lib/ai/asr_reconstructor.dart`）：入库音频经队列 → 解码转 16kHz 单声道 WAV → worker isolate 跑 sherpa-onnx 识别。**2026-10-03 起转码走平台原生**（media-native：MediaBridge.decodeMonoPcm 解码 + Dart windowed-sinc 重采样，lib/media/wav16k.dart），ffmpeg 依赖已退役 → 文本写入 `human_md`。该管线**只有文本产物**，没有时间轴。
 
 时间轴不由模型自身提供：`OfflineSenseVoiceModelConfig` / `OfflineParaformerModelConfig` 无时间戳开关（`OfflineWhisperModelConfig` 虽有 `enableTokenTimestamps` / `enableSegmentTimestamps`，但官方字幕脚本并未使用）。sherpa-onnx 官方 `python-api-examples/generate-subtitles.py` 对**所有**模型族（含 Whisper）统一采用 **VAD 分段**路线——时间戳由语音段提供，即 `SpeechSegment.start / sampleRate`，与模型无关。本设计沿用该官方路线。
 
@@ -28,7 +28,7 @@ updated: 2026-09-28
 
 ```mermaid
 flowchart TD
-    A[音视频条目 raw_file_path（音频或视频）] --> B[ffmpeg 转 16kHz 单声道 WAV]
+    A[音视频条目 raw_file_path（音频或视频）] --> B[原生解码 + 16k 单声道 WAV\n（MediaBridge + wav16k）]
     B --> F[VoiceActivityDetector 分段（VAD 内置）]
     F --> G[逐段 createStream + decode]
     G --> H[组装 AsrCue 列表 start/duration/text]
@@ -207,16 +207,16 @@ OPUS-MT 退居兜底：实测 `onnx-community/opus-mt-en-zh` 的 encoder int8 �
 
 ## 11. 视频字幕（引擎复用现有转码通道，少量新增）
 
-现状已落地：`pubspec.yaml` 依赖 `ffmpeg_kit_flutter_new_min`（轻量 min 变体），`lib/ai/asr.dart._toWav16k` 已实现 `ffmpeg -i $in -ar 16000 -ac 1 -c:a pcm_s16le $out`。该命令对**视频输入同样成立**：ffmpeg 自动 demux 视频容器、取首条音频流、以 pcm_s16le 写入 WAV，视频流因 WAV 容器不支持而被丢弃。
+**[2026-10-03 更新，media-native P2]** 原 ffmpeg 转码已退役，现为 `lib/media/wav16k.dart` 的 `extractWav16k`：MediaBridge（MediaExtractor+MediaCodec）解码→下混单声道 raw PCM→Dart 窗口 sinc 重采样 16k→WAV 封装。产物契约与旧 ffmpeg 版一致（44 字节头/s16le/mono/16000Hz），对视频输入同样成立（MediaExtractor 自动 demux 取首条音轨，视频流被 WAV 容器丢弃）。冷门格式（ac3/wma 等原生解不了）降级提示「格式不支持」，后续走云端体系。
 
-因此视频字幕**不新增 ffmpeg 调用、不新增依赖、不新增平台分流**（引擎层零新增）；但**路由与 UI 有少量新增**：
+视频字幕复用同一 `extractWav16k` 通道（引擎层零新增）；但**路由与 UI 有少量新增**：
 
 - `AsrReconstructor.handles` 现仅认 `itemType == 'audio'`——视频条目目前走 PlaceholderReconstructor 占位，须改路由（`handles` 接受 `video`，或独立注册视频实现）；
 - 视频详情页「导出字幕」可见性识别（视频条目同样展示字幕产出）属新增 UI 工作。
 
 后续 VAD 分段 / cue 组装 / SRT·VTT 序列化（`lib/ai/subtitle.dart`）与音频字幕**完全一致**，公共模块零改动。
 
-平台结论与 §9 一致：ffmpeg min 二进制按平台分发但 Dart 调用统一，字幕引擎不分流。
+平台结论：解码通道按平台各自原生实现（Android MediaCodec 先行，iOS AVFoundation 同接口后补），Dart 调用统一，字幕引擎不分流。
 
 注意：min 变体含常见 demux（mp4 / mkv / mov / flv / webm）与音频解码（aac / mp3 / opus / pcm），非常见封装（如 AV1+Opus 的 webm、FLAC-in-video）需在真机实测；此类边界失败按 §2「占位不卡死」降级为纯文本，不阻断。
 

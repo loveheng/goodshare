@@ -36,7 +36,7 @@ updated: 2026-09-30
 |---|---|---|---|
 | P1 | **上下文只传引用，不传实体** | 大文本落盘 cache（如 `cache/artifacts/{itemId}/{step}.txt`），`ReconstructInput` 只传路径或 DB id；严禁把完整长文/二进制塞进内存 Context 随链传递 | `rawFilePath` 已是此模式；推广为全链铁律 |
 | P2 | **快照记录摘要截断** | 任务日志（`last_note` 等）只记原因与摘要（如 `[String len=52000] 前100字…`），不落数据本体 | `last_note` 一行原因说明，已是此口径 |
-| P3 | **产物分级 + 中间产物即弃** | 持久产物（summaryMd/transcript/facets/clips_json）走 DB 列；中间产物（ffmpeg 临时 wav、提取片段）走 cache 目录，Job 完成即清 | clip 链临时 wav「用完即删」已是此模式 |
+| P3 | **产物分级 + 中间产物即弃** | 持久产物（summaryMd/transcript/facets/clips_json）走 DB 列；中间产物（解码/重采样临时 wav、提取片段）走 cache 目录，Job 完成即清 | clip 链临时 wav「用完即删」已是此模式 |
 
 依据：移动端 OOM 防线 + Android IPC 1MB 限制（跨进程传大实体必然失败）。
 

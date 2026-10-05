@@ -14,6 +14,7 @@ import '../ai/subtitle.dart';
 import '../share/text_collector.dart';
 import '../service/mcp_controller.dart';
 import '../service/settings_store.dart';
+import '../ui/confirm_dialog.dart';
 import '../sync/backup_service.dart';
 import 'attach_migration_page.dart';
 import 'mcp_page.dart';
@@ -127,22 +128,12 @@ class _SettingsPageState extends State<SettingsPage> {
 
   /// 清除已下载模型（腾空间；历史产物不撤销，重新下载即可再用）。
   Future<void> _onLlmRemove(LlmModel m) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('删除 ${m.name}？'),
-        content: const Text('将释放模型占用的存储空间；已生成的摘要 / 关键词不受影响。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
+    final confirmed = await confirmDialog(
+      context,
+      title: '删除 ${m.name}？',
+      content: '将释放模型占用的存储空间；已生成的摘要 / 关键词不受影响。',
+      confirmText: '删除',
+      danger: true,
     );
     if (confirmed == true) await widget.llmModels.remove(m);
   }
@@ -953,26 +944,13 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
 
   Future<void> _restore() async {
     final messenger = ScaffoldMessenger.of(context);
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('从 S3 恢复？'),
-        content: const Text(
-          '将用备份覆盖本机全部数据（条目 / 附件 / 草稿 / 任务队列）。\n'
+    final confirmed = await confirmDialog(
+      context,
+      title: '从 S3 恢复？',
+      content: '将用备份覆盖本机全部数据（条目 / 附件 / 草稿 / 任务队列）。\n'
           '已收进的视频作为原始附件随备份恢复（引用型/未收进的仍需重新分享收集）；\n'
           '保险箱条目从未进备份，不受影响。建议先做一次备份。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('确认恢复'),
-          ),
-        ],
-      ),
+      confirmText: '确认恢复',
     );
     if (confirmed != true) return;
     try {

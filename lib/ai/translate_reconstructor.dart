@@ -1,5 +1,8 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 
+import '../data/block_artifacts.dart' show BlockArtifactInput, BlockArtifactKind;
 import '../data/repository.dart';
 import 'reconstructor.dart';
 import 'translation.dart';
@@ -20,11 +23,58 @@ class TranslationReconstructor implements AiReconstructor {
   Future<bool> get isAvailable async => true;
 
   @override
-  Future<bool> handles(ReconstructInput input) async =>
-      Repository.isTranslateAction(input.taskAction);
+  Future<bool> handles(ReconstructInput input) async {
+    // 块任务认领（block-artifact-workflow.md §2.5）：仅 block_translate。
+    final block = Repository.parseBlockAction(input.taskAction);
+    if (block != null) return block.$1 == 'block_translate';
+    return Repository.isTranslateAction(input.taskAction);
+  }
 
   @override
   Future<ReconstructResult> reconstruct(ReconstructInput input) async {
+    // 块分支（§2.5）：源文本 = 源产物（queue_consumer 从 block_artifacts 读出传入），
+    // 译文落 block_artifacts（translation），条目级 translated_md 零触碰。
+    final blockKey = input.blockKey;
+    if (blockKey != null) {
+      final base = input.blockSourceText?.trim() ?? '';
+      if (base.isEmpty) {
+        return ReconstructResult(
+          humanMd: input.rawContent ?? '',
+          blockKey: blockKey,
+          blockArtifacts: const [],
+          note: '源产物不存在或为空，无法翻译（可能已被清除，先重跑转写/识别文字）',
+        );
+      }
+      final target = Repository.blockTranslateLangOf(input.taskAction) ?? service.targetLang();
+      final translated = await service.translateText(base, target: target);
+      if (translated == null) {
+        debugPrint('[Translation] no block translation produced (item=${input.itemId})');
+        // 明说为什么没有译文：源语等于目标语 / 无可用引擎，处置方式不同（R1）
+        final reason = detectSourceLanguage(base) == target
+            ? '源文本已是${languageLabel(target)}，无需翻译'
+            : '无可用翻译引擎（语言包未就绪时保留原文，设置 → 翻译 可下载）';
+        return ReconstructResult(
+          humanMd: input.rawContent ?? '',
+          blockKey: blockKey,
+          blockArtifacts: const [],
+          note: reason,
+        );
+      }
+      return ReconstructResult(
+        humanMd: input.rawContent ?? '',
+        blockKey: blockKey,
+        blockArtifacts: [
+          BlockArtifactInput(
+            BlockArtifactKind.translation,
+            text: translated,
+            metaJson: jsonEncode({
+              'source_kind': Repository.blockTranslateSourceKindOf(input.taskAction),
+              'lang': target,
+            }),
+          ),
+        ],
+      );
+    }
     // 人类态优先（与详情页 bodyText 同口径），缺省回退原文
     final base = input.humanMd ?? input.rawContent ?? '';
     // 任务串可携带单次目标语言（MCP translate_item 指定），否则用设置项语言

@@ -4,9 +4,23 @@ import 'dart:io';
 import 'package:sqflite/sqflite.dart';
 
 import '../ai/language_codes.dart';
+import '../data/block_artifacts.dart' show BlockArtifactKind;
 import '../data/repository.dart';
-import '../doc/rich_text.dart' show lostMediaUrls;
+import '../doc/rich_text.dart'
+    show
+        AudioBlock,
+        ImageBlock,
+        MarkdownSubsetParser,
+        MediaSuffix,
+        QuoteBlock,
+        RichBlock,
+        VideoBlock,
+        classifyMediaUrl,
+        lostMediaUrls,
+        normalizeAiMarkdown,
+        AiNormalizeResult;
 import '../models/item.dart';
+import '../media/block_media.dart' show BlockMedia;
 import 'commands.dart';
 import '../ai/video_clips.dart';
 import 'machine_json_validator.dart';
@@ -27,7 +41,7 @@ import 'machine_json_validator.dart';
 ///
 /// | 命令 | ui | ai | pipeline |
 /// |---|---|---|---|
-/// | update / delete / reprocess / unlock_edit / collect / append_segment / restore / set_vault(on) | ✓ | ✓ | — |
+/// | update / delete / reprocess / unlock_edit / collect / append_segment / restore / set_vault(on) / set_pin | ✓ | ✓ | — |
 /// | set_vault(off) 移出保险箱 | ✓（UI 无门禁）| ✗ 仅 ui actor 可 | — |
 /// | delete_forever 彻底删除 | ✓ | ✗ 不可逆 | — |
 /// | apply_ai_result 管线回写 | ✗ | ✗ | ✓ 独享重分类特权 |
@@ -80,27 +94,33 @@ class ItemActionHandler {
         final UpdateItemCommand c => _update(c, actor, seeVault, txn),
       final DeleteItemCommand c => _delete(c, seeVault, txn),
       final SetVaultCommand c => _setVault(c, actor, seeVault, txn),
+      final PinCommand c => _setPin(c, seeVault, txn),
       final ReclassifyCommand c => _reclassify(c, actor, seeVault, txn),
       final ReprocessCommand c => _reprocess(c, seeVault, txn),
-      final TranscribeCommand c => _transcribe(c, seeVault, txn),
-      final SummarizeCommand c => _summarize(c, seeVault, txn),
+      final AiSessionCommand c => _aiSession(c, seeVault, txn),
+      final TranscribeCommand c => _transcribe(c, actor, seeVault, txn),
+      final SummarizeCommand c => _summarize(c, actor, seeVault, txn),
       final ExtractTagsCommand c => _extractTags(c, seeVault, txn),
-      final OcrCommand c => _ocr(c, seeVault, txn),
+      final OcrCommand c => _ocr(c, actor, seeVault, txn),
       final ClassifyCommand c => _classify(c, seeVault, txn),
       final ScanBarcodeCommand c => _scanBarcode(c, seeVault, txn),
       final AnalyzeTextCommand c => _analyzeText(c, seeVault, txn),
       final ClipCommand c => _clip(c, seeVault, txn),
       final ClipProcessCommand c => _clipProcess(c, seeVault, txn),
-      final TranslateCommand c => _translate(c, seeVault, txn),
+      final TranslateCommand c => _translate(c, actor, seeVault, txn),
+      final ExtractAudioCommand c => _extractAudio(c, actor, seeVault, txn),
       final UnlockEditCommand c => _unlockEdit(c, seeVault, txn),
       final RestoreCommand c => _restore(c, seeVault, txn),
       final DeleteForeverCommand c => _deleteForever(c, txn),
+      final SetAiVisibleCommand c => _setAiVisible(c, actor, seeVault, txn),
+      final SetAiEditableCommand c => _setAiEditable(c, actor, seeVault, txn),
+      final SetAiProcessCommand c => _setAiProcess(c, actor, seeVault, txn),
       final CollectCommand c => _collect(c, txn),
-      final AppendSegmentCommand c => _append(c, seeVault, txn),
+      final AppendSegmentCommand c => _append(c, actor, seeVault, txn),
         final ApplyAiResultCommand c => _applyAiResult(c, actor, seeVault, txn),
         final CreateWorkspaceCommand c => _createWorkspace(c),
         final RenameWorkspaceCommand c => _renameWorkspace(c),
-        final DeleteWorkspaceCommand c => _deleteWorkspace(c),
+        final DeleteWorkspaceCommand c => _deleteWorkspace(c, actor),
         final AddToWorkspaceCommand c => _addToWorkspace(c, seeVault, txn),
         final RemoveFromWorkspaceCommand c => _removeFromWorkspace(c),
         final MigrateAttachCommand c => _migrateAttach(c, txn),
@@ -152,6 +172,7 @@ class ItemActionHandler {
     Transaction? txn,
   ) async {
     final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    _requireAiEditable(item, actor);
     if (item.editLocked) {
       throw ActionException(
         '合并条目已锁定，请先「解除编辑」',
@@ -183,7 +204,130 @@ class ItemActionHandler {
     }
     if (values.isEmpty) throw ActionException('没有可更新的字段', code: ActionErrorCode.invalidRequest);
     await _write('update', cmd.id, values, expectedVersion: cmd.expectedVersion, txn: txn);
+    // 编辑侧孤儿 GC（block-artifact-workflow.md §2.2 纪律 5/7）：human_md 变更时
+    // diff 前后媒体行集合，被移除的块静默清产物（表行 + file_path 物理文件）。
+    // 按路径寻址（纪律 6）：剪切粘贴 / 重排不改变 key 集合，不误杀；落点在动作层
+    // 而非 serialize 纯函数（纯函数不识存储层）。复用防冲刷护城河的差集口径。
+    if (cmd.humanMd != null && cmd.humanMd != (item.humanMd ?? '')) {
+      for (final removed in lostMediaUrls(item.humanMd ?? '', cmd.humanMd!)) {
+        await _repo.blockArtifacts.deleteBlock(cmd.id, removed, txn: txn);
+      }
+    }
     return _result('update', cmd.id, seeVault: seeVault, txn: txn, note: '已更新');
+  }
+
+  /// AI 编辑门禁（v20，ai-visibility）：外部 MCP AI（actor=ai）改写「人类编写」的笔记，
+  /// 必须该笔记已开启「允许 AI 编辑」（ai_editable）。未授权直接拒绝（静态人类同意模型）。
+  /// 端侧管线回写（actor=pipeline，如 OCR/翻译/摘要结果落盘）属 App 内部能力，不受此限。
+  void _requireAiEditable(InboxItem item, CommandActor actor) {
+    if (actor == CommandActor.ai &&
+        item.author == InboxItem.authorHuman &&
+        !item.aiEditable) {
+      throw ActionException(
+        '该笔记未授权 AI 编辑：人类笔记默认对 AI 只读，请在手机端开启「允许 AI 编辑」',
+        code: ActionErrorCode.forbidden,
+        hint: '在笔记详情开启「允许 AI 编辑」后，AI 方可修改此人类笔记',
+      );
+    }
+  }
+
+  /// 管线回写授权门禁（ai-visibility 补丁）：端侧管线（actor=pipeline，OCR / 翻译 /
+  /// 摘要 / 转写 / 切片）要把 AI 产出回写进「人类编写」的笔记，必须该笔记已开启
+  /// 「允许 AI 处理」（ai_process）。未授权直接拒绝——管线默认不碰人类笔记，
+  /// 须人类在详情页显式开启（"收集即处理"改为"授权才处理"）。AI 建条（author=ai）
+  /// 不受此限，与 [_requireAiEditable] 同理。
+  void _requireAiProcess(InboxItem item, CommandActor actor) {
+    if (actor == CommandActor.pipeline &&
+        item.author == InboxItem.authorHuman &&
+        !item.aiProcess) {
+      throw ActionException(
+        '该笔记未授权 AI 处理：人类笔记默认不允许管线处理，请在手机端开启「允许 AI 处理」',
+        code: ActionErrorCode.forbidden,
+        hint: '在笔记详情开启「允许 AI 处理」后，端侧管线方可处理此人类笔记',
+      );
+    }
+  }
+
+  /// 切换「对 AI 可见」（v20，ai-visibility）。仅 UI（CommandActor.ui）可改：AI 既读不到
+  /// ai_visible=0 的条目，也不得翻转此开关。人类笔记默认不可见，开启后 AI（MCP）方可读取。
+  Future<CommandResult> _setAiVisible(
+    SetAiVisibleCommand cmd,
+    CommandActor actor,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    if (actor != CommandActor.ui) {
+      throw ActionException(
+        '「对 AI 可见」开关仅可在手机端修改',
+        code: ActionErrorCode.forbidden,
+        hint: 'AI 不得翻转可见性开关',
+      );
+    }
+    await _require(cmd.id, seeVault: seeVault, txn: txn);
+    await _write(
+      'set_ai_visible',
+      cmd.id,
+      {'ai_visible': cmd.on ? 1 : 0},
+      expectedVersion: cmd.expectedVersion,
+      txn: txn,
+    );
+    return _result('set_ai_visible', cmd.id, seeVault: seeVault, txn: txn,
+        note: cmd.on ? '已对 AI 可见' : '已对 AI 隐藏');
+  }
+
+  /// 切换「允许 AI 编辑」（v20，ai-visibility）。仅 UI（CommandActor.ui）可改：即人类对 AI 的
+  /// 静态同意。开启后，外部 MCP AI（actor=ai）方可改写该人类笔记（见 [_requireAiEditable]）。
+  Future<CommandResult> _setAiEditable(
+    SetAiEditableCommand cmd,
+    CommandActor actor,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    if (actor != CommandActor.ui) {
+      throw ActionException(
+        '「允许 AI 编辑」开关仅可在手机端修改',
+        code: ActionErrorCode.forbidden,
+        hint: 'AI 不得翻转编辑授权开关',
+      );
+    }
+    await _require(cmd.id, seeVault: seeVault, txn: txn);
+    await _write(
+      'set_ai_editable',
+      cmd.id,
+      {'ai_editable': cmd.on ? 1 : 0},
+      expectedVersion: cmd.expectedVersion,
+      txn: txn,
+    );
+    return _result('set_ai_editable', cmd.id, seeVault: seeVault, txn: txn,
+        note: cmd.on ? '已允许 AI 编辑' : '已收回 AI 编辑授权');
+  }
+
+  /// 切换「允许 AI 处理」（ai-visibility 补丁）。仅 UI（CommandActor.ui）可改：即人类对
+  /// 端侧管线的授权。默认关闭——人类笔记默认不允许管线（OCR / 翻译 / 摘要 / 转写 / 切片）
+  /// 处理，开启后管线方可把 AI 产出回写此笔记（见 [_requireAiProcess]）。AI 不得翻转此开关。
+  Future<CommandResult> _setAiProcess(
+    SetAiProcessCommand cmd,
+    CommandActor actor,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    if (actor != CommandActor.ui) {
+      throw ActionException(
+        '「允许 AI 处理」开关仅可在手机端修改',
+        code: ActionErrorCode.forbidden,
+        hint: 'AI 不得翻转管线处理授权开关',
+      );
+    }
+    await _require(cmd.id, seeVault: seeVault, txn: txn);
+    await _write(
+      'set_ai_process',
+      cmd.id,
+      {'ai_process': cmd.on ? 1 : 0},
+      expectedVersion: cmd.expectedVersion,
+      txn: txn,
+    );
+    return _result('set_ai_process', cmd.id, seeVault: seeVault, txn: txn,
+        note: cmd.on ? '已允许 AI 处理' : '已收回 AI 处理授权');
   }
 
   Future<CommandResult> _delete(DeleteItemCommand cmd, bool seeVault, Transaction? txn) async {
@@ -228,6 +372,33 @@ class ItemActionHandler {
     );
   }
 
+  /// 置顶 / 取消置顶（set_pin，schema v18）：pinned_at 写当前毫秒 / 置 NULL。
+  /// 显示层能力，无隐私语义，UI 与 AI 同权（详见命令矩阵头注）。
+  Future<CommandResult> _setPin(
+    PinCommand cmd,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    if (!cmd.on && !item.isPinned) {
+      throw ActionException('条目未置顶，无需取消', code: ActionErrorCode.invalidRequest);
+    }
+    await _write(
+      'set_pin',
+      cmd.id,
+      {'pinned_at': cmd.on ? DateTime.now().millisecondsSinceEpoch : null},
+      expectedVersion: cmd.expectedVersion,
+      txn: txn,
+    );
+    return _result(
+      'set_pin',
+      cmd.id,
+      seeVault: seeVault,
+      txn: txn,
+      note: cmd.on ? '已置顶' : '已取消置顶',
+    );
+  }
+
   Future<CommandResult> _reclassify(
     ReclassifyCommand cmd,
     CommandActor actor,
@@ -255,10 +426,19 @@ class ItemActionHandler {
 
   Future<CommandResult> _reprocess(ReprocessCommand cmd, bool seeVault, Transaction? txn) async {
     final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    // 「重新处理」= 用户显式要求**用原文重做**：先把正文退回原文（旧 AI 产出
+    // 作废），再入队等新产出。不重置的话，下游占位/降级回写（产出 = raw_content）
+    // 会被 _applyAiResult 的「回填原文不覆盖现正文」保护挡住——重跑等于没跑，
+    // 与既有口径「占位重跑覆盖旧产出」冲突。raw_content 为空时不重置，防清空。
+    final reset = <String, Object?>{
+      'is_processed': 0,
+      if ((item.rawContent?.isNotEmpty ?? false) && item.humanMd != item.rawContent)
+        'human_md': item.rawContent,
+    };
     await _write(
       'reprocess',
       cmd.id,
-      {'is_processed': 0},
+      reset,
       expectedVersion: cmd.expectedVersion,
       txn: txn,
     );
@@ -278,11 +458,29 @@ class ItemActionHandler {
   /// 「仅音频 / 视频可转写」的校验下沉在动作层：AI / MCP 换个入口也绕不过。
   Future<CommandResult> _transcribe(
     TranscribeCommand cmd,
+    CommandActor actor,
     bool seeVault,
     Transaction? txn,
   ) async {
     final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
-    if (item.itemType != InboxItem.typeAudio && item.itemType != InboxItem.typeVideo) {
+    final isBlock = cmd.blockKey != null;
+    if (isBlock) {
+      final key = cmd.blockKey!;
+      _blockKeyGate(key);
+      await _blockActorGate(item, actor);
+      await _blockMutexGuard(cmd.id, key, 'block_transcribe');
+      final media = _blockMediaOf(item.bodyText, key, item: item);
+      if (media.isImage ||
+          (media.suffix != MediaSuffix.video &&
+              media.suffix != MediaSuffix.audioPlayable &&
+              media.suffix != MediaSuffix.audioDegrade)) {
+        throw ActionException(
+          '只有音 / 视频块能转写',
+          code: ActionErrorCode.invalidRequest,
+          hint: '图片块请用「识别文字」；该块类型不属音视频',
+        );
+      }
+    } else if (item.itemType != InboxItem.typeAudio && item.itemType != InboxItem.typeVideo) {
       throw ActionException(
         '只有音频 / 视频能转写（当前类型：${item.itemType}）',
         code: ActionErrorCode.invalidRequest,
@@ -307,21 +505,54 @@ class ItemActionHandler {
         hint: '可选：${kTargetLanguages.join(', ')}',
       );
     }
-    await _write(
-      'transcribe',
-      cmd.id,
-      {'is_processed': 0},
-      expectedVersion: cmd.expectedVersion,
-      txn: txn,
-    );
-    final jobId = await _repo.enqueueTask(
-      cmd.id,
-      Repository.transcribeTaskAction(subtitleMode: mode, targetLang: lang),
-      txn: txn,
-    );
+    // 块任务不触碰条目状态（is_processed 是条目级处理位；产物在块级，条目字段零写）。
+    if (!isBlock) {
+      await _write(
+        'transcribe',
+        cmd.id,
+        {'is_processed': 0},
+        expectedVersion: cmd.expectedVersion,
+        txn: txn,
+      );
+    }
+    final action = isBlock
+        ? Repository.blockTranscribeTaskAction(cmd.blockKey!, subtitleMode: mode, targetLang: lang)
+        : Repository.transcribeTaskAction(subtitleMode: mode, targetLang: lang);
+    final jobId = await _repo.enqueueTask(cmd.id, action, txn: txn);
     onEnqueued?.call();
     return _result('transcribe', cmd.id, seeVault: seeVault, txn: txn, jobId: jobId,
         note: await _queuedNote('已开始转写'));
+  }
+
+  /// 行内视频块提取音轨（§2.4 block_extract_audio）：源为块视频文件，
+  /// 产 audio_file 产物（文件落盘由重建器执行，file_path 落 block_artifacts）。
+  /// 校验：块存在 + 视频后缀 + 门禁分叉 + 入队互斥（全部下沉，UI/MCP 同源）。
+  Future<CommandResult> _extractAudio(
+    ExtractAudioCommand cmd,
+    CommandActor actor,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    _blockKeyGate(cmd.blockKey);
+    await _blockActorGate(item, actor);
+    await _blockMutexGuard(cmd.id, cmd.blockKey, 'block_extract_audio');
+    final media = _blockMediaOf(item.bodyText, cmd.blockKey, item: item);
+    if (media.isImage || media.suffix != MediaSuffix.video) {
+      throw ActionException(
+        '只有视频块能提取音轨',
+        code: ActionErrorCode.invalidRequest,
+        hint: '音频块本身即音轨无需提取；图片块无音轨',
+      );
+    }
+    final jobId = await _repo.enqueueTask(
+      cmd.id,
+      Repository.blockExtractAudioTaskAction(cmd.blockKey),
+      txn: txn,
+    );
+    onEnqueued?.call();
+    return _result('extract_audio', cmd.id, seeVault: seeVault, txn: txn, jobId: jobId,
+        note: await _queuedNote('已开始提取音轨'));
   }
 
   /// 手动 OCR 图片：显式入队 ocr_and_extract（2026-09-28 用户拍板——分享摄入不默认
@@ -330,25 +561,44 @@ class ItemActionHandler {
   /// 「仅图片可 OCR」的校验下沉在动作层：AI / MCP 换个入口也绕不过。
   Future<CommandResult> _ocr(
     OcrCommand cmd,
+    CommandActor actor,
     bool seeVault,
     Transaction? txn,
   ) async {
     final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
-    if (item.itemType != InboxItem.typeImage) {
+    final isBlock = cmd.blockKey != null;
+    if (isBlock) {
+      final key = cmd.blockKey!;
+      _blockKeyGate(key);
+      await _blockActorGate(item, actor);
+      await _blockMutexGuard(cmd.id, key, 'block_ocr');
+      if (!_blockMediaOf(item.bodyText, key, item: item).isImage) {
+        throw ActionException(
+          '只有图片块能识别文字',
+          code: ActionErrorCode.invalidRequest,
+          hint: '音 / 视频块请用「转写」',
+        );
+      }
+    } else if (item.itemType != InboxItem.typeImage) {
       throw ActionException(
         '只有图片能识别文字（当前类型：${item.itemType}）',
         code: ActionErrorCode.invalidRequest,
         hint: '音频 / 视频请点「转写」',
       );
     }
-    await _write(
-      'ocr',
-      cmd.id,
-      {'is_processed': 0},
-      expectedVersion: cmd.expectedVersion,
-      txn: txn,
-    );
-    final jobId = await _repo.enqueueTask(cmd.id, Repository.taskOcrAndExtract, txn: txn);
+    // 块任务不触碰条目状态（is_processed 是条目级处理位；产物在块级）。
+    if (!isBlock) {
+      await _write(
+        'ocr',
+        cmd.id,
+        {'is_processed': 0},
+        expectedVersion: cmd.expectedVersion,
+        txn: txn,
+      );
+    }
+    final action =
+        isBlock ? Repository.blockOcrTaskAction(cmd.blockKey!) : Repository.taskOcrAndExtract;
+    final jobId = await _repo.enqueueTask(cmd.id, action, txn: txn);
     onEnqueued?.call();
     return _result('ocr', cmd.id, seeVault: seeVault, txn: txn, jobId: jobId,
         note: await _queuedNote('已开始识别文字'));
@@ -493,11 +743,37 @@ class ItemActionHandler {
   /// 校验下沉在动作层：正文非空 + 目标语言合法，AI / MCP 换个入口也绕不过。
   Future<CommandResult> _translate(
     TranslateCommand cmd,
+    CommandActor actor,
     bool seeVault,
     Transaction? txn,
   ) async {
     final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
-    if (item.bodyText.trim().isEmpty) {
+    final isBlock = cmd.blockKey != null;
+    if (isBlock) {
+      final key = cmd.blockKey!;
+      _blockKeyGate(key);
+      await _blockActorGate(item, actor);
+      await _blockMutexGuard(cmd.id, key, 'block_translate');
+      final src = cmd.sourceKind?.trim() ?? '';
+      if (!const {
+        BlockArtifactKind.transcript,
+        BlockArtifactKind.ocrText,
+        BlockArtifactKind.subtitle,
+      }.contains(src)) {
+        throw ActionException(
+          '块翻译需要 source_kind（transcript / ocr_text / subtitle 之一）',
+          code: ActionErrorCode.invalidRequest,
+        );
+      }
+      final srcArtifact = await _repo.blockArtifacts.get(cmd.id, key, src, txn: txn);
+      if (srcArtifact == null || (srcArtifact.text?.trim().isEmpty ?? true)) {
+        throw ActionException(
+          '源产物「$src」不存在或为空，无法翻译',
+          code: ActionErrorCode.invalidRequest,
+          hint: '先执行「转写」/「识别文字」产出源文本',
+        );
+      }
+    } else if (item.bodyText.trim().isEmpty) {
       throw ActionException(
         '该条目没有可翻译的正文',
         code: ActionErrorCode.invalidRequest,
@@ -512,14 +788,23 @@ class ItemActionHandler {
         hint: '可选：${kTargetLanguages.join(', ')}',
       );
     }
-    await _write(
-      'translate',
-      cmd.id,
-      {'is_processed': 0},
-      expectedVersion: cmd.expectedVersion,
-      txn: txn,
-    );
-    final jobId = await _repo.enqueueTask(cmd.id, Repository.translateTaskAction(lang), txn: txn);
+    if (!isBlock) {
+      await _write(
+        'translate',
+        cmd.id,
+        {'is_processed': 0},
+        expectedVersion: cmd.expectedVersion,
+        txn: txn,
+      );
+    }
+    final action = isBlock
+        ? Repository.blockTranslateTaskAction(
+            cmd.blockKey!,
+            targetLang: lang,
+            sourceKind: cmd.sourceKind!,
+          )
+        : Repository.translateTaskAction(lang);
+    final jobId = await _repo.enqueueTask(cmd.id, action, txn: txn);
     onEnqueued?.call();
     return _result('translate', cmd.id, seeVault: seeVault, txn: txn, jobId: jobId,
         note: await _queuedNote('已开始翻译'));
@@ -531,25 +816,47 @@ class ItemActionHandler {
   /// 「文本类条目且正文非空」校验下沉在动作层：AI / MCP 换个入口也绕不过。
   Future<CommandResult> _summarize(
     SummarizeCommand cmd,
+    CommandActor actor,
     bool seeVault,
     Transaction? txn,
   ) async {
     final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
-    if (item.bodyText.trim().isEmpty) {
+    final isBlock = cmd.blockKey != null;
+    if (isBlock) {
+      final key = cmd.blockKey!;
+      _blockKeyGate(key);
+      await _blockActorGate(item, actor);
+      await _blockMutexGuard(cmd.id, key, 'block_summarize');
+      final hasSource = await _blockHasArtifact(cmd.id, key, const {
+        BlockArtifactKind.transcript,
+        BlockArtifactKind.ocrText,
+      }, txn: txn);
+      if (!hasSource) {
+        throw ActionException(
+          '该块还没有可摘要的文本产物',
+          code: ActionErrorCode.invalidRequest,
+          hint: '先执行「转写」或「识别文字」产出源文本',
+        );
+      }
+    } else if (item.bodyText.trim().isEmpty) {
       throw ActionException(
         '该条目没有可摘要的正文',
         code: ActionErrorCode.invalidRequest,
         hint: '图片 / 音视频请先「识别文字」或「转写」出文本，再摘要',
       );
     }
-    await _write(
-      'summarize',
-      cmd.id,
-      {'is_processed': 0},
-      expectedVersion: cmd.expectedVersion,
-      txn: txn,
-    );
-    final jobId = await _repo.enqueueTask(cmd.id, Repository.taskLlmSummarize, txn: txn);
+    if (!isBlock) {
+      await _write(
+        'summarize',
+        cmd.id,
+        {'is_processed': 0},
+        expectedVersion: cmd.expectedVersion,
+        txn: txn,
+      );
+    }
+    final action =
+        isBlock ? Repository.blockSummarizeTaskAction(cmd.blockKey!) : Repository.taskLlmSummarize;
+    final jobId = await _repo.enqueueTask(cmd.id, action, txn: txn);
     onEnqueued?.call();
     return _result('summarize', cmd.id, seeVault: seeVault, txn: txn, jobId: jobId,
         note: await _queuedNote('已开始生成摘要'));
@@ -648,6 +955,10 @@ class ItemActionHandler {
         itemType: cmd.itemType,
         sourceType: cmd.itemType,
         sourceApp: cmd.sourceApp,
+        author: cmd.author,
+        // AI 建条默认对 AI 可见且可编辑；人类收集默认对 AI 不可见、不可编辑（静态同意模型）。
+        aiVisible: cmd.author == InboxItem.authorAi,
+        aiEditable: cmd.author == InboxItem.authorAi,
         rawContent: cmd.rawContent,
         rawFilePath: cmd.rawFilePath,
         humanTitle: cmd.humanTitle,
@@ -674,12 +985,18 @@ class ItemActionHandler {
   ///
   /// 模式与窗口约束全部在此判定（防呆下沉）：AI 经 `append_segment` 与手机连续速记
   /// 受**同一套**约束，客户端策略只负责"选哪条链"。
-  Future<CommandResult> _append(AppendSegmentCommand cmd, bool seeVault, Transaction? txn) async {
+  Future<CommandResult> _append(
+    AppendSegmentCommand cmd,
+    CommandActor actor,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
     final text = cmd.text.trim();
     if (text.isEmpty) {
       throw ActionException('追加文本不能为空', code: ActionErrorCode.invalidRequest);
     }
     final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    _requireAiEditable(item, actor);
     if (item.collectMode != InboxItem.modeMerge) {
       throw ActionException(
         '仅合并模式条目可追加段',
@@ -780,6 +1097,9 @@ class ItemActionHandler {
     Transaction? txn,
   ) async {
     final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    // 管线回写授权门禁（ai-visibility 补丁）：人类笔记未开启「允许 AI 处理」则拒绝写回，
+    // 与队列侧 skip 形成双保险（队列 skip 管"不跑"，此处管"即使跑完也落不了库"）。
+    _requireAiProcess(item, actor);
     final r = cmd.result;
     // 视频切片产出走独立通道：只合并进 clips_json（派生附属记录），**不触碰**
     // human_md / summary_md 等条目级字段——区间结果不得覆盖整片产物。
@@ -790,14 +1110,43 @@ class ItemActionHandler {
       return _result('apply_ai_result', cmd.id, seeVault: seeVault, txn: txn,
           note: '已回写切片产出（${r.clip!.status == kClipStatusDone ? '完成' : r.clip!.status}）');
     }
+    // 块附件通道产出（block-artifact-workflow.md §2.5 回写分叉）：单事务 upsert
+    // 进 block_artifacts（转写 transcript+subtitle 双产物原子落库），条目级字段
+    // **零触碰**——不写 human_md / is_processed，块任务不标条目处理位。
+    // 空载荷 = 无产出（失败 / 占位），原因已在 r.note（R1），直接透传。
+    if (r.blockKey != null) {
+      final arts = r.blockArtifacts;
+      if (arts != null && arts.isNotEmpty) {
+        await _repo.blockArtifacts.upsertAll(cmd.id, r.blockKey!, arts, txn: txn);
+      }
+      return _result('apply_ai_result', cmd.id, seeVault: seeVault, txn: txn,
+          note: r.note ??
+              (arts == null || arts.isEmpty ? '块任务完成但无产出' : '已写入块产物'));
+    }
     // 防冲刷护城河（2026-09-30 拍板叮嘱②）：AI 产出的 human_md 若丢失原文的
     // 行内媒体块，说明模型删了用户资产——human_md 保留原文（其余字段照常应用），
     // 原因进 result.note 可感知（R1）。只拦管线回写；UI/MCP update 走块编辑器，
     // 用户手动删媒体是合法操作。
     final lostMedia = lostMediaUrls(item.humanMd ?? '', r.humanMd);
     final guarded = lostMedia.isNotEmpty;
+    // AI 写入归一层（rich-text-gfm.md §2 层2）：全集外语法语义映射 + R1 note；
+    // 全集内语法零映射透传。guarded（丢媒体）时保留原文，归一让位给护城河。
+    final normalized = guarded
+        ? const AiNormalizeResult('', [])
+        : normalizeAiMarkdown(r.humanMd);
+    final incoming = guarded ? (item.humanMd ?? '') : normalized.markdown;
+    // AI 回写不得把正文**静默打回**最初摄入的 raw_content（2026-10-04）：
+    // 占位实现（PlaceholderReconstructor）与队列超时兜底一律把产出 humanMd
+    // 填成 input.rawContent，直接落库会覆盖用户在详情页编辑保存过的正文——
+    // 丢内容也丢行内样式（表现即「编辑态有下划线、详情读态没有」：两态读的
+    // 都是 bodyText，只是被回填换了份旧的）。
+    // 判据：产出与 raw_content 逐字符相同 = 本次没有新正文 → 保留条目现
+    // human_md。显式「重新处理」由 _reprocess 先把正文重置回原文，不受此保护
+    // 影响（既有口径：占位重跑必须覆盖旧产出）。
+    final rawEcho = incoming == (item.rawContent ?? '');
+    final keepHuman = (item.humanMd?.isNotEmpty ?? false) && rawEcho;
     final values = <String, Object?>{
-      'human_md': guarded ? (item.humanMd ?? '') : r.humanMd,
+      if (!keepHuman) 'human_md': incoming,
       'is_processed': 1,
     };
     if (r.machineJson != null) {
@@ -836,14 +1185,54 @@ class ItemActionHandler {
     }
     // 文档归一化元信息（2026-09-30）：覆盖率 / 降级 / 确认状态，供 UI 明示
     // 「提取了多少、哪些降级了」——降级不允许静默成功（content-pipeline §7）。
-    if (r.docMetaJson != null) {
-      values['doc_meta_json'] = r.docMetaJson;
+    // auto首捕：仅当基线为空时把「AI 动笔前的旧 human_md」锚住（不变量 §3.1）。
+    // 连续多轮写回时基线不重锚（§8.5）——【还原】永远退回最原始「人类动笔前」，
+    // 各中间 AI 版由 ai_revisions 逐条兜底。
+    // 回填原文（keepHuman）不算 AI 动笔：不锚基线、不进 pending，否则会挂出
+    // 「还原后毫无变化」的空会话（§3.1 基线非空 ⟺ 有未关闭会话）。
+    final aiApplied = !guarded && r.humanMd.isNotEmpty && !keepHuman;
+    if (aiApplied && (item.humanMdBaseline == null || item.humanMdBaseline!.isEmpty)) {
+      values['human_md_baseline'] = item.humanMd ?? '';
     }
-    await _write('apply_ai_result', cmd.id, values, expectedVersion: cmd.expectedVersion, txn: txn);
+    // AI 写回可逆（ai-writeback-revert §3/§6）：把会话态并入 doc_meta_json
+    // （在既有归一化元信息之上叠加，而非整替，避免冲掉 confirmed 等键）。
+    // guarded（AI 删了行内媒体、正文保留原文）时**不进 pending**：没有真正
+    // 落地的 AI 改动就不该有待决会话，否则会挂出「还原后毫无变化」的空会话，
+    // 违反 §3.1「基线非空 ⟺ 有未关闭会话」。
+    final mergedDocMeta = <String, Object?>{
+      if (item.docMetaJson != null) ...?_decodeDocMeta(item.docMetaJson),
+      if (r.docMetaJson != null) ...?_decodeDocMeta(r.docMetaJson),
+      'ai_session_state': aiApplied ? 'pending' : (item.aiSessionState ?? 'idle'),
+    };
+    values['doc_meta_json'] = jsonEncode(mergedDocMeta);
+    // 本次 AI 产出的人类态快照（用于 ai_revisions 落库）。
+    final revisionSnapshot = aiApplied ? (values['human_md'] as String?) : null;
+
+    Future<void> doWrite(Transaction t) async {
+      await _write('apply_ai_result', cmd.id, values,
+          expectedVersion: cmd.expectedVersion, txn: t);
+      if (revisionSnapshot != null) {
+        await _repo.insertAiRevision(
+          cmd.id,
+          revisionSnapshot,
+          source: 'ai_writeback',
+          metaJson: r.docMetaJson,
+          txn: t,
+        );
+      }
+    }
+
+    if (txn != null) {
+      await doWrite(txn);
+    } else {
+      await _repo.transaction(doWrite);
+    }
     return _result('apply_ai_result', cmd.id, seeVault: seeVault, txn: txn,
         note: guarded
             ? 'AI 产出丢失行内媒体块（${lostMedia.length} 个），已保留原文；其余字段照常回写'
-            : '已回写 AI 产出');
+            : (normalized.notes.isNotEmpty
+                ? '${normalized.notes.join('；')}；已回写 AI 产出'
+                : '已回写 AI 产出'));
   }
 
   // ---- 工作区（2026-09-30：条目集合容器，多对多，见 ui-spec §4.11） ----
@@ -886,7 +1275,13 @@ class ItemActionHandler {
     );
   }
 
-  Future<CommandResult> _deleteWorkspace(DeleteWorkspaceCommand cmd) async {
+  /// 删除工作区（docs/design/workspace.md §3.2 拍板 B：非空守门下沉动作层，
+  /// UI/MCP/AI 同口径）。计数与工作区列表同口径——排除 Vault 与已删，
+  /// 不泄露保险箱条目数（工作区不得成为隐私隔离后门）。
+  Future<CommandResult> _deleteWorkspace(
+    DeleteWorkspaceCommand cmd,
+    CommandActor actor,
+  ) async {
     final existing = await _repo.byIdWorkspace(cmd.workspaceId);
     if (existing == null) {
       throw ActionException(
@@ -895,11 +1290,29 @@ class ItemActionHandler {
         hint: '先执行 list_workspaces 确认 id',
       );
     }
+    final count = (await _repo.listWorkspaceItems(cmd.workspaceId)).length;
+    if (count > 0 && !cmd.ackNonEmpty) {
+      throw ActionException(
+        '工作区「${existing.name}」还有 $count 条内容，删除被拦下',
+        code: ActionErrorCode.invalidRequest,
+        hint: '删除工作区只解除归属，条目保留在「全部」；非空删除须人类在'
+            '手机端工作区卡长按弹层确认（明示条数），AI 端不可代删非空工作区',
+      );
+    }
+    if (count > 0 && actor != CommandActor.ui) {
+      throw ActionException(
+        '非空工作区删除的确认仅人类 UI 可给',
+        code: ActionErrorCode.forbidden,
+        hint: '与用户确认后引导其在手机端删除，或先移空归属再来删除',
+      );
+    }
     await _repo.deleteWorkspace(cmd.workspaceId);
     return CommandResult(
       op: 'delete_workspace',
       targetId: cmd.workspaceId,
-      note: '已删除工作区「${existing.name}」（条目本身不受影响）',
+      note: count > 0
+          ? '已删除工作区「${existing.name}」，$count 条内容保留在「全部」'
+          : '已删除工作区「${existing.name}」',
     );
   }
 
@@ -983,6 +1396,121 @@ class ItemActionHandler {
         hint: '重新读取条目取最新 version，再带 expected_version 重试',
       );
 
+  // ---- 块附件通道校验（block-artifact-workflow.md §6；UI/MCP 同源绕不过）----
+
+  /// §6.1 blockKey 格式防呆：`local://` 开头且不含分段符 `|`——防伪造 key
+  /// 下滑到文件路径拼接（重建器按 key 解析物理路径）。
+  void _blockKeyGate(String key) {
+    // 顶级条目统一（block-artifact-workflow.md §2.7）：item = 顶级媒体区的
+    // 固定 key，与行内 `local://` 媒体行同走块通道；其余 key 仍须是正文媒体行。
+    if (key == BlockArtifactKind.topLevelKey) return;
+    if (!key.startsWith('local://') || key.length <= 'local://'.length || key.contains('|')) {
+      throw ActionException(
+        'block_key 非法：须为正文媒体行的 local:// 路径',
+        code: ActionErrorCode.invalidRequest,
+        hint: 'block_key 取自 human_md 媒体行 url，逐字相等（不含行号 / 序号）',
+      );
+    }
+  }
+
+  /// §2.6 门禁分叉：手动即授权仅限 UI 主体——MCP / 管线发起的块任务必须
+  /// 满足 aiProcess，否则**入队前拒绝**（未授权任务根本不进队列，无空耗）。
+  /// [item] 来自 _require（见 Vault 门禁之后调用），读到的 aiProcess 即库内现值。
+  Future<void> _blockActorGate(InboxItem item, CommandActor actor) async {
+    if (actor == CommandActor.ui) return; // 手动即授权（产出不触碰 human_md）
+    if (item.aiProcess) return;
+    throw ActionException(
+      'AI 未获「允许 AI 处理」授权，块能力调用被拒绝',
+      code: ActionErrorCode.forbidden,
+      hint: '该条目未开启「允许 AI 处理」；块级任务对 AI 主体不豁免门禁（§2.6）',
+    );
+  }
+
+  /// §6.6 入队互斥：同 (item, 动作头, blockKey) 已有 pending/processing 任务
+  /// 即拒绝——防模型连发/双击重复入队刷长任务（执行侧 FIFO 串行本无并发）。
+  /// 参数差异（mode/lang 不同）同样拒绝：换参数语义由取消 / Reset 承载。
+  Future<void> _blockMutexGuard(String itemId, String blockKey, String head) async {
+    for (final action in await _repo.activeBlockActionsOf(itemId)) {
+      final parsed = Repository.parseBlockAction(action);
+      if (parsed != null && parsed.$1 == head && parsed.$2 == blockKey) {
+        throw ActionException(
+          '该块的「$head」任务已在队列中，等待完成即可',
+          code: ActionErrorCode.invalidRequest,
+          hint: '同块同任务不重复入队；换参数请先在任务队列取消原任务',
+        );
+      }
+    }
+  }
+
+  /// §6.1 块媒体行校验：human_md 中**确有**该 block_key 的媒体行（防伪造 key），
+  /// 同时给出块类型与后缀归类（转写=音视后缀 / OCR=图片块 / 提取音轨=视频后缀）。
+  /// 引用块内的媒体行同样有效（QuoteBlock 递归）。
+  BlockMedia _blockMediaOf(String humanMd, String blockKey, {InboxItem? item}) {
+    // 顶级条目统一（§2.7）：block_key='item' 的媒体源就是条目本身的
+    // rawFilePath（顶级音/视频区没有正文媒体行可扫），类型由 item_type 判定。
+    if (blockKey == BlockArtifactKind.topLevelKey) {
+      final type = item?.itemType ?? '';
+      if (type == InboxItem.typeVideo || type == InboxItem.typeAudio) {
+        return BlockMedia(
+          url: blockKey,
+          isImage: false,
+          suffix: type == InboxItem.typeVideo
+              ? MediaSuffix.video
+              : MediaSuffix.audioPlayable,
+        );
+      }
+      throw ActionException(
+        '顶级条目不是音 / 视频类型，无块媒体可处理',
+        code: ActionErrorCode.invalidRequest,
+      );
+    }
+    final blocks = const MarkdownSubsetParser().parse(humanMd);
+
+    BlockMedia? scan(Iterable<RichBlock> bs) {
+      for (final b in bs) {
+        if (b is ImageBlock && b.url == blockKey) {
+          return BlockMedia(url: b.url, isImage: true, suffix: MediaSuffix.unknown);
+        }
+        if (b is AudioBlock && b.url == blockKey) {
+          return BlockMedia(url: b.url, isImage: false, suffix: classifyMediaUrl(b.url));
+        }
+        if (b is VideoBlock && b.url == blockKey) {
+          return BlockMedia(url: b.url, isImage: false, suffix: classifyMediaUrl(b.url));
+        }
+        if (b is QuoteBlock) {
+          final inner = scan(b.children);
+          if (inner != null) return inner;
+        }
+      }
+      return null;
+    }
+
+    final found = scan(blocks);
+    if (found == null) {
+      throw ActionException(
+        '正文中不存在该媒体行，无法执行块能力',
+        code: ActionErrorCode.notFound,
+        hint: 'block_key 必须逐字等于 human_md 中某个媒体行的 local:// 路径'
+            '（媒体行可能已被编辑移除）',
+      );
+    }
+    return found;
+  }
+
+  /// §6.2 源产物存在性：该 (item, block) 下 kinds 任一存在且文本非空。
+  Future<bool> _blockHasArtifact(
+    String itemId,
+    String blockKey,
+    Set<String> kinds, {
+    Transaction? txn,
+  }) async {
+    for (final k in kinds) {
+      final a = await _repo.blockArtifacts.get(itemId, blockKey, k, txn: txn);
+      if (a != null && (a.text?.trim().isNotEmpty ?? false)) return true;
+    }
+    return false;
+  }
+
   /// 引用附件迁移（ref → owned）：大文件复制已由调用方在锁外完成，
   /// 此处只做持有态交换的防呆与 DB 写——校验 ref 态、副本文件存在、
   /// 乐观锁 CAS，三道防线全在动作层（UI/MCP 同源）。
@@ -1016,6 +1544,9 @@ class ItemActionHandler {
   void _gate(ItemCommand cmd, CommandActor actor) {
     final allowed = switch (cmd) {
       ApplyAiResultCommand() => actor == CommandActor.pipeline,
+      // AI 写回会话态（还原/恢复/接管）是**人类侧的撤销工具**：AI 不得自行
+      // 声明会话已关闭，否则可一键抹掉人类的还原权（ai-writeback-revert §4）。
+      AiSessionCommand() => actor == CommandActor.ui,
       DeleteForeverCommand() => actor == CommandActor.ui,
       _ => true,
     };
@@ -1047,6 +1578,82 @@ class ItemActionHandler {
       return '仅允许 image→document（发票 / 文档截图）';
     }
     return null;
+  }
+
+  /// 解析 doc_meta_json（坏 JSON 返回 null），供 AI 写回时合并 ai_session_state 用。
+  Map<String, Object?>? _decodeDocMeta(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final d = jsonDecode(raw);
+      return d is Map ? d.cast<String, Object?>() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// AI 写回会话态变更（ai-writeback-revert §4/§5/§8.3）：还原 / 恢复 AI 改动 /
+  /// 接管闭环。三态各自的不变量在此强制——UI 换入口、AI 换传输层都绕不过。
+  Future<CommandResult> _aiSession(
+    AiSessionCommand cmd,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    final baseline = item.humanMdBaseline;
+    final values = <String, Object?>{};
+    late final String note;
+    switch (cmd.phase) {
+      case AiSessionPhase.restored:
+        // 还原：human_md ← 基线（AI 动笔前）。基线非空才有得还原（§3.1）。
+        if (baseline == null || baseline.isEmpty) {
+          throw ActionException(
+            '没有可还原的 AI 改动',
+            code: ActionErrorCode.invalidRequest,
+            hint: '该条目没有未关闭的 AI 会话（基线为空），无需还原',
+          );
+        }
+        values['human_md'] = baseline;
+        note = '已还原到 AI 动笔前';
+      case AiSessionPhase.pending:
+        // 恢复 AI 改动：human_md ← ai_revisions 最新条（§3.2 恢复源不在 Meta）。
+        if (baseline == null || baseline.isEmpty) {
+          throw ActionException(
+            '没有可恢复的 AI 改动',
+            code: ActionErrorCode.invalidRequest,
+            hint: '该条目没有未关闭的 AI 会话（基线为空）',
+          );
+        }
+        final ai = cmd.humanMd ?? await _repo.latestAiRevision(cmd.id, txn: txn);
+        if (ai == null || ai.isEmpty) {
+          throw ActionException(
+            'AI 版本已不可恢复',
+            code: ActionErrorCode.invalidRequest,
+            hint: 'ai_revisions 里没有该条目的快照，无法换回 AI 版',
+          );
+        }
+        values['human_md'] = ai;
+        note = '已恢复 AI 改动';
+      case AiSessionPhase.idle:
+        // 接管闭环（§5）：基线置 null、会话关闭；当前文本一并落库（§8.3：
+        // flush 必须同时提交文本与状态翻转，否则重开后文本是手改版却仍挂
+        // 悬浮条）。被放弃的 AI 版此前已由 apply_ai_result 追加进
+        // ai_revisions（§5 步骤 1 的持久留痕在此成立），故不重复写。
+        values['human_md_baseline'] = null;
+        if (cmd.humanMd != null) values['human_md'] = cmd.humanMd;
+        note = '已切换手动编辑';
+    }
+    values['doc_meta_json'] = jsonEncode(<String, Object?>{
+      if (item.docMetaJson != null) ...?_decodeDocMeta(item.docMetaJson),
+      'ai_session_state': cmd.phase.name,
+    });
+    await _write(
+      'ai_session',
+      cmd.id,
+      values,
+      expectedVersion: cmd.expectedVersion,
+      txn: txn,
+    );
+    return _result('ai_session', cmd.id, seeVault: seeVault, txn: txn, note: note);
   }
 
   Future<InboxItem> _require(String id, {required bool seeVault, Transaction? txn}) async {

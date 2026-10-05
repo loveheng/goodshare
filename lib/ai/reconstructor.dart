@@ -1,3 +1,4 @@
+import '../data/block_artifacts.dart' show BlockArtifactInput;
 import 'video_clips.dart';
 
 /// AI 双态重构输入：待处理的脏数据（V2 需求 §3.8 接口契约）。
@@ -11,6 +12,9 @@ class ReconstructInput {
     this.rawFilePath,
     this.taskAction,
     this.humanTags = const [],
+    this.blockKey,
+    this.blockFilePath,
+    this.blockSourceText,
   });
 
   final String itemId;
@@ -29,6 +33,19 @@ class ReconstructInput {
 
   /// 条目既有标签（LLM 关键词提取需并入既有标签，不覆盖用户手动打的）。
   final List<String> humanTags;
+
+  /// 块附件通道（2026-10-05 v21，block-artifact-workflow.md §2.5 输入源分叉）：
+  /// [blockKey] 非空 = 块任务（动作串 `block_*`），输入源为块媒体文件与块产物，
+  /// **不是**条目级 rawFilePath / humanMd。
+  final String? blockKey;
+
+  /// 块媒体文件的沙箱绝对路径（queue_consumer 按 blockKey 解析后传入；
+  /// 重建器不感知 local:// 标记与 documents 基路径）。null = 解析失败（文件缺失）。
+  final String? blockFilePath;
+
+  /// 块翻译/摘要的源产物文本（queue_consumer 从 block_artifacts 读出后传入；
+  /// 无源产物时为 null，重建器按失败 + note 处理）。
+  final String? blockSourceText;
 }
 
 /// AI 双态重构产出：人类态 / 机器态 / 标签 / 重分类 / 多视角聚类。
@@ -46,6 +63,8 @@ class ReconstructResult {
     this.note,
     this.clip,
     this.docMetaJson,
+    this.blockKey,
+    this.blockArtifacts,
   });
 
   final String humanMd;
@@ -76,6 +95,15 @@ class ReconstructResult {
   /// 非空时 handler 只把本段合并进条目的 `clips_json`（派生附属记录），
   /// **不触碰** human_md / summary_md 等条目级字段——区间结果不得覆盖整片产物。
   final ClipSegment? clip;
+
+  /// 块附件通道产出（2026-10-05 v21，docs/design/block-artifact-workflow.md §2.5）：
+  /// [blockKey] 非空 = 本次是块任务，[blockArtifacts] 为该块产物载荷——handler
+  /// 据此单事务 upsert 进 block_artifacts（转写 transcript+subtitle 双产物原子落库），
+  /// **human_md / translated_md / summary_md 等条目级字段零触碰**。
+  /// 此时 humanMd 应为 input.rawContent（走 ApplyAiResult 的 rawEcho 保护保留现正文）。
+  final String? blockKey;
+  final List<BlockArtifactInput>? blockArtifacts;
+
   final bool masked; // 是否已执行隐私打码（V2 §3.4；占位实现恒 false）
   final String? itemType; // AI 重分类（如 image→chatlog）；null = 不改
   final Map<String, List<String>>? facets; // 多视角聚类：视角→标签（V2 AI 分类页消费）

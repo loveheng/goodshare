@@ -49,6 +49,12 @@ void main() {
       final d = ItemCommand.fromJson({'op': 'delete_workspace', 'workspace_id': 'w1'})
           as DeleteWorkspaceCommand;
       expect(d.workspaceId, 'w1');
+      final dAck = ItemCommand.fromJson({
+        'op': 'delete_workspace',
+        'workspace_id': 'w1',
+        'ack_non_empty': true,
+      }) as DeleteWorkspaceCommand;
+      expect(dAck.ackNonEmpty, isTrue);
 
       final a = ItemCommand.fromJson({
         'op': 'add_to_workspace',
@@ -131,13 +137,57 @@ void main() {
       expect(renamed.note, contains('新名'));
       expect((await repo.byIdWorkspace(ws.id))!.name, '新名');
 
-      // 放两个条目进去，删除工作区后条目本身仍在
+      // 空工作区无需 ack 即可删
+      final deleted = await handler.execute(DeleteWorkspaceCommand(ws.id));
+      expect(deleted.note, contains('已删除工作区「新名」'));
+      expect(await repo.byIdWorkspace(ws.id), isNull);
+    });
+
+    test('非空守门：无 ack 拒绝（计数同源）；ui 带 ack 快捷删、条目保留', () async {
+      final ws = await repo.createWorkspace('收藏');
       final it = await repo.add(newItem());
       await handler.execute(AddToWorkspaceCommand(ws.id, it.id!));
-      final deleted = await handler.execute(DeleteWorkspaceCommand(ws.id));
-      expect(deleted.note, contains('条目本身不受影响'));
+
+      // 无 ack：被拦，工作区与归属都在
+      await expectLater(
+        handler.execute(DeleteWorkspaceCommand(ws.id)),
+        throwsA(predicate((e) => e.toString().contains('还有 1 条内容'))),
+      );
+      expect(await repo.byIdWorkspace(ws.id), isNotNull);
+
+      // ui 带 ack（弹窗「保留内容并删除」的落点）：删除成功，条目本身保留
+      final deleted = await handler.execute(
+        DeleteWorkspaceCommand(ws.id, ackNonEmpty: true),
+      );
+      expect(deleted.note, contains('1 条内容保留在「全部」'));
       expect(await repo.byIdWorkspace(ws.id), isNull);
       expect((await repo.byId(it.id!, includeDeleted: true))!.id, it.id);
+      expect(
+        await repo.listWorkspaceItems(ws.id),
+        isEmpty,
+        reason: '关系行随外键级联清理，条目仍在「全部」',
+      );
+    });
+
+    test('非空守门对 AI 同口径：ack 只认 ui actor（D-WS2 对称性）', () async {
+      final ws = await repo.createWorkspace('收藏');
+      final it = await repo.add(newItem());
+      await handler.execute(AddToWorkspaceCommand(ws.id, it.id!));
+
+      // AI 无 ack：普通拦截（带条数）
+      await expectLater(
+        handler.execute(DeleteWorkspaceCommand(ws.id), actor: CommandActor.ai),
+        throwsA(predicate((e) => e.toString().contains('还有 1 条内容'))),
+      );
+      // AI 自带 ack：仍然拒绝——确认权只在人类 UI
+      await expectLater(
+        handler.execute(
+          DeleteWorkspaceCommand(ws.id, ackNonEmpty: true),
+          actor: CommandActor.ai,
+        ),
+        throwsA(predicate((e) => e.toString().contains('仅人类 UI'))),
+      );
+      expect(await repo.byIdWorkspace(ws.id), isNotNull);
     });
 
     test('Vault 条目对 AI actor 不可加入（隐私后门拦截）', () async {

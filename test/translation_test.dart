@@ -278,6 +278,7 @@ void main() {
         itemType: InboxItem.typeNote,
         humanMd: '# 原文',
         rawContent: 'raw',
+        aiProcess: true, // 授权管线处理（默认关闭，测试显式开启）
         createdAt: DateTime.now().millisecondsSinceEpoch,
       ));
       final r = await handler.execute(

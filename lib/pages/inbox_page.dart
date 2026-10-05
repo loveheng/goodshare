@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 
 import '../action/commands.dart';
@@ -9,8 +10,10 @@ import '../data/repository.dart';
 import '../models/item.dart';
 import '../share/attachments.dart';
 import '../share/text_collector.dart';
+import '../ui/actions/item_actions.dart';
 import '../ui/content_card.dart';
 import '../ui/repo_auto_reload.dart';
+import '../ui/selection/selection_scope.dart';
 import '../ui/slogans.dart';
 import '../ui/tokens.dart';
 import 'add_sheet.dart';
@@ -35,6 +38,7 @@ class InboxPage extends StatefulWidget {
     this.onOpenDrawer,
     this.vaultOnly = false,
     this.onVaultOnlyChanged,
+    this.onSelectionModeChanged,
   });
 
   final Repository repo;
@@ -49,14 +53,34 @@ class InboxPage extends StatefulWidget {
   /// 保险箱视图切换回调：home_shell 据此切换列表过滤状态（显示保险箱条目）。
   final ValueChanged<bool>? onVaultOnlyChanged;
 
+  /// 选择模式激活回调：home_shell 据此让位底部导航与速记条（card-batch-selection §2.1）。
+  final ValueChanged<bool>? onSelectionModeChanged;
+
   @override
   State<InboxPage> createState() => _InboxPageState();
 }
 
 class _InboxPageState extends State<InboxPage> with RepoAutoReload {
   // 搜索/筛选已迁全屏搜索页（2026-09-30）：首页固定「全部 + 最新排序」。
+  // v18 拆双列表：置顶区（独立置顶区拍板）+ 主瀑布流（未置顶）。
+  List<InboxItem> _pinned = [];
   List<InboxItem> _items = [];
   bool _loading = true;
+
+  /// 批量选择模式状态机（card-batch-selection.md §3.1 骨架）。
+  final SelectionController _selection = SelectionController();
+
+  @override
+  void dispose() {
+    _selection.removeListener(_onSelectionChanged);
+    _selection.dispose();
+    super.dispose();
+  }
+
+  void _onSelectionChanged() {
+    if (mounted) setState(() {});
+    widget.onSelectionModeChanged?.call(_selection.active);
+  }
 
   @override
   Repository get repo => widget.repo;
@@ -67,6 +91,7 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
   @override
   void initState() {
     super.initState();
+    _selection.addListener(_onSelectionChanged);
     _reload();
   }
 
@@ -77,14 +102,36 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
   }
 
   Future<void> _reload() async {
-    final items = await widget.repo.list(
-      vault: widget.vaultOnly,
-      sort: ItemSort.newest,
-      limit: 500,
-    );
+    if (widget.vaultOnly) {
+      // 保险箱视图：单列表，不拆置顶区（置顶仅全部页生效拍板）。
+      final items = await widget.repo.list(vault: true, limit: 500);
+      if (!mounted) return;
+      setState(() {
+        _pinned = [];
+        _items = items;
+        _loading = false;
+      });
+      return;
+    }
+    // v18 双查询：置顶区（pinned_at 倒序）+ 主瀑布流（未置顶，最新在前）。
+    final futures = await Future.wait([
+      widget.repo.list(
+        vault: widget.vaultOnly,
+        pinned: true,
+        sort: ItemSort.pinnedNewest,
+        limit: 500,
+      ),
+      widget.repo.list(
+        vault: widget.vaultOnly,
+        pinned: false,
+        sort: ItemSort.newest,
+        limit: 500,
+      ),
+    ]);
     if (!mounted) return;
     setState(() {
-      _items = items;
+      _pinned = futures[0];
+      _items = futures[1];
       _loading = false;
     });
   }
@@ -111,6 +158,7 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
           handler: widget.handler,
           item: it,
           caps: widget.caps,
+          vaultContext: widget.vaultOnly,
         ),
       ),
     );
@@ -121,27 +169,55 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
     final scheme = Theme.of(context).colorScheme;
     final onSurfaceVariant = scheme.onSurfaceVariant;
 
-    // 保险箱视图（2026-09-30 D1 范围外）：静态 AppBar 不参与隐显，现状保留
+    // 保险箱视图（2026-09-30 D1 范围外）：静态 AppBar 不参与隐显，现状保留。
+    // 选择模式（组合E）：动作集换「移出保险箱/删除」（词汇表 inVaultView 裁剪），
+    // 返回手势先退选择、再退视图。
     if (widget.vaultOnly) {
-      // 手势返回=退出保险箱视图回「全部」，而非退到后台（ui-spec §3）
+      // 保险箱是「全部」tab 的子态（非独立 route），返回手势必须整段拦截：
+      // 先退选择、再退视图回「全部」（onVaultOnlyChanged(false)）。canPop 恒 false——
+      // 若为 true，手势会穿透到根 Navigator pop 掉 HomeShell（= 退出 App），
+      // 表现为「进保险箱后回不到全部」。
       return PopScope(
         canPop: false,
         onPopInvokedWithResult: (didPop, _) {
-          if (!didPop) widget.onVaultOnlyChanged?.call(false);
+          if (_selection.active) {
+            _selection.exit();
+          } else {
+            widget.onVaultOnlyChanged?.call(false);
+          }
         },
         child: Scaffold(
+          // 单层 AppBar（2026-10-05 拍板：藏底栏后双层顶栏合并）：
+          // 搜索一体块 + 标题/选择态共用一行；↓ 为显式退出保险箱出口
+          // （与返回手势双出口并存，防呆不困住）。
           appBar: AppBar(
             automaticallyImplyLeading: false,
             titleSpacing: Insets.md,
-            title: _topBarRow(scheme, onSurfaceVariant),
-          ),
-          body: Scaffold(
-            appBar: AppBar(
-              automaticallyImplyLeading: false,
-              title: const Text('保险箱'),
+            title: Row(
+              children: [
+                if (!_selection.active)
+                  IconButton(
+                    icon: const Icon(Icons.keyboard_arrow_down),
+                    tooltip: '退出保险箱',
+                    onPressed: () => widget.onVaultOnlyChanged?.call(false),
+                  ),
+                Expanded(
+                  child: _selection.active
+                      ? SelectionHeaderRow(controller: _selection, onExit: _selection.exit)
+                      : const Text('保险箱'),
+                ),
+              ],
             ),
-            body: _listBody(),
           ),
+          bottomNavigationBar: _selection.active
+              ? SelectionActionBar(
+                  controller: _selection,
+                  actions: ItemActions.selectionBar(inVaultView: true),
+                  onExit: _selection.exit,
+                  onAction: _onBatchAction,
+                )
+              : null,
+          body: _listBody(),
         ),
       );
     }
@@ -151,7 +227,23 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
     // 向下滚内容（继续阅读）→ 顶栏随内容滑出隐藏；向上滚（回看，轻微反向
     // 滚动即弹回）→ 顶栏 snap 展开；列表在顶部时恒显示。方向判定由滚动
     // 位置天然驱动，无需手写阈值防抖。
-    return Scaffold(
+    //
+    // 选择模式（card-batch-selection §2.1）：顶栏换「✕ 已选 N」、底部操作栏
+    // 取代导航（home_shell 让位）、下拉刷新禁用、返回手势先退模式。
+    return PopScope(
+      canPop: !_selection.active,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _selection.exit();
+      },
+      child: Scaffold(
+      bottomNavigationBar: _selection.active
+          ? SelectionActionBar(
+              controller: _selection,
+              actions: ItemActions.selectionBar(inVaultView: widget.vaultOnly),
+              onExit: _selection.exit,
+              onAction: _onBatchAction,
+            )
+          : null,
       body: RefreshIndicator(
         onRefresh: _reload,
         // 顶栏（搜索条）并入滚动流，spinner 锚点是视口顶边而非顶栏下缘——
@@ -161,22 +253,53 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
         displacement:
             MediaQuery.of(context).padding.top + kToolbarHeight + Insets.lg,
         child: CustomScrollView(
-          physics: const AlwaysScrollableScrollPhysics(),
+          // 选择模式禁下拉刷新（拍板：避免刷新与选中集打架）——
+          // 去 AlwaysScrollable 即无 overscroll，RefreshIndicator 不触发。
+          physics: _selection.active
+              ? const ClampingScrollPhysics()
+              : const AlwaysScrollableScrollPhysics(),
           slivers: [
             SliverAppBar(
               automaticallyImplyLeading: false,
               floating: true,
               snap: true,
               titleSpacing: Insets.md,
-              title: _topBarRow(scheme, onSurfaceVariant),
+              title: _selection.active
+                  ? SelectionHeaderRow(controller: _selection, onExit: _selection.exit)
+                  : _topBarRow(scheme, onSurfaceVariant),
             ),
             if (_loading)
               const SliverFillRemaining(
                 child: Center(child: CircularProgressIndicator()),
               )
-            else if (_items.isEmpty)
+            else if (_items.isEmpty && _pinned.isEmpty)
               SliverFillRemaining(hasScrollBody: false, child: _emptyView())
-            else
+            else ...[
+              // 独立置顶区（v18 拍板）：仅全部页生效，按置顶时间倒序。
+              if (_pinned.isNotEmpty) ...[
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(
+                        Insets.md, Insets.sm, Insets.md, 0),
+                    child: Text(
+                      '置顶',
+                      style: Theme.of(context).textTheme.labelMedium
+                          ?.copyWith(color: scheme.onSurfaceVariant),
+                    ),
+                  ),
+                ),
+                SliverPadding(
+                  padding: const EdgeInsets.symmetric(horizontal: Insets.sm),
+                  sliver: SliverMasonryGrid.count(
+                    crossAxisCount: 2,
+                    mainAxisSpacing: Insets.sm,
+                    crossAxisSpacing: Insets.sm,
+                    itemBuilder: (context, i) => _gridCard(_pinned[i]),
+                    childCount: _pinned.length,
+                  ),
+                ),
+                const SliverToBoxAdapter(child: SizedBox(height: Insets.lg)),
+              ],
               SliverPadding(
                 // 边距收窄并与便利贴同宽语言（2026-09-30 用户拍板：内容区太宽了）；
                 // 底部 96 让出便利贴拉手
@@ -190,18 +313,49 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
                   crossAxisCount: 2,
                   mainAxisSpacing: Insets.sm,
                   crossAxisSpacing: Insets.sm,
-                  itemBuilder: (context, i) => ContentCard(
-                    item: _items[i],
-                    onTap: () => _open(_items[i]),
-                  ),
+                  itemBuilder: (context, i) => _gridCard(_items[i]),
                   childCount: _items.length,
                 ),
               ),
+            ],
           ],
         ),
       ),
+      ),
     );
   }
+
+  /// 网格卡片统一接线：常态点按开详情；选择模式中点按加/减选；
+  /// 长按进模式（触觉反馈 = 模式信号，拍板）。
+  Widget _gridCard(InboxItem it) {
+    return ContentCard(
+      item: it,
+      selected: _selection.isSelected(it.id!),
+      onTap: () {
+        if (_selection.active) {
+          _selection.toggle(it.id!);
+        } else {
+          _open(it);
+        }
+      },
+      onLongPress: () {
+        HapticFeedback.lightImpact();
+        _selection.enter(it.id!);
+      },
+    );
+  }
+
+  /// 批量动作执行：语义收口在 runSelectionBatch（组合E 四列表面共用），
+  /// 本页只注入条目源与上下文（保险箱视图换「移出」动作集，§3.2 配置）。
+  Future<void> _onBatchAction(String actionId) => runSelectionBatch(
+        context,
+        handler: widget.handler,
+        repo: widget.repo,
+        selection: _selection,
+        items: [..._pinned, ..._items],
+        actionId: actionId,
+        vaultView: widget.vaultOnly,
+      );
 
   /// 顶栏一体块内容（mymind 同款）：☰ 嵌入搜索长条左端（无接缝），
   /// 右侧橘红方形 ＋ 块。SliverAppBar（全部页，随滚动隐显）与
@@ -307,14 +461,16 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
     return RefreshIndicator(
       onRefresh: _reload,
       child: MasonryGridView.count(
-        physics: const AlwaysScrollableScrollPhysics(),
+        // 选择模式禁下拉刷新（拍板）；去 AlwaysScrollable 即不触发指示器。
+        physics: _selection.active
+            ? const ClampingScrollPhysics()
+            : const AlwaysScrollableScrollPhysics(),
         crossAxisCount: 2,
         mainAxisSpacing: Insets.sm,
         crossAxisSpacing: Insets.sm,
         padding: const EdgeInsets.fromLTRB(Insets.sm, Insets.sm, Insets.sm, 96),
         itemCount: _items.length,
-        itemBuilder: (context, i) =>
-            ContentCard(item: _items[i], onTap: () => _open(_items[i])),
+        itemBuilder: (context, i) => _gridCard(_items[i]),
       ),
     );
   }

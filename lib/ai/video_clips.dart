@@ -166,44 +166,6 @@ List<ClipSegment> mergeClipResult(List<ClipSegment> clips, ClipSegment result) {
   return [...clips]..[idx] = result;
 }
 
-/// ASR 用：从源视频提取区间音轨参数（16k 单声道 wav，pcm_s16le 内置编码器）。
-List<String> buildClipAudioArgs(String input, String output, int startMs, int endMs) => [
-      '-y',
-      '-ss',
-      (startMs / 1000).toStringAsFixed(3),
-      '-i',
-      input,
-      '-t',
-      ((endMs - startMs) / 1000).toStringAsFixed(3),
-      '-vn',
-      '-map',
-      '0:a:0',
-      '-c:a',
-      'pcm_s16le',
-      output,
-    ];
-
-/// 提取视频片段参数（E1 拍板：**精确重编码**）。
-/// - min → min_gpl 变体引入 libx264（APK 增重换逐帧准确剪辑）；
-/// - `-ss` 输入侧快 seek + `-t` 时长，重编码后切点帧级准确；
-/// - crf 23 + veryfast：体积/速度平衡；faststart 便于播放器秒开。
-List<String> buildClipCutArgs(String input, String output, int startMs, int endMs) => [
-      '-y',
-      '-ss',
-      (startMs / 1000).toStringAsFixed(3),
-      '-i',
-      input,
-      '-t',
-      ((endMs - startMs) / 1000).toStringAsFixed(3),
-      '-c:v',
-      'libx264',
-      '-preset',
-      'veryfast',
-      '-crf',
-      '23',
-      '-c:a',
-      'aac',
-      '-movflags',
-      '+faststart',
-      output,
-    ];
+// 区间视频提取与音轨提取均已改走原生能力（media-native P2/P3，
+// lib/media/——trimVideo 硬编导出 + extractWav16k 解码重采样），
+// ffmpeg 的两条命令构造函数（buildClipCutArgs/buildClipAudioArgs）随之退役。

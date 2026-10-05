@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../ai/capability.dart';
 import '../ai/capability_chain.dart';
+import 'confirm_dialog.dart';
 import 'tokens.dart';
 
 /// 媒体块能力卡（detail-two-zone.md §5.4）：单卡链式工作台——
@@ -82,22 +83,12 @@ class _BlockCapabilityCardState extends State<BlockCapabilityCard> {  @override
   }
 
   Future<void> _reset() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('清除本块全部产出？'),
-        content: const Text('已生成的识别/转写结果将被删除，重新解析需再次消耗算力。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('清除'),
-          ),
-        ],
-      ),
+    final confirmed = await confirmDialog(
+      context,
+      title: '清除本块全部产出？',
+      content: '已生成的识别/转写结果将被删除，重新解析需再次消耗算力。',
+      confirmText: '清除',
+      danger: true,
     );
     if (confirmed != true) return;
     HapticFeedback.lightImpact();

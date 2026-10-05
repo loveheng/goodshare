@@ -1,7 +1,7 @@
 name: goodshare
 description: "A new Flutter project."
 publish_to: 'none'
-version: 1.2.1+6020 # 真机已装 8016（并行会话），本机 6016 覆盖安装触发 DOWNGRADE；提至 6017（打包 8017）覆盖。arm64-v8a 拆分包 versionCode=pub+2000
+version: 1.2.1+8043 # 整包 versionCode=pub 原值；真机已装 8031（旧拆分包 6031+2000），整包须 ≥8033 才能覆盖。arm64-v8a 拆分包 versionCode=pub+2000
 
 environment:
   sdk: ^3.13.4
@@ -30,7 +30,6 @@ dependencies:
   sqflite: ^2.4.4
   video_player: ^2.14.0
   google_mlkit_translation: ^0.15.1
-  ffmpeg_kit_flutter_new_min_gpl: ^2.6.2
   google_mlkit_image_labeling: ^0.16.1
   google_mlkit_barcode_scanning: ^0.16.1
   google_mlkit_language_id: ^0.15.1

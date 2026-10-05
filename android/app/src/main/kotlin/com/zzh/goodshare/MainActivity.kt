@@ -59,5 +59,10 @@ class MainActivity : FlutterActivity() {
             MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "goodshare/llm"),
             this,
         )
+        // 媒体探测桥（media-native P1，替换 FFprobeKit 只读元数据）：见 MediaBridge。
+        MediaBridge.register(
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "goodshare/media"),
+            this,
+        )
     }
 }

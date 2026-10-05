@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
+import '../data/block_artifacts.dart' show BlockArtifactInput, BlockArtifactKind;
 import '../data/repository.dart';
 import '../doc/html_to_md.dart';
 import 'reconstructor.dart';
@@ -31,6 +32,10 @@ class OcrReconstructor implements AiReconstructor {
   /// 处理图片（OCR）与链接（离线抓取）；音频/文本由其他实现或占位兜底。
   @override
   Future<bool> handles(ReconstructInput input) async {
+    // 块任务认领（block-artifact-workflow.md §2.5）：仅 block_ocr——note 条目
+    // 不挡块通道，块合法性（human_md 确有该图片媒体行）由动作层校验。
+    final block = Repository.parseBlockAction(input.taskAction);
+    if (block != null) return block.$1 == 'block_ocr';
     // 链接离线抓取保持自动（用户未要求手动化）。
     if (input.itemType == 'url') return true;
     if (input.itemType != 'image') return false;
@@ -43,6 +48,37 @@ class OcrReconstructor implements AiReconstructor {
   @override
   Future<ReconstructResult> reconstruct(ReconstructInput input) async {
     final ocrOn = isOcrEnabled?.call() ?? true;
+    // 块分支（§2.5）：源为块图片文件（queue_consumer 解析的 blockFilePath），
+    // 产出落 block_artifacts（ocr_text），条目字段零触碰。
+    final blockKey = input.blockKey;
+    if (blockKey != null) {
+      final path = input.blockFilePath;
+      if (!ocrOn) {
+        return ReconstructResult(
+          humanMd: input.rawContent ?? '',
+          blockKey: blockKey,
+          blockArtifacts: const [],
+          note: 'OCR 已关闭（设置 → AI 模式），未执行识别',
+        );
+      }
+      if (path == null || path.isEmpty || !File(path).existsSync()) {
+        return ReconstructResult(
+          humanMd: input.rawContent ?? '',
+          blockKey: blockKey,
+          blockArtifacts: const [],
+          note: '块图片文件缺失，无法识别（媒体行可能已被移除）',
+        );
+      }
+      final text = await _ocr(path);
+      return ReconstructResult(
+        humanMd: input.rawContent ?? '',
+        blockKey: blockKey,
+        // OCR 无产出（识别失败 / 图片无文字）也须明说，否则用户以为图片被正常解析
+        blockArtifacts:
+            text == null ? const [] : [BlockArtifactInput(BlockArtifactKind.ocrText, text: text)],
+        note: text == null ? '图片块 OCR 未产出文字（识别失败或无文字内容）' : null,
+      );
+    }
     if (ocrOn && input.itemType == 'image' && (input.rawFilePath?.isNotEmpty ?? false)) {
       final text = await _ocr(input.rawFilePath!);
       // OCR 无产出（识别失败 / 图片无文字）也须明说，否则用户以为图片被正常解析

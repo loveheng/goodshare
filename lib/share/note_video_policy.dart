@@ -11,8 +11,7 @@ library;
 
 import 'dart:io';
 
-import 'package:ffmpeg_kit_flutter_new_min_gpl/ffprobe_kit.dart';
-import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
+import '../media/media_toolkit.dart';
 
 /// 相机直拍时长上限（image_picker maxDuration，到时自动停止，无感中断）。
 const Duration noteVideoCaptureMaxDuration = Duration(seconds: 60);
@@ -68,15 +67,11 @@ class NoteVideoCheck {
 }
 
 /// 探测视频时长（毫秒；失败返回 null 不阻断）。
-/// 用 FFprobeKit **只读元数据**（不解码不转码，开销同读文件头），
-/// 符合「抛弃 FFmpeg 软编软解」拍板——那条禁的是转码链路。
+/// 走 [mediaToolkit] 原生只读元数据（MediaMetadataRetriever，不解码不转码，
+/// 开销同读文件头），符合「抛弃 FFmpeg 软编软解」拍板——那条禁的是转码链路。
 Future<int?> probeVideoDurationMs(String path) async {
   try {
-    final session = await FFprobeKit.getMediaInformation(path);
-    if (!ReturnCode.isSuccess(await session.getReturnCode())) return null;
-    final s = session.getMediaInformation()?.getDuration();
-    if (s == null) return null;
-    return ((double.tryParse(s) ?? 0) * 1000).round();
+    return await mediaToolkit.videoDurationMs(path);
   } catch (_) {
     return null;
   }

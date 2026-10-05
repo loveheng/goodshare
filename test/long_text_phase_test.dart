@@ -178,7 +178,14 @@ void phase3Groups() {
           ),
         ));
         expect(find.byKey(emptyMarker), findsNothing); // 非空 body 不走空态
-        await Future<void>.delayed(const Duration(milliseconds: 200));
+        // 回填等待用轮询而非固定延迟：套件并发高负载下 isolate 解析 +
+        // 200ms 不够（2026-10-05 修时序脆弱，单跑必过/全量偶挂）
+        final deadline = DateTime.now().add(const Duration(seconds: 5));
+        while (DateTime.now().isBefore(deadline)) {
+          await tester.pump();
+          if (find.textContaining('章节 0').evaluate().isNotEmpty) break;
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
         await tester.pump();
       });
       expect(find.textContaining('章节 0'), findsOneWidget);

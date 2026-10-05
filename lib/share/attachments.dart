@@ -71,5 +71,101 @@ String resolveLocalMediaSrc(String url) {
 Future<String> toLocalMediaUrl(String absPath) async {
   await _ensureDocumentsPath();
   final base = _documentsPath!;
-  return absPath.startsWith('$base/') ? 'local://${absPath.substring(base.length + 1)}' : absPath;
+  return absPath.startsWith('$base/')
+      ? 'local://${absPath.substring(base.length + 1)}'
+      : absPath;
+}
+
+// ---------- 媒体移除回收站（延迟删除，2026-10-04 拍板） ----------
+//
+// 作曲编辑器「移除媒体」不再立即删文件：先 rename 进同目录
+// `.trash_media/<会话>/`（同卷 rename 原子、不依赖 documents 路径缓存），
+// 撤销移除时 rename 回原位，编辑器销毁时清空自己的桶（此刻撤销已不可达，
+// 语义收敛回「删除」）。每编辑器实例独立会话（多编辑器并存互不清桶）；
+// 入桶时顺手清扫同父目录下超过 [kTrashStaleAge] 的陈旧桶——进程被杀未走
+// dispose 的孤儿不至于永久滞留。全同步 IO：本地 rename/Create/Delete 是
+// 微秒级 syscall，同步执行消除「入桶未落完成、账目先行」的竞态窗口。
+
+const Duration kTrashStaleAge = Duration(hours: 24);
+
+/// 媒体回收站会话（每编辑器实例一个）。
+class MediaTrashSession {
+  // late final：初始化器引用 this（identityHashCode 作会话唯一性成分）
+  late final String _id =
+      'e${DateTime.now().microsecondsSinceEpoch}_${identityHashCode(this)}';
+  final List<Directory> _buckets = [];
+  var _stashSeq = 0;
+
+  Directory _bucketFor(String parent) => Directory('$parent/.trash_media/$_id');
+
+  /// 移入回收站，返回回收站内新路径；失败返回 null（调用方保文件原位，
+  /// 宁滞留不丢数据）。
+  String? stash(File file) {
+    try {
+      final bucket = _bucketFor(file.parent.path);
+      bucket.createSync(recursive: true);
+      if (!_buckets.any((b) => b.path == bucket.path)) _buckets.add(bucket);
+      _sweepStaleBuckets(file.parent.path);
+      final name = file.path.split('/').last;
+      final dest = File(
+        '${bucket.path}/${DateTime.now().microsecondsSinceEpoch}_${_stashSeq++}_$name',
+      );
+      file.renameSync(dest.path);
+      return dest.path;
+    } catch (e) {
+      debugPrint(
+        '[DEGRADE] media_trash_stash_failed path=${file.path} error=$e',
+      );
+      return null;
+    }
+  }
+
+  /// 从回收站还原（撤销移除）：rename 回原位。原位已存在视为已还原。
+  bool restore(String trashedPath, String originalPath) {
+    try {
+      if (File(originalPath).existsSync()) return true;
+      final f = File(trashedPath);
+      if (!f.existsSync()) return false;
+      f.renameSync(originalPath);
+      return true;
+    } catch (e) {
+      debugPrint(
+        '[DEGRADE] media_trash_restore_failed path=$trashedPath error=$e',
+      );
+      return false;
+    }
+  }
+
+  /// 清空本会话所有桶（编辑器 dispose 时调用；幂等）。
+  void purge() {
+    for (final b in List<Directory>.of(_buckets)) {
+      try {
+        if (b.existsSync()) b.deleteSync(recursive: true);
+      } catch (e) {
+        debugPrint(
+          '[DEGRADE] media_trash_purge_failed path=${b.path} error=$e',
+        );
+      }
+    }
+    _buckets.clear();
+  }
+
+  /// 清扫同父目录下其他会话的陈旧桶（进程被杀的孤儿）。
+  void _sweepStaleBuckets(String parent) {
+    try {
+      final root = Directory('$parent/.trash_media');
+      if (!root.existsSync()) return;
+      final now = DateTime.now();
+      for (final e in root.listSync()) {
+        if (e is! Directory) continue;
+        if (e.path.endsWith('/$_id')) continue;
+        final stat = e.statSync();
+        if (now.difference(stat.modified) > kTrashStaleAge) {
+          e.deleteSync(recursive: true);
+        }
+      }
+    } catch (e) {
+      debugPrint('[DEGRADE] media_trash_sweep_failed parent=$parent error=$e');
+    }
+  }
 }

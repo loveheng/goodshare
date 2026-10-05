@@ -1,9 +1,16 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../ai/capability.dart';
 import '../ai/capability_chain.dart';
+import '../ai/workflow.dart' show WorkflowStep, workflowFor;
+import '../share/attachments.dart' show resolveLocalMediaSrc;
 import 'block_capability_page.dart';
+import 'block_workflow_page.dart';
+import 'image_viewer.dart';
+import 'workflow_track.dart' show BlockArtifactsView;
 
 /// 触发方式（detail-two-zone.md §5.1 拍板 2026-10-01：按块类型分派）。
 enum BlockCapabilityTrigger {
@@ -25,6 +32,8 @@ class BlockAnchor {
     required this.kind,
     required this.preview,
     this.anchorLabel,
+    this.previewFile,
+    this.previewUrl,
   });
 
   /// 块类型（决定三级页能力链内容）。
@@ -35,6 +44,10 @@ class BlockAnchor {
 
   /// 能力页来源锚点文案（「来自：代码块」等）。
   final String? anchorLabel;
+
+  /// 预览激活源（图片块点按全屏查看）。
+  final String? previewFile;
+  final String? previewUrl;
 }
 
 /// 块锚点注册中心：Host 注册自身几何，选区菜单按锚点坐标反查命中块。
@@ -131,6 +144,9 @@ class BlockCapabilityHost extends StatefulWidget {
     required this.child,
     this.anchorLabel,
     this.trigger = BlockCapabilityTrigger.selection,
+    this.previewFile,
+    this.previewUrl,
+    this.blockKey,
   });
 
   /// 被包裹的已渲染块（buildRichBlock 产出）。
@@ -139,8 +155,18 @@ class BlockCapabilityHost extends StatefulWidget {
   /// 块类型（决定三级页能力链内容）。
   final BlockKind kind;
 
+  /// 行内块 key（媒体行 `local://` 路径，块附件通道 §2.1）：非空 = 长按进
+  /// **工作流页**（产物落 block_artifacts，续跑/锚点切换）；null = 条目级链
+  /// （顶级媒体区/文本块，现行链式卡）。
+  final String? blockKey;
+
   /// 能力页来源锚点文案（「来自：图片第 N 块」等）。
   final String? anchorLabel;
+
+  /// 预览激活源（图片块点按全屏查看，2026-10-03 拍板）：本地文件路径或
+  /// 网络 url 二选一；都空 = 预览不可激活。
+  final String? previewFile;
+  final String? previewUrl;
 
   final BlockCapabilityTrigger trigger;
 
@@ -182,6 +208,8 @@ class _BlockCapabilityHostState extends State<BlockCapabilityHost> {
         kind: widget.kind,
         preview: widget.child,
         anchorLabel: widget.anchorLabel,
+        previewFile: widget.previewFile,
+        previewUrl: widget.previewUrl,
       ),
       context,
     );
@@ -200,6 +228,9 @@ class _BlockCapabilityHostState extends State<BlockCapabilityHost> {
             kind: widget.kind,
             anchorLabel: widget.anchorLabel,
             preview: widget.child,
+            previewFile: widget.previewFile,
+            previewUrl: widget.previewUrl,
+            blockKey: widget.blockKey,
           ),
           child: widget.child,
         ),
@@ -212,24 +243,67 @@ class _BlockCapabilityHostState extends State<BlockCapabilityHost> {
 
 /// 唤出三级能力页（选区菜单项 / 媒体块长按共用的唯一出口）。
 ///
-/// 接线：块类型 → [capabilitiesFor] 全量链 → [showBlockCapabilityPage]；
-/// 执行回调经 [BlockCapabilityExecutor] 承接（详情页提供真命令）。
+/// 接线分叉（block-artifact-workflow.md §4「结构保留只换芯」）：
+/// - [blockKey] 非空 **且** Executor 提供块通道四回调 → **工作流页**
+///   （BlockWorkflowPage：产物读写走 block_artifacts，续跑/Reset/应用/导出）；
+/// - 否则走条目级链式卡（顶级媒体区/文本块/未注入块通道的场景，现行行为）。
 Future<void> openBlockCapability(
   BuildContext context, {
   required BlockKind kind,
   String? anchorLabel,
   Widget? preview,
+  String? previewFile,
+  String? previewUrl,
+  String? blockKey,
 }) async {
   HapticFeedback.lightImpact();
   final executor = BlockCapabilityExecutor.maybeOf(context);
   if (executor == null) return; // 无执行作用域（如独立预览）不进页
   final chain = CapabilityChain(capabilitiesFor(kind))..init();
+  final previewActivate = previewFile == null && previewUrl == null
+      ? null
+      : () => showImageFullScreen(
+          context,
+          file: previewFile == null
+              ? null
+              : File(resolveLocalMediaSrc(previewFile)),
+          networkUrl: previewUrl,
+        );
+  // 块附件通道：块 key + Executor 块回调齐备 → 工作流页（§4 换芯）
+  if (blockKey != null &&
+      executor.loadBlockArtifacts != null &&
+      executor.onRunWorkflowStep != null &&
+      executor.onApplyArtifact != null &&
+      executor.resetBlock != null) {
+    await Navigator.of(context, rootNavigator: true).push(
+      MaterialPageRoute<void>(
+        fullscreenDialog: true,
+        builder: (_) => BlockWorkflowPage(
+          kind: kind,
+          blockKey: blockKey,
+          spec: workflowFor(kind),
+          anchorLabel: anchorLabel,
+          preview: preview,
+          onPreviewActivate: previewActivate,
+          loadArtifacts: executor.loadBlockArtifacts!,
+          onRunStep: executor.onRunWorkflowStep!,
+          onApplyArtifact: executor.onApplyArtifact!,
+          onReset: executor.resetBlock!,
+          onRunStandalone: executor.onRunStandalone,
+          onCueSeek: executor.onCueSeek,
+          onEditArtifact: executor.onEditArtifact,
+        ),
+      ),
+    );
+    return;
+  }
   await showBlockCapabilityPage(
     context,
     kind: kind,
     chain: chain,
     anchorLabel: anchorLabel,
     preview: preview,
+    onPreviewActivate: previewActivate,
     initialOutputs: executor.loadPersistedOutputs(),
     onRunStep: executor.onRunStep,
     onReset: executor.onReset,
@@ -265,6 +339,8 @@ Widget buildBlockCapabilityMenu(
             kind: anchor.kind,
             anchorLabel: anchor.anchorLabel,
             preview: anchor.preview,
+            previewFile: anchor.previewFile,
+            previewUrl: anchor.previewUrl,
           );
         },
       ),
@@ -282,11 +358,17 @@ Widget wrapWithCapabilityHost(
   required BlockKind kind,
   String? anchorLabel,
   BlockCapabilityTrigger trigger = BlockCapabilityTrigger.selection,
+  String? previewFile,
+  String? previewUrl,
+  String? blockKey,
 }) {
   return BlockCapabilityHost(
     kind: kind,
     anchorLabel: anchorLabel,
     trigger: trigger,
+    previewFile: previewFile,
+    previewUrl: previewUrl,
+    blockKey: blockKey,
     child: rendered,
   );
 }
@@ -304,6 +386,12 @@ class BlockCapabilityExecutor extends InheritedWidget {
     required this.onEditOutput,
     required this.onRunStandalone,
     required this.loadPersistedOutputs,
+    this.loadBlockArtifacts,
+    this.onRunWorkflowStep,
+    this.onApplyArtifact,
+    this.resetBlock,
+    this.onCueSeek,
+    this.onEditArtifact,
     required super.child,
   });
 
@@ -324,6 +412,31 @@ class BlockCapabilityExecutor extends InheritedWidget {
 
   /// 读该块已落库产出（中断续跑 restore 数据源）。
   final Map<int, String> Function() loadPersistedOutputs;
+
+  // ---- 块附件通道（workflow-track 接线，block-artifact-workflow.md §4）----
+  // 四者齐备（详情页注入）时行内媒体块长按进工作流页；任一为 null = 该页面
+  // 场景不支持块通道（如独立预览），保持条目级链路径。
+
+  /// 读该块产物视图（工作流轨数据源，§3.3 续跑判定的唯一事实源）。
+  final Future<BlockArtifactsView> Function(String blockKey)? loadBlockArtifacts;
+
+  /// 执行工作流步骤（组装 block 命令入队 → 等任务落定 → 按产物判成功）。
+  final Future<bool> Function(WorkflowStep step, String blockKey, String? sourceKind)?
+      onRunWorkflowStep;
+
+  /// 产物应用（回注：就近插入源媒体行正下方 / 灵感区，§3.4 动词体系）。
+  final Future<void> Function(String blockKey, String kind, String text)? onApplyArtifact;
+
+  /// Reset 该块全部产物（表行 + 文件产物删盘，§2.2 纪律 7）。
+  final Future<void> Function(String blockKey)? resetBlock;
+
+  /// §3.5 跳帧联动：字幕 cue 点句 → 宿主打开播放器定位该句起点播放。
+  final void Function(String blockKey, int cueIndex)? onCueSeek;
+
+  /// §4 文本产物修订：宿主打开编辑页，修订文本 upsert 回 block_artifacts
+  ///（保 filePath/meta）。
+  final Future<String?> Function(String blockKey, String kind, String currentText)?
+      onEditArtifact;
 
   static BlockCapabilityExecutor? maybeOf(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<BlockCapabilityExecutor>();

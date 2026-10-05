@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
@@ -7,33 +8,51 @@ import 'package:share_plus/share_plus.dart';
 
 import '../action/commands.dart';
 import '../action/item_action_handler.dart';
+import '../app/lifecycle_manager.dart';
 import '../ai/capabilities.dart';
 import '../ai/capability.dart';
+import '../ai/subtitle.dart' show AsrCue, parseSrtVtt;
+import '../ai/workflow.dart' show WorkflowStep;
 
+import '../data/block_artifacts.dart'
+    show BlockArtifactInput, BlockArtifactKind;
 import '../data/repository.dart';
 import '../doc/attach.dart';
+import '../doc/rich_text.dart';
+import '../ui/confirm_dialog.dart';
+import '../ui/overflow_sheet.dart';
+import '../ui/tag_editor_sheet.dart';
 
-import '../doc/edit_session.dart';
 import '../models/item.dart';
 import '../service/settings_store.dart';
+import '../ui/actions/item_actions.dart';
+import '../ui/ai_diff.dart';
+import '../ui/ai_revision_sheet.dart';
+import '../ui/ai_session.dart';
 import '../ui/annotation_editor_page.dart';
+import '../ui/audio_record_sheet.dart';
 import '../ui/clip_editor_sheet.dart';
 import '../ui/audio_playback_service.dart';
 import '../ui/body_screenshot.dart';
 import '../ui/block_capability_host.dart';
+import '../ui/media_blocks.dart' show SubtitleScope, showInlineVideoPlayer;
+import '../ui/workflow_track.dart' show BlockArtifactsView;
 
 import '../ui/block_text_page.dart';
 
 import '../ui/item_view_template.dart';
 import '../ui/pdf_export.dart';
 import '../ui/repo_auto_reload.dart';
+import '../ui/section_legend.dart';
 import '../ui/rich_text_view.dart';
 import '../ui/share_scope_sheet.dart';
 import '../ui/tokens.dart';
+
 import 'package:file_picker/file_picker.dart';
-import '../doc/rich_text.dart';
+
 import '../share/attachments.dart';
-import '../ui/media_blocks.dart';
+import '../share/note_composer.dart';
+import '../ui/note_composer_editor.dart';
 import '../ui/slogans.dart';
 
 /// 详情页：ItemViewTemplate 双态外壳 + 动作区。
@@ -181,6 +200,15 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   late InboxItem _item = widget.item;
   StreamSubscription<AppLifecycleState>? _lifecycleSub;
 
+  /// AI 写回会话状态机（ai-writeback-revert §4/§5）：悬浮条显隐、还原 /
+  /// 恢复 AI 改动、以及「用户手改即接管」的 settle 判定都归它。
+  /// 读态也持有——AI 写完回后用户打开详情页就应看到待决提示。
+  AiSessionController? _aiSession;
+
+  /// 变更概览文案缓存（diff 有代价，按「基线+当前」对缓存，文本不变不重算）。
+  String _aiSummary = '';
+  String? _aiSummaryKey;
+
   /// 页面级音频播放控制器（rich-text-media.md §3 单实例红线）：唯一
   /// AudioPlayer 实例，行内 AudioBlock 与顶级音频区共用；离开页面即释放。
   final _audioPlayback = AudioPlaybackController();
@@ -219,12 +247,14 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 底栏**常驻**（否则打字时「保存」被键盘藏掉，就地编辑根本不可用）。
   bool _editing = false;
 
-  /// 就地编辑会话（脊柱 EditSession）：进入编辑态创建，退出 / 提交后销毁。
-  EditSession? _editSession;
+  /// 统一作曲编辑器（2026-10-03 编辑器统一拍板「详情编辑与新增页一模一样」）：
+  /// 编辑态正文载体，保存经它取段序列。
+  final GlobalKey<NoteComposerEditorState> _composerKey = GlobalKey();
 
-  /// 编辑态正文宿主的 GlobalKey：保存前经它 flush 空块（删光文字 = 删段，
-  /// 失焦回收在内存中完成，落库前的最后一次同步在这里补齐）。
-  final GlobalKey<_EditBodyState> _editBodyKey = GlobalKey();
+  /// 编辑态初始草稿行：进入编辑时由 `human_md` 一次转换（noteMdToDraftRows），
+  /// 编辑器内部自管段序列；退出/提交后置 null。
+  List<List<String>>? _editRows;
+
   final FocusNode _titleFocus = FocusNode();
 
   @override
@@ -241,11 +271,37 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     getMachineModeEnabled().then((v) {
       if (mounted) setState(() => _machineModeEnabled = v);
     });
+    // §8.3：切后台（App 被杀/退后台）必须强制 flush settle，否则状态/文本
+    // mismatch——DB 停在旧会话态，重开时文本已是手改版却仍挂悬浮条。
+    // 退后台一律订阅 AppLifecycleManager（arch-guard R6：不得裸用
+    // WidgetsBindingObserver），与队列/草稿同一生命周期枢纽。
+    _lifecycleSub = AppLifecycleManager.instance.onBackgrounded.listen((_) {
+      unawaited(_aiSession?.flush() ?? Future<void>.value());
+    });
+    _aiSession = AiSessionController(
+      itemId: widget.item.id ?? '',
+      readItem: () => widget.repo.byId(_item.id!, includeDeleted: true, includeVault: true),
+      readLatestAi: () => widget.repo.latestAiRevision(_item.id!),
+      apply: (cmd) => widget.handler.execute(cmd, vaultContext: widget.vaultContext),
+      readText: _currentBodyText,
+    )..onTakeover = _onAiTakeover;
+    _aiSession!.sync(_item);
+  }
+
+  @override
+  void deactivate() {
+    // 路由离开（返回键 / 侧滑）：在编辑器与状态机被回收前落定（§8.3）。
+    unawaited(_aiSession?.flush() ?? Future<void>.value());
+    super.deactivate();
   }
 
   @override
   void dispose() {
     _lifecycleSub?.cancel();
+    // §8.3：dispose 是最后一道 flush 点——先 flush 完再 dispose 控制器
+    // （反过来会把 _disposed 置真，令 flush 的落库回调整体空转）。
+    final ai = _aiSession;
+    if (ai != null) unawaited(ai.flush().whenComplete(ai.dispose));
     _audioPlayback.dispose();
     // 灵感区失焦即存，dispose 兜底最后一笔（速记条同款语义）
     _saveInspiration();
@@ -273,7 +329,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   void reload() => _reload();
 
   Future<void> _reload() async {
-    final fresh = await widget.repo.byId(_item.id!, includeDeleted: true);
+    final fresh = await widget.repo.byId(_item.id!, includeDeleted: true, includeVault: true);
     if (fresh == null) return;
     if (!mounted) return;
     setState(() {
@@ -285,6 +341,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
         _inspirationCtrl.text = _item.inspirationMd ?? '';
       }
     });
+    // 会话态与最新快照同源（AI 可能在页面打开期间又写回了一次）。
+    _aiSession?.sync(_item);
   }
 
   void _snack(String message) {
@@ -296,6 +354,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   Future<void> _run(Future<Object?> Function() action, String done) async {
     try {
       final res = await action();
+      // 成功落库触感（§6.0 触感映射：medium=成功落库）
+      HapticFeedback.mediumImpact();
       // 命令层可能回更具体的提示（如「已放入任务列表，前面还有 N 条」），优先展示
       _snack(res is CommandResult ? (res.note ?? done) : done);
       await _reload();
@@ -305,22 +365,12 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   }
 
   Future<void> _confirmDelete() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('删除这条收集？'),
-        content: const Text('删除后 30 天内可在「设置 → 最近删除」恢复。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
+    final ok = await confirmDialog(
+      context,
+      title: '删除这条收集？',
+      content: '删除后 30 天内可在「设置 → 最近删除」恢复。',
+      confirmText: '删除',
+      danger: true,
     );
     if (ok == true) {
       await _run(
@@ -340,24 +390,11 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 「保存被拒」。返回 true = 已解锁或本就未锁定，可继续编辑。
   Future<bool> _ensureUnlocked() async {
     if (!_item.editLocked) return true;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('解除编辑锁定？'),
-        content: const Text(
-          '这条是合并收集的条目，默认锁定以防误改。解除后即可编辑。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('解除并编辑'),
-          ),
-        ],
-      ),
+    final ok = await confirmDialog(
+      context,
+      title: '解除编辑锁定？',
+      content: '这条是合并收集的条目，默认锁定以防误改。解除后即可编辑。',
+      confirmText: '解除并编辑',
     );
     if (ok != true) return false;
     HapticFeedback.lightImpact();
@@ -384,57 +421,48 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     }
   }
 
-  /// 进入编辑态：先过解锁（合并模式条目），再建就地编辑会话（脊柱）。
+  /// 进入编辑态：先过解锁（合并模式条目），再把 human_md 一次转换为
+  /// 作曲器草稿行（noteMdToDraftRows，2026-10-03 编辑器统一）。
   Future<void> _enterEdit() async {
     if (!await _ensureUnlocked()) return;
     setState(() {
-      _editSession = EditSession(_item.bodyText);
+      _editRows = noteMdToDraftRows(_item.bodyText);
       _editing = true;
+    });
+    // 进态即自动聚焦末段+弹键盘（输入阻碍审计 P3：此前还要再点一下正文）
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _composerKey.currentState?.requestFocusFirst();
     });
   }
 
-  /// 退出编辑态（不提交）：会话丢弃。
+  /// 退出编辑态（不提交）：编辑行丢弃。
   void _exitEdit() {
     setState(() {
-      _editSession = null;
+      _editRows = null;
       _editing = false;
     });
   }
 
   /// 丢弃确认：编辑态下返回键 / 侧滑被拦截时询问（危险操作二次确认口径）。
   Future<bool> _confirmDiscardEdit() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('放弃未保存的改动？'),
-        content: const Text('退出编辑态后，本次编辑的内容不会保存。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('继续编辑'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('放弃'),
-          ),
-        ],
-      ),
+    return confirmDialog(
+      context,
+      title: '放弃未保存的改动？',
+      content: '退出编辑态后，本次编辑的内容不会保存。',
+      cancelText: '继续编辑',
+      confirmText: '放弃',
+      danger: true,
     );
-    return ok ?? false;
   }
 
-  /// 提交：会话序列化 → `UpdateItemCommand(humanMd)` → 回读态。
-  ///
-  /// **无改动时明说「无改动」，不假装成功**——否则用户以为存过了。
+  /// 提交：作曲器段序列化（serializeNoteMd）→ `UpdateItemCommand(humanMd)`
+  /// → 回读态。**无改动时明说「无改动」，不假装成功**——否则用户以为存过了。
   Future<void> _commitEdit() async {
-    final session = _editSession;
-    if (session == null) return;
-    // 落库前最后一次同步：把仍在输入框里的空块（删光待回收）flush 掉，
-    // 保证「删光文字 = 删段」在保存时也不遗漏。
-    _editBodyKey.currentState?.flushPendingEmpties();
-    final md = session.markdown;
+    final models = _composerKey.currentState?.toNoteSegments();
+    if (models == null) return;
+    final md = serializeNoteMd(models);
     setState(() {
-      _editSession = null;
+      _editRows = null;
       _editing = false;
     });
     if (md == _item.bodyText) {
@@ -453,17 +481,186 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     );
   }
 
-  /// 就地编辑态正文：替换只读 `ItemViewTemplate.bodySlivers` 为可编辑渲染
-  /// （消费 [EditSession]，逐块 TextField + 块级工具栏）。TL;DR / 标签 / 灵感区在
-  /// 编辑态不展示——本拍板只改正文，退出编辑后照常渲染。
-  List<Widget> _editBodySlivers(EditSession session) => [
-        SliverToBoxAdapter(
-          child: KeyedSubtree(
-            key: ValueKey(session),
-            child: _EditBody(key: _editBodyKey, session: session),
-          ),
-        ),
-      ];
+  /// 当前正文（会话判定与 diff 的唯一取文口）：编辑态以编辑器**活文本**为准
+  /// （保存前的手改也必须计入接管判定），读态以库里 human_md 为准。
+  String _currentBodyText() {
+    if (_editing) {
+      final st = _composerKey.currentState;
+      if (st != null) return serializeNoteMd(st.toNoteSegments());
+    }
+    return _item.bodyText;
+  }
+
+  /// 变更概览（按「基线 + 当前」缓存：diff 有代价，文本不变不重算）。
+  String _aiSummaryFor(String baseline, String current) {
+    // 长度前缀防拼接碰撞（"a b"+"c" 与 "a"+"b c" 会撞成同一个 key）。
+    final key = '${baseline.length}|$baseline\u0000$current';
+    if (_aiSummaryKey != key) {
+      _aiSummaryKey = key;
+      _aiSummary = computeAiDiff(before: baseline, after: current).summary;
+    }
+    return _aiSummary;
+  }
+
+  /// AI 会话悬浮条（会话关闭时零高度，不占位、不参与底栏布局）。
+  Widget _aiSessionBar() {
+    final ctl = _aiSession;
+    if (ctl == null) return const SizedBox.shrink();
+    return ListenableBuilder(
+      listenable: ctl,
+      builder: (context, _) {
+        if (!ctl.isOpen) return const SizedBox.shrink();
+        return AiSessionBar(
+          phase: ctl.phase,
+          summary: _aiSummaryFor(ctl.baseline ?? '', _currentBodyText()),
+          onViewDiff: _aiViewDiff,
+          onRestore: _aiRestore,
+          onReapply: _aiReapply,
+        );
+      },
+    );
+  }
+
+  /// 查看对比：基线 ↔ 当前（§7 Inline Diff，只读）。
+  Future<void> _aiViewDiff() async {
+    final base = _aiSession?.baseline ?? '';
+    if (base.isEmpty) return;
+    await showAiDiffSheet(context, before: base, after: _currentBodyText());
+  }
+
+  /// 还原到 AI 动笔前（§4 AI_PENDING → RESTORED）。
+  Future<void> _aiRestore() async {
+    final ctl = _aiSession;
+    if (ctl == null) return;
+    try {
+      final base = await ctl.restore();
+      if (base == null) {
+        _snack('没有可还原的 AI 改动');
+        return;
+      }
+      _pushProgrammatic(base);
+      await _reload();
+    } on ActionException catch (e) {
+      _snack(e.message);
+    }
+  }
+
+  /// 换回 AI 版（§4 RESTORED → AI_PENDING，恢复源 = ai_revisions 最新条）。
+  Future<void> _aiReapply() async {
+    final ctl = _aiSession;
+    if (ctl == null) return;
+    try {
+      final ai = await ctl.reapplyAi();
+      if (ai == null) {
+        _snack('AI 版本已不可恢复');
+        return;
+      }
+      _pushProgrammatic(ai);
+      await _reload();
+    } on ActionException catch (e) {
+      _snack(e.message);
+    }
+  }
+
+  /// 程序化整篇替换（还原 / 恢复 AI 改动 / 插入 AI 版）：编辑态顺带清空撤销
+  /// 栈（§8.4），读态无编辑器则只落库、由 [_reload] 驱动重渲染。
+  void _pushProgrammatic(String md) {
+    _composerKey.currentState?.replaceAll(noteMdToDraftRows(md));
+  }
+
+  /// 接管 Toast（§7：3s 自动消失、非阻断，绝不弹确认框）——恢复能力交给
+  /// 历史面板，而不是拦住用户的写作流。
+  void _onAiTakeover() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('已切换手动编辑'),
+        duration: const Duration(seconds: 3),
+        action: SnackBarAction(label: '查看 AI 历史', onPressed: _showAiHistory),
+      ),
+    );
+  }
+
+  Future<void> _showAiHistory() async {
+    final id = _item.id;
+    if (id == null) return;
+    final ai = await widget.repo.latestAiRevision(id);
+    if (ai == null || !mounted) return;
+    await showAiRevisionSheet(
+      context,
+      text: ai,
+      onInsert: _editing ? () => _insertAiText(ai) : null,
+    );
+  }
+
+  /// 历史面板「插入」= 追加到正文末尾（MVP 口径）。接管后会话已关闭，插入
+  /// 是「取回内容」而非「还原」，不重建会话态；走程序化替换故撤销栈同清。
+  Future<void> _insertAiText(String ai) async {
+    final cur = _currentBodyText();
+    final next = cur.trim().isEmpty ? ai : '${cur.trimRight()}\n\n$ai';
+    _pushProgrammatic(next);
+    await _run(
+      () => widget.handler.execute(
+        UpdateItemCommand(id: _item.id!, humanMd: next),
+        vaultContext: widget.vaultContext,
+      ),
+      '已插入正文',
+    );
+  }
+
+  /// 编辑态正文 slivers（2026-10-03 编辑器统一）：与新增作曲页**同一编辑器**
+  ///（[NoteComposerEditor]，分段作曲层+动作行+可拖动格式转盘）。
+  /// SliverFillRemaining 给有界高度（编辑器内部自管滚动与转盘挂载）；
+  /// TL;DR / 标签 / 灵感区在编辑态不展示——本拍板只改正文，退出编辑后照常渲染。
+  /// 媒体说明（alt/label）随段进出（noteMdToDraftRows 草稿行第 3 位），
+  /// 编辑态可长按换媒体/点音频重录（[_replaceComposerMedia]），标签文案不可改
+  ///（与作曲页形态一致）。
+  List<Widget> _editBodySlivers() => [
+    // 水平留白由外层 SliverPadding(Insets.xl) 统一给（勿双包）；
+    // SliverFillRemaining 给编辑器有界高度（内部自管滚动与转盘挂载）。
+    SliverFillRemaining(
+      child: NoteComposerEditor(
+        key: _composerKey,
+        initialRows: _editRows ?? const [],
+        // 接管检测入口（ai-writeback-revert §5）：只起/重置 settle 计时器，
+        // 不做 setState——每击键整页重建是纯浪费（P2 性能防线，2026-10-04），
+        // 判定与落库都在「停顿 1.5s」之后发生一次。
+        onChanged: () => _aiSession?.noteUserEdit(),
+        onMediaReplace: _replaceComposerMedia,
+        audioController: _audioPlayback, // 页面单实例红线：复用页面控制器
+      ),
+    ),
+  ];
+
+  /// 编辑态媒体替换（保留能力，2026-10-04 二次拍板）：长按图/视频卡=换文件、
+  /// 长按音频卡=重录替换（点按音频卡已归播放）。就地改段 url，保存时一并
+  /// 落库；取消=不出编辑态整体丢弃。
+  Future<void> _replaceComposerMedia(NoteMediaSeg seg) async {
+    switch (seg.kind) {
+      case NoteMediaKind.audio:
+        final path = await showAudioRecordSheet(context);
+        if (path == null) return; // 用户取消/丢弃
+        seg.url = await toLocalMediaUrl(path);
+      case NoteMediaKind.image:
+      case NoteMediaKind.video:
+        final type = seg.kind == NoteMediaKind.image
+            ? FileType.image
+            : FileType.video;
+        final files = await FilePicker.pickFiles(type: type);
+        if (files.isEmpty) return; // 用户取消
+        final path = files.single.path;
+        if (path == null) return;
+        final saved = await copyToAppDir(path);
+        if (saved == null) {
+          if (mounted) {
+            ScaffoldMessenger.of(context)
+                .showSnackBar(const SnackBar(content: Text('媒体文件保存失败')));
+          }
+          return;
+        }
+        seg.url = await toLocalMediaUrl(saved);
+    }
+  }
 
   /// 标题长按入口：**只改标题**（与内容编辑职责分离）。锁定条目先经
   /// [_ensureUnlocked] 解锁，再进入**原地内联编辑**（标题位置直接变输入框、不弹
@@ -554,9 +751,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     final fresh = await widget.repo.byId(id, includeDeleted: true);
     if (fresh == null) return null;
     return switch (step.id) {
-      'ocr' || 'transcribe' => fresh.bodyText.trim().isEmpty
-          ? null
-          : fresh.bodyText,
+      'ocr' ||
+      'transcribe' => fresh.bodyText.trim().isEmpty ? null : fresh.bodyText,
       'translate' => fresh.hasTranslation ? fresh.translatedMd : null,
       'summarize' => () {
         final s = fresh.summaryMd?.trim() ?? '';
@@ -593,7 +789,10 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 产出回注（detail-two-zone.md §5.3 显式回注，不自动写回）：
   /// 追加为从属块（默认）/ 替换原块（仅文本块）/ 追加进灵感区。
   /// 均走 UpdateItemCommand（唯一写入口），成功后刷新页面快照。
-  Future<void> _applyCapabilityOutput(ReinjectTarget target, String text) async {
+  Future<void> _applyCapabilityOutput(
+    ReinjectTarget target,
+    String text,
+  ) async {
     final id = _item.id!;
     final command = switch (target) {
       ReinjectTarget.append => UpdateItemCommand(
@@ -666,6 +865,203 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     }
   }
 
+  // ── 块附件通道执行作用域（block-artifact-workflow.md §4 四回调注入）：
+  // 行内媒体块长按进工作流页，产物读写全走 block_artifacts（条目级字段零触碰）。
+
+  /// 装载该块产物视图（工作流轨数据源，§3.3 续跑判定的唯一事实源）。
+  Future<BlockArtifactsView> _loadBlockArtifacts(String blockKey) async {
+    final arts = await widget.repo.blockArtifacts.listForItem(_item.id!, blockKey: blockKey);
+    final kinds = <String>{};
+    final text = <String, String>{};
+    final meta = <String, String>{};
+    final files = <String, String>{};
+    final elapsedMs = <String, int>{};
+    for (final a in arts) {
+      kinds.add(a.kind);
+      if (a.text?.trim().isNotEmpty ?? false) text[a.kind] = a.text!;
+      if (a.filePath?.isNotEmpty ?? false) files[a.kind] = a.filePath!;
+      // 耗时归卡头（§4 三段式），摘要行只留 kind 自身语义——两处都放会重复
+      final elapsed = a.elapsedMs; // 执行侧实测（queue_consumer 注入）
+      if (elapsed != null) elapsedMs[a.kind] = elapsed;
+      final cues = a.cueCount; // 解码在数据层（arch-guard R2：UI 不内联 jsonDecode）
+      final summary = switch (a.kind) {
+        BlockArtifactKind.subtitle => cues == null ? null : '$cues 段',
+        BlockArtifactKind.audioFile => a.filePath?.split('/').last,
+        _ => cues == null ? null : '$cues 段',
+      };
+      // 空摘要不写进 meta：产物卡会把它当有效摘要行渲染成空白中部
+      if (summary != null && summary.isNotEmpty) meta[a.kind] = summary;
+    }
+    return BlockArtifactsView(
+      kinds: kinds,
+      text: text,
+      meta: meta,
+      filePath: files,
+      elapsedMs: elapsedMs,
+    );
+  }
+
+  /// 执行工作流步骤：组装 block 命令入队（与 UI 顶级按钮 / MCP 同源，R2）→
+  /// 等任务落定 → 按任务状态返回成败（产物是否落库由页面重载后从表读，§3.3）。
+  Future<bool> _runWorkflowStep(WorkflowStep step, String blockKey, String? sourceKind) async {
+    final id = _item.id!;
+    final head = 'block_${step.id}';
+    if (step.id == 'translate') {
+      // 入队前预检：与条目级翻译同口径（引擎不可用不入队空耗）
+      final caps = widget.caps;
+      if (!caps.translationEnabled) {
+        _snack('翻译已关闭：设置 → 翻译 可开启');
+        return false;
+      }
+      caps.router?.reset();
+      if (!await caps.checkTranslationAvailable()) {
+        final reason = await caps.translationUnavailableReason();
+        _snack('无法翻译：${reason ?? '无可用翻译引擎'}（设置 → 翻译 可下载语言包）');
+        return false;
+      }
+    }
+    final ItemCommand command;
+    switch (step.id) {
+      case 'ocr':
+        command = OcrCommand(id, blockKey: blockKey);
+      case 'transcribe':
+        command = TranscribeCommand(id, blockKey: blockKey);
+      case 'translate':
+        command = TranslateCommand(id, blockKey: blockKey, sourceKind: sourceKind);
+      case 'summarize':
+        command = SummarizeCommand(id, blockKey: blockKey);
+      case 'extract_audio':
+        command = ExtractAudioCommand(id, blockKey: blockKey);
+      default:
+        return false; // 不可达：spec 编译期封闭
+    }
+    try {
+      await widget.handler.execute(command, vaultContext: widget.vaultContext);
+    } on ActionException catch (e) {
+      _snack(e.message);
+      return false;
+    }
+    return _waitForBlockTask(id, head, blockKey);
+  }
+
+  /// 等待该条目指定 block 任务的**最新**一次落定（同 [ _waitForTask] 口径，
+  /// 匹配规则换为动作头 + blockKey——块串参数含 mode/lang，不能整串比对）。
+  Future<bool> _waitForBlockTask(String itemId, String head, String blockKey) async {
+    final deadline = DateTime.now().add(const Duration(minutes: 5));
+    while (DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      if (!mounted) return false;
+      final tasks = await widget.repo.listTasks(limit: 50);
+      for (final t in tasks) {
+        if (t['item_id'] != itemId) continue;
+        final parsed = Repository.parseBlockAction(t['task_action'] as String?);
+        if (parsed == null || parsed.$1 != head || parsed.$2 != blockKey) continue;
+        final status = t['status'] as String? ?? '';
+        if (status == 'pending' || status == 'processing') break;
+        return status == 'completed';
+      }
+    }
+    return false;
+  }
+
+  /// 产物应用（§3.4 拍板 4）：文本以引用块形态**就近插入源媒体行正下方**——
+  /// 「这条文本属于这个视频」的从属关系就地可见，不追加全文尾部打断图文混排；
+  /// 同一媒体行重复引用（拍板：合法共享）取首行。
+  /// 顶级条目（§2.7，blockKey='item'）无正文媒体行可寻址 → 回退追加正文末尾。
+  Future<void> _applyBlockArtifact(String blockKey, String kind, String text) async {
+    final id = _item.id!;
+    final lines = _item.bodyText.split('\n');
+    var insertAt = -1;
+    if (blockKey != BlockArtifactKind.topLevelKey) {
+      for (var i = 0; i < lines.length; i++) {
+        if (lines[i].contains(blockKey)) {
+          insertAt = i + 1;
+          break;
+        }
+      }
+      if (insertAt < 0) {
+        _snack('正文中已找不到该媒体行，无法就近插入');
+        return;
+      }
+    } else {
+      // 顶级条目：无媒体行可寻址，产物追加正文末尾（引用块形态不变）
+      insertAt = lines.length;
+    }
+    final quoted = text.trim().split('\n').map((l) => '> $l').join('\n');
+    lines.insert(insertAt, quoted);
+    try {
+      await widget.handler.execute(
+        UpdateItemCommand(id: id, humanMd: lines.join('\n')),
+        vaultContext: widget.vaultContext,
+      );
+      await _reload();
+      if (mounted) _snack('已应用（插入媒体行下方）');
+    } on ActionException catch (e) {
+      _snack(e.message);
+    }
+  }
+
+  /// Reset 该块全部产物（表行 + 文件产物磁盘联动删除，§2.2 纪律 7）。
+  Future<void> _resetBlockArtifacts(String blockKey) async {
+    await widget.repo.blockArtifacts.deleteBlock(_item.id!, blockKey);
+  }
+
+  /// 块字幕装载（SubtitleScope 数据源）：查 subtitle 产物 → 读文件反解析 cue。
+  /// null = 无字幕产物（播放器无字幕轨，增强非必需）。
+  Future<List<AsrCue>?> _loadBlockSubtitles(String blockKey) async {
+    final arts = await widget.repo.blockArtifacts.listForItem(
+      _item.id!,
+      blockKey: blockKey,
+    );
+    final sub = arts
+        .where((a) => a.kind == BlockArtifactKind.subtitle)
+        .firstOrNull;
+    if (sub?.filePath == null) return null;
+    final f = File(sub!.filePath!);
+    if (!await f.exists()) return null;
+    final cues = parseSrtVtt(await f.readAsString());
+    return cues.isEmpty ? null : cues;
+  }
+
+  /// §3.5 跳帧联动：字幕卡点某句 cue → 全屏播放器定位到该句起点播放。
+  /// cue 序号口径与工作流轨 cue 列表一致（parseSrtVtt 已过滤空文本并排序，
+  /// 两侧同源同序）。
+  Future<void> _onCueSeek(String blockKey, int cueIndex) async {
+    final cues = await _loadBlockSubtitles(blockKey);
+    if (cues == null || cueIndex < 0 || cueIndex >= cues.length) return;
+    if (!mounted) return;
+    final url = blockKey.startsWith('local://')
+        ? blockKey.substring('local://'.length)
+        : blockKey;
+    await showInlineVideoPlayer(
+      context,
+      url: url,
+      itemId: _item.id!,
+      label: '视频',
+      startAt: Duration(milliseconds: (cues[cueIndex].start * 1000).round()),
+    );
+  }
+
+  /// §4 文本产物修订（三段式「文本=全文预览可编辑」）：编辑页返回修订文本 →
+  /// upsert 回 block_artifacts。**只改 text**——filePath/metaJson 原样回传，
+  /// 防止「应用」读取的源产物与字幕/音轨文件失同步；人工修订零算力回退。
+  Future<String?> _editBlockArtifact(
+      String blockKey, String kind, String currentText) async {
+    final edited = await showBlockTextPage(context, initialText: currentText);
+    if (edited == null || edited.trim().isEmpty || edited == currentText) {
+      return null; // 取消 / 清空 / 无变化
+    }
+    final old =
+        await widget.repo.blockArtifacts.get(_item.id!, blockKey, kind);
+    if (old == null) return null; // 产物在编辑期间被 Reset，静默放弃
+    await widget.repo.blockArtifacts.upsertAll(_item.id!, blockKey, [
+      BlockArtifactInput(kind,
+          text: edited, filePath: old.filePath, metaJson: old.metaJson),
+    ]);
+    if (mounted) _snack('已保存修订');
+    return edited;
+  }
+
   @override
   Widget build(BuildContext context) {
     // 编辑态拦截返回（2026-10-02 就地编辑拍板）：侧滑 / 物理返回键**不得直接退页**，
@@ -678,123 +1074,168 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
         if (discard && mounted) _exitEdit();
       },
       child: Scaffold(
-      // 二级页顶栏改为 SliverAppBar（floating+snap）随滚动隐显，与首页同构
-      // （2026-10-02 拍板）：顶部只留标题（内容），「⋯」危险/低频操作下沉到底栏
-      // 第 4 项（拇指可达，优于顶部）。滚走藏、回滚弹；页面在顶部恒显。
-      // Phase 1：主体改 CustomScrollView，正文 block 经 ItemViewTemplate.bodySlivers
-      // 以 SliverList 虚拟化，数万字长文只构建可视区 widget。
-      // 跨块文本选择：正文区统一包 SelectionArea（rich-text-component.md §3），
-      // 块内为普通 Text，长按拖拽即可跨块复制。
-      // 页面级音频播放服务作用域：行内 AudioBlock / 顶级音频区共用唯一播放器
-      // RepaintBoundary：分享截图渲染边界（detail-two-zone.md §6 Theme 红线
-      // ——复用页面既有边界，天然继承 Theme/MediaQuery，不重建离屏树）。
-      body: AudioPlaybackService(
-        controller: _audioPlayback,
-        child: BlockCapabilityExecutor(
-          onRunStep: _runCapabilityStep,
-          onApply: _applyCapabilityOutput,
-          onEditOutput: (raw) => showBlockTextPage(context, initialText: raw),
-          onRunStandalone: _runStandaloneCapability,
-          // MVP 接线口径（detail-two-zone.md §5.3 块附件通道落地前的过渡）：
-          // 产出落条目级字段（正文/译文/摘要），链每次全新开始、Reset 仅归零
-          // 卡内状态不清条目数据——无「已落库步」即无续跑死锁可解除。
-          onReset: () async {},
-          loadPersistedOutputs: () => const {},
-          child: RepaintBoundary(
-          key: _bodyBoundaryKey,
-          child: BlockAnchorRegistry(
-          store: _blockAnchors,
-          child: SelectionArea(
-          // 划词菜单 = 文本块唯一 AI 入口（§5.1 二次改版）：菜单项经
-          // BlockAnchorStore 反查选区命中块。builder 给的 context 在
-          // Overlay 里、取不到页面 InheritedWidget，故用页面 context。
-          contextMenuBuilder: (_, state) => _selectionMenu(state),
-          child: NotificationListener<UserScrollNotification>(
-            onNotification: (n) {
-              if (n.metrics.axis != Axis.vertical) return false;
-              // 只在「滚动方向变化」时切状态，静止（idle）保持现状
-              if (n.direction == ScrollDirection.reverse &&
-                  _actionBarVisible) {
-                setState(() => _actionBarVisible = false);
-              } else if (n.direction == ScrollDirection.forward &&
-                  !_actionBarVisible) {
-                setState(() => _actionBarVisible = true);
-              }
-              return false;
-            },
-            child: CustomScrollView(
-            slivers: [
-              SliverAppBar(
-                automaticallyImplyLeading: false,
-                floating: true,
-                snap: true,
-                backgroundColor: Theme.of(context).colorScheme.surface,
-                elevation: 0,
-                titleSpacing: Insets.md,
-                title: _buildTitle(),
-              ),
-              const SliverPadding(
-                padding: EdgeInsets.fromLTRB(
-                  Insets.xl,
-                  Insets.md,
-                  Insets.xl,
-                  0,
-                ),
-              ),
-              ...(_editing && _editSession != null
-                  ? _editBodySlivers(_editSession!)
-                  : ItemViewTemplate(
-                      item: _item,
-                      machineMode: _machineMode,
-                    ).bodySlivers(context)),
-              if (!_editing) ...[
-                SliverToBoxAdapter(child: _attachStatusLine()),
-                // 灵感区（ui-spec §4.3 两区改版）：摘要/标签切换 + 刷新重生成
-                SliverToBoxAdapter(child: _inspirationSection()),
-                if (_item.hasTranslation)
-                  SliverToBoxAdapter(
-                    child: _appendix('译文', _item.translatedMd!),
+        // 二级页顶栏改为 SliverAppBar（floating+snap）随滚动隐显，与首页同构
+        // （2026-10-02 拍板）：顶部只留标题（内容），「⋯」危险/低频操作下沉到底栏
+        // 第 4 项（拇指可达，优于顶部）。滚走藏、回滚弹；页面在顶部恒显。
+        // Phase 1：主体改 CustomScrollView，正文 block 经 ItemViewTemplate.bodySlivers
+        // 以 SliverList 虚拟化，数万字长文只构建可视区 widget。
+        // 跨块文本选择：正文区统一包 SelectionArea（rich-text-component.md §3），
+        // 块内为普通 Text，长按拖拽即可跨块复制。
+        // 页面级音频播放服务作用域：行内 AudioBlock / 顶级音频区共用唯一播放器
+        // RepaintBoundary：分享截图渲染边界（detail-two-zone.md §6 Theme 红线
+        // ——复用页面既有边界，天然继承 Theme/MediaQuery，不重建离屏树）。
+        body: Stack(
+          children: [
+            AudioPlaybackService(
+              controller: _audioPlayback,
+              child: BlockCapabilityExecutor(
+                onRunStep: _runCapabilityStep,
+                onApply: _applyCapabilityOutput,
+                onEditOutput: (raw) =>
+                    showBlockTextPage(context, initialText: raw),
+                onRunStandalone: _runStandaloneCapability,
+                // 双轨口径（block-artifact-workflow.md §9 拍板 15：**终态非过渡**）：
+                // 链式卡轨服务「无持久块」的场景（文本块划词 / 未注入块通道的
+                // 顶级媒体区）——产出落条目级字段（正文/译文/摘要），Reset 语义
+                // 就是「归零卡内状态、不碰条目数据」，故 onReset 空实现是**正确
+                // 语义**不是待补的债（卡内 chain.reset 由链式卡自己调）；
+                // loadPersistedOutputs 空 = 无块产物可 restore（无「已落库步」
+                // 即无续跑死锁可解除）。有 block_key 的走下面块通道四回调。
+                onReset: () async {},
+                loadPersistedOutputs: () => const {},
+                // 块附件通道（block-artifact-workflow.md §4）：行内媒体块长按进
+                // 工作流页，产物读写走 block_artifacts（四回调齐备才启用）。
+                loadBlockArtifacts: _loadBlockArtifacts,
+                onRunWorkflowStep: _runWorkflowStep,
+                onApplyArtifact: _applyBlockArtifact,
+                resetBlock: _resetBlockArtifacts,
+                onCueSeek: _onCueSeek,
+                onEditArtifact: _editBlockArtifact,
+                child: RepaintBoundary(
+                  key: _bodyBoundaryKey,
+                  child: SubtitleScope(
+                    itemId: _item.id!,
+                    loadBlockSubtitles: _loadBlockSubtitles,
+                  child: BlockAnchorRegistry(
+                    store: _blockAnchors,
+                    child: SelectionArea(
+                      // 划词菜单 = 文本块唯一 AI 入口（§5.1 二次改版）：菜单项经
+                      // BlockAnchorStore 反查选区命中块。builder 给的 context 在
+                      // Overlay 里、取不到页面 InheritedWidget，故用页面 context。
+                      contextMenuBuilder: (_, state) => _selectionMenu(state),
+                      child: NotificationListener<UserScrollNotification>(
+                        onNotification: (n) {
+                          if (n.metrics.axis != Axis.vertical) return false;
+                          // 只在「滚动方向变化」时切状态，静止（idle）保持现状
+                          if (n.direction == ScrollDirection.reverse &&
+                              _actionBarVisible) {
+                            setState(() => _actionBarVisible = false);
+                          } else if (n.direction == ScrollDirection.forward &&
+                              !_actionBarVisible) {
+                            setState(() => _actionBarVisible = true);
+                          }
+                          return false;
+                        },
+                        child: CustomScrollView(
+                          slivers: [
+                            SliverAppBar(
+                              automaticallyImplyLeading: false,
+                              floating: true,
+                              snap: true,
+                              backgroundColor: Theme.of(context)
+                                  .colorScheme
+                                  .surface,
+                              elevation: 0,
+                              titleSpacing: Insets.md,
+                              title: _buildTitle(),
+                            ),
+                            // 内容水平留白真正包住 slivers——此前是无 sliver 子项的死代码，
+                            // Insets.xl 留白从未生效，正文一直贴屏幕左右边缘。
+                            SliverPadding(
+                              padding: const EdgeInsets.fromLTRB(
+                                Insets.xl,
+                                Insets.md,
+                                Insets.xl,
+                                0,
+                              ),
+                              sliver: SliverMainAxisGroup(
+                                slivers: [
+                                  ...(_editing && _editRows != null
+                                      ? _editBodySlivers()
+                                      : ItemViewTemplate(
+                                          item: _item,
+                                          machineMode: _machineMode,
+                                        ).bodySlivers(context)),
+                                  if (!_editing) ...[
+                                    SliverToBoxAdapter(
+                                      child: _attachStatusLine(),
+                                    ),
+                                    // 灵感区（ui-spec §4.3 两区改版）：摘要/标签切换 + 刷新重生成
+                                    SliverToBoxAdapter(
+                                      child: _inspirationSection(),
+                                    ),
+                                    if (_item.hasTranslation)
+                                      SliverToBoxAdapter(
+                                        child: _appendix(
+                                          '译文',
+                                          _item.translatedMd!,
+                                        ),
+                                      ),
+                                    SliverToBoxAdapter(
+                                      child: _AiTaskStatusLine(
+                                        repo: widget.repo,
+                                        item: _item,
+                                      ),
+                                    ),
+                                    SliverToBoxAdapter(child: _sourceLine()),
+                                    const SliverToBoxAdapter(
+                                      child: SizedBox(height: 24),
+                                    ),
+                                    SliverToBoxAdapter(
+                                      child: PoeticText(
+                                        sloganFor(SloganKeys.detailFooter),
+                                        large: false,
+                                        align: TextAlign.center,
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
                   ),
-                SliverToBoxAdapter(
-                  child: _AiTaskStatusLine(repo: widget.repo, item: _item),
                 ),
-                SliverToBoxAdapter(child: _sourceLine()),
-                const SliverToBoxAdapter(child: SizedBox(height: 24)),
-                SliverToBoxAdapter(
-                  child: PoeticText(
-                    sloganFor(SloganKeys.detailFooter),
-                    large: false,
-                    align: TextAlign.center,
-                  ),
-                ),
-              ],
-            ],
+              ),
+            ),
+          ),
+          ],
+        ),
+        // 公共操作条（两区改版）：工作区 / 分享 / 删除。方向感知隐显：
+        // 下滑阅读收起（读模式收 chrome），上滑操作弹回（找模式亮 chrome），
+        // 静止保持；键盘弹出（灵感区输入）时顺带隐藏——纯干扰。
+        bottomNavigationBar: ClipRect(
+          child: AnimatedAlign(
+            alignment: Alignment.bottomCenter,
+            // **读写分离的两套状态机**（2026-10-02 就地编辑拍板）：
+            // - 读态：维持原样——方向感知隐显 + 键盘弹起让位，保沉浸阅读视野；
+            // - 编辑态：**强制常驻**。就地编辑全程有键盘，若沿用读态的
+            //   `!_keyboardVisible`，「保存」会在用户打字时被自己藏掉——
+            //   就地编辑将直接不可用（这是此前评估出的最高危缺口）。
+            heightFactor: _editing
+                ? 1
+                : (_actionBarVisible && !_keyboardVisible ? 1 : 0),
+            duration: const Duration(milliseconds: 200),
+            curve: Curves.easeOut,
+            // AI 会话悬浮条骑在公共操作条之上（会话关闭时零高度）。
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [_aiSessionBar(), _actionBar()],
+            ),
           ),
         ),
-        ),
-        ),
-        ),
-        ),
-      ),
-      // 公共操作条（两区改版）：工作区 / 分享 / 删除。方向感知隐显：
-      // 下滑阅读收起（读模式收 chrome），上滑操作弹回（找模式亮 chrome），
-      // 静止保持；键盘弹出（灵感区输入）时顺带隐藏——纯干扰。
-      bottomNavigationBar: ClipRect(
-        child: AnimatedAlign(
-          alignment: Alignment.bottomCenter,
-          // **读写分离的两套状态机**（2026-10-02 就地编辑拍板）：
-          // - 读态：维持原样——方向感知隐显 + 键盘弹起让位，保沉浸阅读视野；
-          // - 编辑态：**强制常驻**。就地编辑全程有键盘，若沿用读态的
-          //   `!_keyboardVisible`，「保存」会在用户打字时被自己藏掉——
-          //   就地编辑将直接不可用（这是此前评估出的最高危缺口）。
-          heightFactor: _editing
-              ? 1
-              : (_actionBarVisible && !_keyboardVisible ? 1 : 0),
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut,
-          child: _actionBar(),
-        ),
-      ),
       ),
     );
   }
@@ -811,46 +1252,71 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 键盘是否可见（灵感区输入时底栏让位，避免遮挡与视觉挤压）。
   bool get _keyboardVisible => MediaQuery.of(context).viewInsets.bottom > 0;
 
-  /// 公共操作条（ui-spec §4.3 两区改版 + 2026-10-01 重划）：全类型固定
-  /// 3 项——**编辑 / 工作区 / 分享**。
-  /// - 删除移入 `⋯` 菜单（危险操作不占底栏常驻位，且带二次确认）；
-  /// - 分享 = 内容导出链（离屏截图 / PDF，按内容分流），**唯一分享路径**
-  ///   （菜单里的纯文本直分享已移除，同一动作不设两个入口）；
-  /// - 摘要与标签已移入灵感区（`_inspirationSection`），不再占底栏。
+  /// 公共操作条（ui-spec §4.3 两区改版）：全类型固定 5 项，连成一个**无分隔线的
+  /// 整体胶囊**——编辑 / 分享 / ⋯ / 工作区 / 删除（与全站底栏同款样式）。
+  /// - 编辑↔保存按态切换（label 即实际行为）；分享 = 内容导出链（离屏截图 /
+  ///   PDF，按内容分流），**唯一分享路径**（菜单里的纯文本直分享已移除）；
+  /// - 删除红色 + 二次确认，已由 `⋯` 移回底栏常驻连接组（单一入口）；
+  /// - 摘要与标签已移入灵感区（`_inspirationSection`），不占底栏；`⋯` 面板仅收
+  ///   权限开关（保险箱/对AI可见/允许AI编辑/允许AI处理/机器码）。
   ///
   /// Wrap 而非 Row：本机逻辑屏宽仅 331dp（1272px / DPR 3.84），Row 溢出在
   /// 顶栏标题（长按原地编辑，2026-10-02 拍板）：编辑态为 TextField，否则为
   /// 可长按文本。随 SliverAppBar 滚动隐显。
-  Widget _buildTitle() => _editingTitle
-      ? TextField(
-          controller: _titleCtrl,
-          focusNode: _titleFocus,
-          autofocus: true,
-          maxLines: 1,
-          style: Theme.of(context).textTheme.titleLarge,
-          decoration: const InputDecoration.collapsed(hintText: '标题'),
-          onSubmitted: (_) => _commitTitleEdit(),
-        )
-      : GestureDetector(
-          onLongPress: _editTitle,
-          behavior: HitTestBehavior.opaque,
-          child: Semantics(
-            button: true,
-            label: '标题，长按可修改标题',
-            child: Text(
-              _item.humanTitle?.isNotEmpty == true ? _item.humanTitle! : '未命名',
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        );
+  Widget _buildTitle() {
+    if (_editingTitle) {
+      return TextField(
+        controller: _titleCtrl,
+        focusNode: _titleFocus,
+        autofocus: true,
+        maxLines: 1,
+        style: Theme.of(context).textTheme.titleLarge,
+        decoration: const InputDecoration.collapsed(hintText: '标题'),
+        onSubmitted: (_) => _commitTitleEdit(),
+      );
+    }
+    final title = _item.humanTitle?.isNotEmpty == true
+        ? _item.humanTitle!
+        : _timeTitle;
+    // 编辑态不显示顶栏标题（2026-10-03 拍板「标题独立，与 md 无关」）：
+    // 标题由一级标题行/笔记时间派生，正文首行（常即标题行）已进所见即所得
+    // 编辑器，顶栏再显一份即「标题重复显示」反馈；标题修改走读态长按入口。
+    if (_editing) return const SizedBox.shrink();
+    // 标题栏渲染纯文本（行内标记剥壳）：标题是笔记的简短指代，下划线等行内格式
+    // 只在正文阅读态呈现（与列表/搜索预览口径一致），顶栏不承载下划线，
+    // 也不出现 `<u>` 残壳。下方 body 的 ContentBody 仍按富文本渲染下划线。
+    final plainTitle =
+        inlineToPlain(const MarkdownSubsetParser().parseInline(title));
+    final titleStyle =
+        Theme.of(context).textTheme.titleLarge ?? const TextStyle();
+    return GestureDetector(
+      onLongPress: _editTitle,
+      behavior: HitTestBehavior.opaque,
+      child: Semantics(
+        button: true,
+        label: '标题，长按可修改标题',
+        child: Text(
+          plainTitle,
+          style: titleStyle,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+    );
+  }
 
   /// 调试态画黄黑斜纹警示条、release 直接裁切（2026-10-01 真机「斜黄条」）。
   /// 不用 OverflowBar——它放不下时是「每项各占一行」的竖排（AlertDialog
   /// 动作语义），不是换行；不用 BottomAppBar——它把子级高度钉死（实测
   /// h=56），两行必竖向溢出。
+  /// 公共操作条（ui-spec §4.3）：编辑 / 分享 / ⋯ / 工作区 / 删除 五个按钮连成
+  /// **一个无分隔线的整体胶囊**（与全站底栏同款样式：surfaceContainerHigh 底 +
+  /// Radii.lg 圆角），项间不再各自分立。编辑↔保存按态切换（label 即实际行为）；
+  /// 分享为唯一导出入口；删除红色 + 二次确认；`⋯` 仅收权限开关（保险箱/对AI可见/
+  /// 允许AI编辑/允许AI处理/机器码），单一入口不重复。
   Widget _actionBar() {
+    final scheme = Theme.of(context).colorScheme;
     return Material(
-      color: Theme.of(context).colorScheme.surface,
+      color: scheme.surface,
       child: SafeArea(
         top: false,
         child: Padding(
@@ -858,69 +1324,78 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
             horizontal: Insets.sm,
             vertical: Insets.xs,
           ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              // 编辑/保存：锁定条目显示「编辑」（点按先解锁再进编辑器）；
-              // 解锁后（含合并收集条目解除锁定、普通条目本就未锁定）显示「保存」，
-              // 读态=「编辑」（进入编辑态），编辑态=「保存」（提交落库）——**label 即实际行为**。
-              // 修正此前 label 由 editLocked 决定、但两者都打开块编辑器的名实不符。
-              _barAction(
-                icon: _editing ? Icons.save_outlined : Icons.edit_outlined,
-                label: _editing ? '保存' : '编辑',
-                onPressed: _onPrimaryAction,
-              ),
-              // 「⋯」溢出（分享/删除/机器码/保险箱）置底栏中间（2026-10-02 拍板：
-              // 横向三点 + 居中；分享与低频/危险同收溢出，底栏只留 编辑/工作区 常显）。
-              _overflowBarButton(),
-              _barAction(
-                icon: Icons.workspaces_outlined,
-                label: '工作区',
-                onPressed: _workspaceHint,
-              ),
-            ],
+          child: Material(
+            color: scheme.surfaceContainerHigh,
+            borderRadius: BorderRadius.circular(Radii.lg),
+            clipBehavior: Clip.antiAlias,
+            child: Row(
+              children: [
+                _barCell(
+                  icon: _editing ? Icons.save_outlined : Icons.edit_outlined,
+                  label: _editing ? '保存' : '编辑',
+                  onPressed: _onPrimaryAction,
+                ),
+                _barCell(
+                  icon: Icons.share_outlined,
+                  label: '分享',
+                  onPressed: _exportPdf,
+                ),
+                _barCell(
+                  icon: Icons.more_horiz,
+                  onPressed: _openOverflowSheet,
+                ),
+                _barCell(
+                  icon: Icons.workspaces_outlined,
+                  label: '工作区',
+                  onPressed: _workspaceHint,
+                ),
+                _barCell(
+                  icon: Icons.delete_outline,
+                  label: '删除',
+                  danger: true,
+                  onPressed: _confirmDelete,
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  /// 底栏操作项（mymind 形态，ui-spec §4.3）：icon + label 横排、深色胶囊底。
-  /// 删除已移入 `⋯` 菜单（红色文字 + 二次确认），底栏不再有 danger 形态。
-  Widget _barAction({
+  /// 底栏连接胶囊内的单个点击单元（mymind 形态，ui-spec §4.3）：icon + label 横排，
+  /// 与全站底栏同款；无自身背景，整条胶囊共用一个圆角外形。`⋯` 单元无 label 仅图标；
+  /// 删除标红（danger）。
+  Widget _barCell({
     required IconData icon,
-    required String label,
+    String? label,
     required VoidCallback onPressed,
-    bool enabled = true,
+    bool danger = false,
   }) {
     final scheme = Theme.of(context).colorScheme;
-    final fg = enabled ? scheme.onSurfaceVariant : scheme.outline;
-    final bg = scheme.surfaceContainerHigh;
-    return InkWell(
-      onTap: enabled ? onPressed : null,
-      customBorder: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(Radii.lg),
-      ),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-        decoration: ShapeDecoration(
-          color: bg,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(Radii.lg),
+    final fg = danger ? scheme.error : scheme.onSurfaceVariant;
+    return Expanded(
+      child: InkWell(
+        onTap: onPressed,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 14),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 22, color: fg),
+              if (label != null) ...[
+                const SizedBox(width: 8),
+                Text(
+                  label,
+                  style: Theme.of(context)
+                      .textTheme
+                      .labelMedium
+                      ?.copyWith(color: fg),
+                ),
+              ],
+            ],
           ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 22, color: fg),
-            const SizedBox(width: 8),
-            Text(
-              label,
-              style: Theme.of(context).textTheme.labelMedium
-                  ?.copyWith(color: fg),
-            ),
-          ],
         ),
       ),
     );
@@ -930,75 +1405,59 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 只是不给普通用户按钮（2026-10-01 拍板）。
   void _toggleMachineMode() => setState(() => _machineMode = !_machineMode);
 
-  /// `⋯` 底栏第 4 项（2026-10-02 拍板下沉底栏，居中）：点击后从底部升起 mymind 风格
-  /// 功能面板（非 Material 浮层），含 分享 · 删除 · 机器码 · 保险箱。面板用错峰入场
-  /// 动画（逐项淡入 + 上移 + 微缩放）体现「功能从底部浮现」的轻盈感，圆角面板 +
-  /// 柔阴影 + 点击遮罩关闭，整体去 Material 列表范式。
-  Widget _overflowBarButton() {
-    final scheme = Theme.of(context).colorScheme;
-    return InkWell(
-      onTap: _openOverflowSheet,
-      customBorder: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(Radii.lg),
-      ),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-        decoration: ShapeDecoration(
-          color: scheme.surfaceContainerHigh,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(Radii.lg),
-          ),
-        ),
-        child: Icon(
-          Icons.more_horiz,
-          size: 22,
-          color: scheme.onSurfaceVariant,
-        ),
-      ),
-    );
-  }
-
-  /// 从底部升起 mymind 风格功能面板（见 `_OverflowSheet`）。分享/删除/机器码/保险箱
-  /// 按当前态条件收录（机器码仅开关开；保险箱仅未入箱或 vaultContext 下可移出）。
+  /// 从底部升起 mymind 风格功能面板（见 `_OverflowSheet`）。动作序列与条件收录
+  /// 规则（分享/保险箱/删除/机器码）收口到 [ItemActions] 词汇表——本方法只剩
+  /// 声明挑选 + 执行通道注入（单条 execute），视觉与动画不动（2026-10-02 拍板）。
   void _openOverflowSheet() {
-    final items = <_SheetItem>[
-      _SheetItem(Icons.share_outlined, '分享', () {
-        _exportPdf();
-      }),
-      if (!_item.isVault || widget.vaultContext)
-        _SheetItem(Icons.lock_outline, !_item.isVault ? '移入保险箱' : '移出保险箱', () {
-          if (!_item.isVault) {
-            _run(
+    final actions = ItemActions.overflowSheet(
+      ItemActionContext(
+        item: _item,
+        vaultContext: widget.vaultContext,
+        machineModeEnabled: _machineModeEnabled,
+        machineMode: _machineMode,
+      ),
+      onVault: (on) => on
+          ? _run(
               () => widget.handler.execute(SetVaultCommand(_item.id!, true)),
               '已移入保险箱',
-            );
-          } else {
-            _run(
+            )
+          : _run(
               () => widget.handler.execute(
                 SetVaultCommand(_item.id!, false),
                 vaultContext: true,
               ),
               '已移出保险箱',
-            );
-          }
-        }),
-      _SheetItem(Icons.delete_outline, '删除', () {
-        _confirmDelete();
-      }, danger: true),
-      if (_machineModeEnabled)
-        _SheetItem(Icons.terminal_outlined, '机器码', () {
-          _toggleMachineMode();
-        }, checked: _machineMode),
-    ];
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      barrierColor: Colors.black.withValues(alpha:0.35),
-      builder: (ctx) => _OverflowSheet(items: items),
+            ),
+      onAiVisible: (on) => _run(
+        () => widget.handler
+            .execute(SetAiVisibleCommand(_item.id!, on), actor: CommandActor.ui),
+        on ? '已对 AI 可见' : '已对 AI 隐藏',
+      ),
+      onAiEditable: (on) => _run(
+        () => widget.handler
+            .execute(SetAiEditableCommand(_item.id!, on), actor: CommandActor.ui),
+        on ? '已允许 AI 编辑' : '已收回 AI 编辑授权',
+      ),
+      onAiProcess: (on) => _run(
+        () => widget.handler
+            .execute(SetAiProcessCommand(_item.id!, on), actor: CommandActor.ui),
+        on ? '已允许 AI 处理' : '已收回 AI 处理授权',
+      ),
+      onMachineToggle: _toggleMachineMode,
     );
+    final items = <OverflowItem>[
+      for (final a in actions)
+        OverflowItem(
+          a.icon,
+          a.label,
+          () => a.onInvoke(),
+          danger: a.danger,
+          checked: a.checked ?? false,
+          grouped: a.grouped,
+        ),
+    ];
+    showOverflowSheet(context, items: items);
   }
-
 
   /// 分享（detail-two-zone.md §6 分流）：预览 Sheet 勾选产物内容（灵感区
   /// 默认关）→ 无音视频走离屏截图 PNG（超 8000px 降级 PDF）→ 含音视频
@@ -1013,7 +1472,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     _snack('正在准备分享内容…');
     try {
       String? path;
-      final hasMedia = _item.itemType == InboxItem.typeAudio ||
+      final hasMedia =
+          _item.itemType == InboxItem.typeAudio ||
           _item.itemType == InboxItem.typeVideo;
       if (!hasMedia) {
         try {
@@ -1082,10 +1542,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   Widget _inspirationSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _aiOutputSection(),
-        _inspirationTextArea(),
-      ],
+      children: [_aiOutputSection(), _inspirationTextArea()],
     );
   }
 
@@ -1094,23 +1551,21 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 很低，扫一眼全有，切换成本归零。标签支持手动增删（用户权威，AI 提取
   /// 只是代劳）；各自独立刷新。
   Widget _aiOutputSection() {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
+    final canProcess = _item.bodyText.trim().isNotEmpty;
     final summary = _item.summaryMd?.trim() ?? '';
     final hasSummary = summary.isNotEmpty;
     final hasTags = _item.tags.isNotEmpty;
-    final canProcess = _item.bodyText.trim().isNotEmpty;
 
-    Widget sectionHeader(String label, String refreshTooltip, VoidCallback? onRefresh, {VoidCallback? onAdd}) {
+    // 分区动作行（卡内右上角）：内容语义归 SectionLegendCard 签名，按钮只管操作。
+    Widget sectionActions(
+      String refreshTooltip,
+      VoidCallback? onRefresh, {
+      VoidCallback? onAdd,
+    }) {
+      final scheme = Theme.of(context).colorScheme;
       return Row(
+        mainAxisAlignment: MainAxisAlignment.end,
         children: [
-          Text(
-            label,
-            style: theme.textTheme.labelMedium?.copyWith(
-              color: scheme.onSurfaceVariant,
-            ),
-          ),
-          const Spacer(),
           if (onAdd != null)
             IconButton(
               tooltip: '手动添加标签',
@@ -1130,57 +1585,71 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
       );
     }
 
+    // 灵感区换骑框签（detail-visual-hierarchy §2 拍板）：与公共区统一为
+    // 全页一套「签名式分区」语言，消除 labelMedium 裸灰小字与正文的混淆。
     return Padding(
-      padding: const EdgeInsets.only(top: Insets.lg),
+      padding: const EdgeInsets.only(top: Insets.xxl),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // ── 摘要（AI 产出，可刷新重生成）
-          sectionHeader(
-            '摘要',
-            '重新生成摘要',
-            canProcess
-                ? () => _run(
-                    () => widget.handler.execute(
-                      SummarizeCommand(_item.id!),
-                      vaultContext: widget.vaultContext,
-                    ),
-                    '已开始生成摘要',
-                  )
-                : null,
-          ),
-          const SizedBox(height: Insets.xs),
-          if (hasSummary)
-            RichTextView(markdown: summary, shrinkWrap: true)
-          else
-            _inspirationEmpty('还没有摘要，点右上刷新生成'),
-          const SizedBox(height: Insets.lg),
-          // ── 标签（AI 提取 + 手动增删；AI 刷新按并集合并不冲掉手动标签）
-          sectionHeader(
-            '标签',
-            '重新提取标签（只增不删）',
-            canProcess
-                ? () => _run(
-                    () => widget.handler.execute(
-                      ExtractTagsCommand(_item.id!),
-                      vaultContext: widget.vaultContext,
-                    ),
-                    '已开始提取标签',
-                  )
-                : null,
-            onAdd: _editTags,
-          ),
-          const SizedBox(height: Insets.xs),
-          if (hasTags)
-            Wrap(
-              spacing: Insets.sm,
-              runSpacing: Insets.sm,
+          SectionLegendCard(
+            legend: '摘要',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                for (final t in _item.tags) Chip(label: Text(t)),
+                sectionActions(
+                  '重新生成摘要',
+                  canProcess
+                      ? () => _run(
+                          () => widget.handler.execute(
+                            SummarizeCommand(_item.id!),
+                            vaultContext: widget.vaultContext,
+                          ),
+                          '已开始生成摘要',
+                        )
+                      : null,
+                ),
+                if (hasSummary)
+                  RichTextView(markdown: summary, shrinkWrap: true)
+                else
+                  _inspirationEmpty('还没有摘要，点右上刷新生成'),
               ],
-            )
-          else
-            _inspirationEmpty('还没有标签：点右上刷新由 AI 提取，或点 + 手动添加'),
+            ),
+          ),
+          const SizedBox(height: Insets.md),
+          // ── 标签（AI 提取 + 手动增删；AI 刷新按并集合并不冲掉手动标签）
+          SectionLegendCard(
+            legend: '标签',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                sectionActions(
+                  '重新提取标签（只增不删）',
+                  canProcess
+                      ? () => _run(
+                          () => widget.handler.execute(
+                            ExtractTagsCommand(_item.id!),
+                            vaultContext: widget.vaultContext,
+                          ),
+                          '已开始提取标签',
+                        )
+                      : null,
+                  onAdd: _editTags,
+                ),
+                if (hasTags)
+                  Wrap(
+                    spacing: Insets.sm,
+                    runSpacing: Insets.sm,
+                    children: [
+                      for (final t in _item.tags) Chip(label: Text(t)),
+                    ],
+                  )
+                else
+                  _inspirationEmpty('还没有标签：点右上刷新由 AI 提取，或点 + 手动添加'),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -1190,12 +1659,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// chips 编辑器，增删自由；保存走 UpdateItemCommand 整表替换（=用户
   /// 权威快照，空表保存即清空）；AI 刷新另走并集合并互不冲突。
   Future<void> _editTags() async {
-    final result = await showModalBottomSheet<List<String>>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (_) => _TagEditorSheet(initial: _item.tags),
-    );
+    final result = await showTagEditor(context, initial: _item.tags);
     if (result == null) return;
     await _run(
       () => widget.handler.execute(
@@ -1211,34 +1675,25 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     return Padding(
-      padding: const EdgeInsets.only(top: Insets.lg),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '灵感',
-            style: theme.textTheme.labelMedium?.copyWith(
-              color: scheme.onSurfaceVariant,
+      padding: const EdgeInsets.only(top: Insets.md),
+      child: SectionLegendCard(
+        legend: '灵感',
+        child: TextField(
+          controller: _inspirationCtrl,
+          minLines: 2,
+          maxLines: 8,
+          decoration: InputDecoration(
+            hintText: '写下你的灵感…',
+            filled: true,
+            fillColor: scheme.surfaceContainerLow,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(Radii.md),
+              borderSide: BorderSide.none,
             ),
           ),
-          const SizedBox(height: Insets.xs),
-          TextField(
-            controller: _inspirationCtrl,
-            minLines: 2,
-            maxLines: 8,
-            decoration: InputDecoration(
-              hintText: '写下你的灵感…',
-              filled: true,
-              fillColor: scheme.surfaceContainerLow,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(Radii.md),
-                borderSide: BorderSide.none,
-              ),
-            ),
-            style: theme.textTheme.bodyMedium,
-            onTapOutside: (_) => _saveInspiration(),
-          ),
-        ],
+          style: theme.textTheme.bodyMedium,
+          onTapOutside: (_) => _saveInspiration(),
+        ),
       ),
     );
   }
@@ -1246,9 +1701,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   Widget _inspirationEmpty(String text) {
     return Text(
       text,
-      style: Theme.of(
-        context,
-      ).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.outline),
+      style: Theme.of(context).textTheme.bodySmall
+          ?.copyWith(color: Theme.of(context).colorScheme.outline),
     );
   }
 
@@ -1276,9 +1730,12 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 末尾来源小字（把「从哪来、什么时候」说清楚）。
   /// mymind 形态（ui-spec §4.3）：居中、更弱化（outline 色，仅存档感）。
   Widget _sourceLine() {
+    // 无标题态时间已占标题位（detail-visual-hierarchy §3 拍板去重），
+    // 元信息行不再重复展示。
+    final untitled = _item.humanTitle?.isNotEmpty != true;
     final parts = <String>[
       if (_item.sourceApp?.isNotEmpty ?? false) _item.sourceApp!,
-      _fmtDate(_item.createdAt),
+      if (!untitled) _fmtDate(_item.createdAt),
     ];
     if (parts.isEmpty) return const SizedBox.shrink();
     return Padding(
@@ -1290,6 +1747,17 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
             ?.copyWith(color: Theme.of(context).colorScheme.outline),
       ),
     );
+  }
+
+  /// 无标题态的时间标题（detail-visual-hierarchy §3 拍板）：绝对短格式——
+  /// 严禁相对时间（标题位会过期）；跨年带年份。用户标题优先，时间退元信息行。
+  String get _timeTitle {
+    final d = DateTime.fromMillisecondsSinceEpoch(_item.createdAt);
+    final hh = d.hour.toString().padLeft(2, '0');
+    final mm = d.minute.toString().padLeft(2, '0');
+    return d.year == DateTime.now().year
+        ? '${d.month}月${d.day}日 $hh:$mm'
+        : '${d.year}年${d.month}月${d.day}日';
   }
 
   String _fmtDate(int ms) {
@@ -1333,620 +1801,5 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   }
 }
 
-/// 标签编辑 Sheet（手动增删，detail-two-zone.md §3 拍板 2026-10-01）：
-/// InputChip 删 + 输入即加（去重去空）；「保存」回传最终清单由调用方
-/// 走 UpdateItemCommand 整表替换，取消不动数据。
-class _TagEditorSheet extends StatefulWidget {
-  const _TagEditorSheet({required this.initial});
-
-  final List<String> initial;
-
-  @override
-  State<_TagEditorSheet> createState() => _TagEditorSheetState();
-}
-
-class _TagEditorSheetState extends State<_TagEditorSheet> {
-  late final List<String> _tags = [...widget.initial];
-  final _ctrl = TextEditingController();
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  void _add() {
-    final t = _ctrl.text.trim();
-    if (t.isEmpty || _tags.contains(t)) {
-      _ctrl.clear();
-      return;
-    }
-    setState(() {
-      _tags.add(t);
-      _ctrl.clear();
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    return Padding(
-      padding: EdgeInsets.only(
-        left: Insets.lg,
-        right: Insets.lg,
-        top: Insets.md,
-        bottom: MediaQuery.of(context).viewInsets.bottom + Insets.xl,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text('编辑标签', style: theme.textTheme.titleMedium),
-          const SizedBox(height: Insets.md),
-          if (_tags.isNotEmpty)
-            Wrap(
-              spacing: Insets.sm,
-              runSpacing: Insets.sm,
-              children: [
-                for (final t in _tags)
-                  InputChip(
-                    label: Text(t),
-                    onDeleted: () => setState(() => _tags.remove(t)),
-                  ),
-              ],
-            )
-          else
-            Text(
-              '暂无标签，输入添加',
-              style: theme.textTheme.bodySmall?.copyWith(color: scheme.outline),
-            ),
-          const SizedBox(height: Insets.md),
-          TextField(
-            controller: _ctrl,
-            autofocus: true,
-            decoration: InputDecoration(
-              hintText: '输入标签，回车添加',
-              filled: true,
-              fillColor: scheme.surfaceContainerLow,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(Radii.md),
-                borderSide: BorderSide.none,
-              ),
-            ),
-            onSubmitted: (_) => _add(),
-          ),
-          const SizedBox(height: Insets.lg),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('取消'),
-              ),
-              const SizedBox(width: Insets.sm),
-              FilledButton(
-                onPressed: () => Navigator.pop(context, _tags),
-                child: const Text('保存'),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// `⋯` 功能面板的单列条目描述（文件级私有，供 `_OverflowSheet` 使用）。
-class _SheetItem {
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-  final bool danger;
-  final bool checked;
-  const _SheetItem(this.icon, this.label, this.onTap,
-      {this.danger = false, this.checked = false});
-}
-
-/// mymind 风格功能面板：从底部升起，圆角 + 柔阴影；条目错峰淡入 / 上移 / 微缩放。
-class _OverflowSheet extends StatefulWidget {
-  final List<_SheetItem> items;
-  const _OverflowSheet({required this.items});
-
-  @override
-  State<_OverflowSheet> createState() => _OverflowSheetState();
-}
-
-class _OverflowSheetState extends State<_OverflowSheet>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 440),
-  )..forward();
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  Widget _tile(int index, _SheetItem item) {
-    final start = (index * 0.08).clamp(0.0, 0.6);
-    final end = (start + 0.5).clamp(0.0, 1.0);
-    final curve = Interval(start, end, curve: Curves.easeOutCubic);
-    final slide = Tween<Offset>(begin: const Offset(0, 0.4), end: Offset.zero)
-        .animate(CurvedAnimation(parent: _ctrl, curve: curve));
-    final fade = Tween<double>(begin: 0, end: 1)
-        .animate(CurvedAnimation(parent: _ctrl, curve: curve));
-    final scale = Tween<double>(begin: 0.92, end: 1)
-        .animate(CurvedAnimation(parent: _ctrl, curve: curve));
-    final scheme = Theme.of(context).colorScheme;
-    final iconColor = item.danger ? scheme.error : scheme.onSurfaceVariant;
-    return FadeTransition(
-      opacity: fade,
-      child: SlideTransition(
-        position: slide,
-        child: ScaleTransition(
-          scale: scale,
-          child: InkWell(
-            onTap: () {
-              Navigator.pop(context);
-              item.onTap();
-            },
-            borderRadius: BorderRadius.circular(Radii.lg),
-            child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
-              decoration: ShapeDecoration(
-                color: scheme.surfaceContainerHigh,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(Radii.lg),
-                ),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(item.icon, size: 26, color: iconColor),
-                  const SizedBox(height: 8),
-                  Text(
-                    item.label,
-                    style: Theme.of(context)
-                        .textTheme
-                        .labelMedium
-                        ?.copyWith(
-                          color: item.danger ? scheme.error : scheme.onSurface,
-                        ),
-                  ),
-                  if (item.checked)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 3),
-                      child: Icon(Icons.check, size: 14, color: scheme.primary),
-                    ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(Insets.md, 0, Insets.md, Insets.md),
-        child: Container(
-          padding: const EdgeInsets.fromLTRB(
-              Insets.md, Insets.md, Insets.md, Insets.lg),
-          decoration: ShapeDecoration(
-            color: scheme.surface,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(Radii.xl),
-            ),
-            shadows: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha:0.18),
-                blurRadius: 24,
-                offset: const Offset(0, -6),
-              ),
-            ],
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 36,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: Insets.md),
-                decoration: BoxDecoration(
-                  color: scheme.outlineVariant,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              Row(
-                children: [
-                  for (var i = 0; i < widget.items.length; i++)
-                    Expanded(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 6),
-                        child: _tile(i, widget.items[i]),
-                      ),
-                    ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// 就地编辑正文载体：逐块 TextField + 块级工具栏，变更**全部**经
-/// [EditSession.apply] 走统一事务入口（edit_session.dart 设计红线）。
-///
-/// - 文本编辑 → [CommitTextOp]；清空某块即删除（rebuildBlock 返回 null 兜底）。
-/// - 块级结构操作（上移/下移/插入/删除）→ 对应 [EditOp]，应用后整体重同步控制器，
-///   保证 index 与 `blocks` 始终对齐（结构变更后旧控制器失效，必须重建）。
-/// - 单项待办块附带勾选框（[EditBlock.todoDone] 经 [CommitTextOp.todoDone] 回写）。
-///
-/// 本载体替代旧 `block_editor_dialog` 的全部正文编辑能力（2026-10-02 形态收敛）。
-/// 粘贴拆块拦截器：检测单次粘贴事件（含空行 `\n\n` 的整块插入，区别于逐字输入），
-/// 拒绝本次字符落入单块，延迟到帧后由 [_EditBodyState._splitPasted] 经 [SplitOp]
-/// 拆块并整体重同步控制器。仅段落/引用块会被拆，其它块由 SplitOp 原样提交。
-/// 编辑态媒体块编辑器：在 `TextField` 之外提供「预览 + 标签 + 长按替换媒体」。
-///
-/// 长按预览即替换（用户拍板）：编辑态不放常驻「替换媒体」按钮；与查看页长按
-/// （标注/菜单）语义不同步，各态各义。
-///
-/// 护栏（用户拍板）：可视状态 100% 派生自传入的 [block]/[labelController]，不持有
-/// 任何本地私有状态（无 `_currentUrl`）；替换成功经 [onReplace] 上抛，由顶层走
-/// [ReplaceMediaOp] 经 [EditSession.apply] 落事务——取消即整体回滚，不与文字修改
-/// 形成脏状态分裂。
-class MediaBlockEditor extends StatelessWidget {
-  const MediaBlockEditor({
-    super.key,
-    required this.block,
-    required this.labelController,
-    required this.onLabelChanged,
-    required this.onReplace,
-  });
-
-  final RichBlock block;
-  final TextEditingController labelController;
-  final void Function(String) onLabelChanged;
-  final void Function(String url) onReplace;
-
-  Future<void> _pickAndReplace(BuildContext context) async {
-    final type = switch (block) {
-      ImageBlock() => FileType.image,
-      AudioBlock() => FileType.audio,
-      VideoBlock() => FileType.video,
-      _ => FileType.any,
-    };
-    final files = await FilePicker.pickFiles(type: type);
-    if (files.isEmpty) return; // 用户取消
-    final path = files.single.path;
-    if (path == null) return;
-    final saved = await copyToAppDir(path);
-    if (saved == null) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('媒体文件保存失败')));
-      }
-      return;
-    }
-    final url = await toLocalMediaUrl(saved);
-    onReplace(url);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final preview = switch (block) {
-      ImageBlock() => InlineMediaImage(block: block as ImageBlock),
-      AudioBlock() => InlineMediaAudio(block: block as AudioBlock),
-      VideoBlock() => InlineMediaVideo(block: block as VideoBlock),
-      _ => const SizedBox.shrink(),
-    };
-    final scheme = Theme.of(context).colorScheme;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        GestureDetector(
-          // 长按预览 = 替换媒体（用户拍板）：编辑态复用查看页的物理直觉，
-          // 不再放常驻按钮；与查看页长按（标注/菜单）语义不同步，各态各义。
-          onLongPress: () => _pickAndReplace(context),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(Radii.md),
-            child: preview,
-          ),
-        ),
-        const SizedBox(height: 6),
-        TextField(
-          controller: labelController,
-          onChanged: onLabelChanged,
-          maxLines: null,
-          decoration: InputDecoration(
-            isDense: true,
-            border: InputBorder.none,
-            contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-            hintText: switch (block) {
-              ImageBlock() => '图片说明（alt）',
-              AudioBlock() => '音频标签',
-              VideoBlock() => '视频标签',
-              _ => null,
-            },
-          ),
-        ),
-        const SizedBox(height: 6),
-        Divider(color: scheme.outlineVariant),
-      ],
-    );
-  }
-}
-
-class _PasteSplitFormatter extends TextInputFormatter {
-  _PasteSplitFormatter(this.index, this.state);
-
-  final int index;
-  final _EditBodyState state;
-
-  @override
-  TextEditingValue formatEditUpdate(
-    TextEditingValue oldValue,
-    TextEditingValue newValue,
-  ) {
-    // 单块编辑框内不存在合法 `\n\n`（段落为行内、引用仅以单 `\n` 连接子段），
-    // 故出现空行即判定为粘贴（并兼容 Windows 的 \r\n\r\n）。
-    final text = newValue.text.replaceAll('\r\n', '\n');
-    if (!text.contains(RegExp(r'\n[ \t]*\n'))) return newValue;
-    // 拒绝本次变更，避免多段文本短暂落入单块；帧后由会话事务拆块重同步。
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      state._splitPasted(index, text);
-    });
-    return oldValue;
-  }
-}
-
-class _EditBody extends StatefulWidget {
-  const _EditBody({required super.key, required this.session});
-
-  final EditSession session;
-
-  @override
-  State<_EditBody> createState() => _EditBodyState();
-}
-
-class _EditBodyState extends State<_EditBody> {
-  late List<TextEditingController> _controllers = _buildControllers();
-
-  /// 焦点节点（与控制器同序）：失焦时回收空块——「删光文字 = 删段」，
-  /// 用户心智里的删除不需要按钮；正在编辑的空块不回收（可能只是清空重写）。
-  late List<FocusNode> _focusNodes = _buildFocusNodes();
-
-  /// 待失焦回收的空块下标（onChange 记、失焦/重同步时消费）。
-  final Set<int> _pendingEmpty = {};
-
-  List<TextEditingController> _buildControllers() => [
-        for (var i = 0; i < widget.session.blocks.length; i++)
-          TextEditingController(text: widget.session.editTextOf(i))
-      ];
-
-  List<FocusNode> _buildFocusNodes() => [
-        for (var i = 0; i < widget.session.blocks.length; i++)
-          FocusNode(onKeyEvent: (node, event) => _onBlockKey(i, event))
-      ];
-
-  /// 待办块的行内勾选：替代旧块级工具栏中的 Checkbox——勾选态本来就是
-  /// 块自身的属性，贴着内容放比悬在上方一排按钮更可达。
-  Widget? _todoToggle(int i) {
-    final block = widget.session.blocks[i].block;
-    if (block is! ListBlock || block.items.length != 1) return null;
-    if (block.items.first.done == null) return null;
-    return Padding(
-      padding: const EdgeInsets.only(top: 2, right: 8),
-      child: Checkbox(
-        visualDensity: VisualDensity.compact,
-        value: widget.session.blocks[i].todoDone ?? false,
-        onChanged: (v) {
-          widget.session.apply(
-            CommitTextOp(i, widget.session.editTextOf(i), todoDone: v ?? false),
-          );
-          if (mounted) setState(() {});
-        },
-      ),
-    );
-  }
-
-  /// 键盘事件：块首退格（光标在 0 且无选区）且上方还有块时，把上方块收拢进来。
-  /// 返回 handled 阻止默认行为，避免光标停在块首不动。
-  KeyEventResult _onBlockKey(int i, KeyEvent event) {
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
-      return KeyEventResult.ignored;
-    }
-    if (event.logicalKey != LogicalKeyboardKey.backspace) {
-      return KeyEventResult.ignored;
-    }
-    final controller = _controllers[i];
-    if (controller.selection.baseOffset != 0 ||
-        controller.selection.extentOffset != 0 ||
-        i == 0) {
-      return KeyEventResult.ignored;
-    }
-    // 上方块文本 + 本块剩余文本并入上方块（物理键盘主要场景；软键盘无
-    // KeyEvent，靠删除键逐字清空 + 失焦回收兜底）。
-    final prev = widget.session.editTextOf(i - 1);
-    final cur = controller.text;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      widget.session.apply(SplitOp(i - 1, '$prev\n\n$cur'));
-      _syncAfterStructureChange();
-      _focusNodes[i - 1].requestFocus();
-    });
-    return KeyEventResult.handled;
-  }
-
-  /// 重同步控制器到最新 `blocks`（结构变更后调用）。
-  void _resync() {
-    for (final c in _controllers) {
-      c.dispose();
-    }
-    for (final f in _focusNodes) {
-      f.dispose();
-    }
-    _controllers = _buildControllers();
-    _focusNodes = _buildFocusNodes();
-    _pendingEmpty.clear();
-  }
-
-  /// 结构变更后的统一重同步入口。
-  void _syncAfterStructureChange() {
-    if (mounted) setState(_resync);
-  }
-
-  /// 文本编辑：逐字经 [CommitTextOp] 落会话；仅当清空块致 blocks 数变化时重同步
-  /// （不逐字重同步，避免破坏光标）。
-  void _onChanged(int i, String v) {
-    widget.session.apply(CommitTextOp(i, v));
-    if (v.trim().isEmpty) {
-      _pendingEmpty.add(i);
-    } else {
-      _pendingEmpty.remove(i);
-    }
-    if (widget.session.blocks.length != _controllers.length && mounted) {
-      setState(_resync);
-    }
-  }
-
-  /// 失焦回收：编辑框已删空且失焦的块从会话移除（至少保留一个块，防页面无落笔处）。
-  void _onFocusLost(int i) {
-    if (!_pendingEmpty.contains(i)) return;
-    _pendingEmpty.remove(i);
-    if (widget.session.blocks.length <= 1) return;
-    // 逐字删除过程中 CommitTextOp 可能已把空块移除（rebuildBlock 返回 null），
-    // 下标对不上即无需再回收。
-    if (i >= widget.session.blocks.length) return;
-    widget.session.apply(DeleteOp(i));
-    _syncAfterStructureChange();
-  }
-
-  /// 保存前由宿主调用：仍在输入框中的空块此刻一并回收，保证落库口径一致。
-  void flushPendingEmpties() {
-    if (_pendingEmpty.isEmpty) return;
-    // 从大到小删，避免下标位移；单块页面不回收（保底落笔处）。
-    final idx = _pendingEmpty.toList()..sort((a, b) => b.compareTo(a));
-    for (final i in idx) {
-      if (widget.session.blocks.length <= 1) break;
-      if (i < widget.session.blocks.length) {
-        widget.session.apply(DeleteOp(i));
-      }
-    }
-    _pendingEmpty.clear();
-  }
-
-  /// 粘贴拆块：经 [SplitOp] 把整段粘贴文本按空行切成多块，再整体重同步控制器。
-  void _splitPasted(int i, String full) {
-    if (!mounted) return;
-    widget.session.apply(SplitOp(i, full));
-    _syncAfterStructureChange();
-  }
-
-  /// 结构操作（仅存「末尾追加」一处入口）：应用后整体重同步控制器。
-  void _mutate(EditOp op) {
-    widget.session.apply(op);
-    _syncAfterStructureChange();
-  }
-
-  @override
-  void dispose() {
-    for (final c in _controllers) {
-      c.dispose();
-    }
-    for (final f in _focusNodes) {
-      f.dispose();
-    }
-    super.dispose();
-  }
-
-  /// 单个块的编辑载体：媒体块渲染 [MediaBlockEditor]（预览+标签+替换），
-  /// 其余块保持 `TextField` 不变。两者均绑定 `ValueKey(blocks[i].id)`，
-  /// 防结构变更（增删/移动/拆分）后 Element 错位复用。
-  ///
-  /// 无块级工具栏（用户拍板）：上移/下移/插入/删除按钮全部移除——插入靠回车
-  /// 空行与粘贴拆块，删除靠「删光文字 + 失焦回收」，结构操作退居键盘与手势。
-  Widget _blockEditor(int i) {
-    final id = widget.session.blocks[i].id;
-    final block = widget.session.blocks[i].block;
-    final isMedia =
-        block is ImageBlock || block is AudioBlock || block is VideoBlock;
-    final editor = isMedia
-        ? MediaBlockEditor(
-            key: ValueKey(id),
-            block: block,
-            labelController: _controllers[i],
-            onLabelChanged: (v) => _onChanged(i, v),
-            onReplace: (url) {
-              widget.session.apply(ReplaceMediaOp(i, url));
-              if (mounted) setState(() {});
-            },
-          )
-        : TextField(
-            key: ValueKey(id),
-            controller: _controllers[i],
-            focusNode: _focusNodes[i],
-            maxLines: null,
-            inputFormatters: [_PasteSplitFormatter(i, this)],
-            onChanged: (v) => _onChanged(i, v),
-            onTapOutside: (_) => _onFocusLost(i),
-            style: Theme.of(context).textTheme.bodyMedium,
-            decoration: InputDecoration(
-              isDense: true,
-              filled: true,
-              fillColor: Colors.transparent,
-              border: InputBorder.none,
-              contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
-            ),
-          );
-    final todo = _todoToggle(i);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-      child: todo != null
-          ? Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [todo, Expanded(child: editor)],
-            )
-          : editor,
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) => Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          for (var i = 0; i < widget.session.blocks.length; i++) _blockEditor(i),
-          if (widget.session.blocks.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Text(
-                '正文为空，点击下方添加段落',
-                style: TextStyle(color: Colors.grey),
-              ),
-            ),
-          // 常驻「添加段落」：AppendOp；兼覆盖空正文无法起笔的缺口。
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: () => _mutate(AppendOp()),
-                icon: const Icon(Icons.add),
-                label: const Text('添加段落'),
-              ),
-            ),
-          ),
-        ],
-      );
-}
+/// 标签编辑已抽共享组件 `lib/ui/tag_editor_sheet.dart`（动词→容器词汇表：
+/// 「编辑一组小项」唯一容器，便签作曲器同用）。

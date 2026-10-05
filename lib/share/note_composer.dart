@@ -18,6 +18,8 @@
 ///   AI 回写无冲刷路径。
 library;
 
+import '../doc/rich_text.dart' show MediaSuffix, classifyMediaUrl;
+
 /// 便签段模型：文本与行内媒体按序混排，保存时整体序列化为一个条目。
 sealed class NoteSegment {
   const NoteSegment();
@@ -65,18 +67,29 @@ final class NoteVideoSegment extends NoteSegment {
 bool noteHasMedia(List<NoteSegment> segments) =>
     segments.any((s) => s is! NoteTextSegment);
 
-/// 条目标题：首个非空文本行（折叠空白、截 30 字符）；全媒体无文字返回 null，
-/// 由调用方决定兜底（如「图文便签」）。
+/// 条目标题（2026-10-03 拍板「标题独立，与 md 无关」）：取用户写的**第一个
+/// 一级标题行**（`# 标题`，跨段按序扫描；`## ` 二级不算）；**保留行内标记**
+/// （如 `<u>` 下划线）——标题文本是一级标题行原文，不在此处剥壳。
+///
+/// 剥壳/样式由**渲染层**按需决定（口径不同源）：
+/// - 详情页顶栏标题（`item_detail_page._buildTitle`）与列表/搜索预览
+///   （`InboxItem.preview`）都是纯文本展示，对标题做行内剥壳，
+///   避免顶栏/卡片出现 `<u>` 残壳；
+/// - 下划线等行内格式只在详情页**正文阅读态**（`ContentBody` / `RichTextView`）
+///   呈现，与正文同源。
+///
+/// 没有一级标题返回 null，由调用方兜底（速记保存不写 human_title，详情页
+/// 落「笔记时间」时间标题 _timeTitle 口径）。
 String? noteTitleOf(List<NoteSegment> segments) {
   for (final s in segments) {
     if (s is! NoteTextSegment) continue;
-    final lines = [
-      for (final line in s.text.split('\n'))
-        if (line.trim().isNotEmpty) line.trim(),
-    ];
-    if (lines.isEmpty) continue;
-    final oneLine = lines.join(' ').replaceAll(RegExp(r'\s+'), ' ').trim();
-    return oneLine.length > 30 ? '${oneLine.substring(0, 30)}…' : oneLine;
+    for (final line in s.text.split('\n')) {
+      final m = RegExp(r'^#\s+(.+)$').firstMatch(line.trim());
+      if (m != null) {
+        final title = m.group(1)!.trim();
+        if (title.isNotEmpty) return title;
+      }
+    }
   }
   return null;
 }
@@ -114,3 +127,53 @@ String serializeNoteMd(List<NoteSegment> segments, {bool todoMode = false}) {
 /// 防 `]`/`\` 破坏媒体行结构；url 为绝对路径不含括号，原样透传。
 String _escapeAlt(String raw) =>
     raw.replaceAllMapped(RegExp(r'[\[\]\\]'), (m) => '\\${m.group(0)}');
+
+/// [_escapeAlt] 的逆：`\X` → `X`（X ∈ [ ] \）。
+String _unescapeAlt(String raw) =>
+    raw.replaceAllMapped(RegExp(r'\\([\[\]\\])'), (m) => m.group(1)!);
+
+/// human_md → 作曲器草稿行（编辑器统一 2026-10-03：详情已有条目 → 段序列）。
+///
+/// 已知结构处置（用户拍板「字面文本保留」）：
+/// - `local://` 媒体行 → 媒体段行（`['i'/'a'/'v', url, label?]`，alt/label 反转义随行）；
+/// - 文本块（含 `# ` 标题、行内样式）→ `['t', 原文]`——编辑器 seedQuickNote
+///   恢复所见即所得（标题转行级档位、行内标记转 runs），序列化时逆变换回写；
+/// - 其余结构（列表/引用/代码块/外链图片行等，段模型不认识）→ 整块**字面保留**
+///   为文本段，保存原样回写，查看态渲染不受影响。
+List<List<String>> noteMdToDraftRows(String md) {
+  final rows = <List<String>>[];
+  for (var chunk in md.split(RegExp(r'\n[ \t]*\n'))) {
+    chunk = chunk.trim();
+    if (chunk.isEmpty) continue;
+    rows.add(_mediaLineRow(chunk) ?? ['t', chunk]);
+  }
+  return rows;
+}
+
+/// 单行且整体是 `local://` 媒体行 → 媒体段行；否则 null（文本段）。
+/// 非本地 url（http 图片/链接行等）不认——字面保留，防误吞用户文本。
+List<String>? _mediaLineRow(String chunk) {
+  if (chunk.contains('\n')) return null; // 媒体行必须整行独立（单行块）
+  final m = _localMediaLine.firstMatch(chunk);
+  if (m == null) return null;
+  final isImage = m.group(1) == '!';
+  final url = m.group(3)!;
+  final text = _unescapeAlt(m.group(2)!);
+  if (isImage) {
+    // 图片行 ![alt](local://…)
+    return ['i', url, if (text.isNotEmpty) text];
+  }
+  // 音/视频行 [label](local://…)，按后缀分类（不可读后缀归视频占位卡）
+  final suffix = classifyMediaUrl(url);
+  final kind =
+      suffix == MediaSuffix.audioPlayable || suffix == MediaSuffix.audioDegrade
+      ? 'a'
+      : 'v';
+  return [kind, url, if (text.isNotEmpty) text];
+}
+
+/// `![alt](local://…)` 或 `[label](local://…)` 整行匹配（alt/label 允许
+/// `\X` 转义的 `]`；url 无空白——本地相对标记不含空格）。
+final RegExp _localMediaLine = RegExp(
+  r'^(!?)\[((?:[^\\\]]|\\.)*)\]\((local://\S+)\)$',
+);

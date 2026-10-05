@@ -125,6 +125,7 @@ Map<String, Object?> itemToJson(InboxItem it) => {
       'edit_locked': it.editLocked,
       'is_processed': it.isProcessed,
       'is_vault': it.isVault,
+      'is_pinned': it.isPinned,
       'is_deleted': it.isDeleted,
       'version': it.version,
       'machine_json': _tryDecode(it.machineJson),
@@ -178,7 +179,10 @@ sealed class ItemCommand {
           _reqField(json, 'name', op),
         );
       case 'delete_workspace':
-        return DeleteWorkspaceCommand(_reqField(json, 'workspace_id', op));
+        return DeleteWorkspaceCommand(
+          _reqField(json, 'workspace_id', op),
+          ackNonEmpty: json['ack_non_empty'] == true,
+        );
     }
     final id = _reqId(json, op);
     final ev = _int(json['expected_version']);
@@ -202,6 +206,12 @@ sealed class ItemCommand {
           throw ActionException('set_vault 需要布尔字段 on', code: ActionErrorCode.invalidRequest);
         }
         return SetVaultCommand(id, on, expectedVersion: ev);
+      case 'set_pin':
+        final on = _bool(json['on']);
+        if (on == null) {
+          throw ActionException('set_pin 需要布尔字段 on', code: ActionErrorCode.invalidRequest);
+        }
+        return PinCommand(id, on, expectedVersion: ev);
       case 'reclassify':
         final to = _str(json['item_type']) ?? _str(json['to']);
         if (to == null) {
@@ -215,10 +225,20 @@ sealed class ItemCommand {
           id,
           subtitleMode: _str(json['subtitle_mode']),
           targetLang: _str(json['target_lang']),
+          blockKey: _str(json['block_key']),
           expectedVersion: ev,
         );
       case 'summarize':
-        return SummarizeCommand(id, expectedVersion: ev);
+        return SummarizeCommand(id, blockKey: _str(json['block_key']), expectedVersion: ev);
+      case 'extract_audio':
+        final bk = _str(json['block_key']);
+        if (bk == null || bk.isEmpty) {
+          throw ActionException(
+            'extract_audio 需要 block_key 字段（行内视频块的 local:// 路径）',
+            code: ActionErrorCode.invalidRequest,
+          );
+        }
+        return ExtractAudioCommand(id, blockKey: bk, expectedVersion: ev);
       case 'clip':
         return ClipCommand(
           id,
@@ -237,11 +257,13 @@ sealed class ItemCommand {
       case 'extract_tags':
         return ExtractTagsCommand(id, expectedVersion: ev);
       case 'ocr':
-        return OcrCommand(id, expectedVersion: ev);
+        return OcrCommand(id, blockKey: _str(json['block_key']), expectedVersion: ev);
       case 'translate':
         return TranslateCommand(
           id,
           targetLang: _str(json['target_lang']) ?? _str(json['lang']),
+          blockKey: _str(json['block_key']),
+          sourceKind: _str(json['source_kind']),
           expectedVersion: ev,
         );
       case 'unlock_edit':
@@ -260,6 +282,7 @@ sealed class ItemCommand {
         return CollectCommand(
           itemType: _str(json['item_type']) ?? InboxItem.typeNote,
           sourceApp: _str(json['source_app']) ?? 'unknown',
+          author: _str(json['author']) ?? InboxItem.authorHuman,
           rawContent: _str(json['content']) ?? _str(json['raw_content']),
           rawFilePath: _str(json['file']) ?? _str(json['raw_file_path']),
           humanTitle: _str(json['title']),
@@ -325,6 +348,9 @@ sealed class ItemCommand {
     'update',
     'delete',
     'set_vault',
+    'set_ai_visible',
+    'set_ai_editable',
+    'set_pin',
     'reclassify',
     'reprocess',
     'transcribe',
@@ -343,6 +369,7 @@ sealed class ItemCommand {
     'classify',
     'scan_barcode',
     'analyze_text',
+    'extract_audio',
     'create_workspace',
     'rename_workspace',
     'delete_workspace',
@@ -455,6 +482,29 @@ final class SetVaultCommand extends ItemCommand {
       };
 }
 
+/// 置顶 / 取消置顶（= MCP set_pin，2026-10-02 v18）。
+/// 显示层能力（全部页独立置顶区），无隐私语义：UI 与 AI 均可双向操作。
+final class PinCommand extends ItemCommand {
+  const PinCommand(this.id, this.on, {super.expectedVersion});
+
+  final String id;
+  final bool on;
+
+  @override
+  String get op => 'set_pin';
+
+  @override
+  String? get targetId => id;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'id': id,
+        'on': on,
+        if (expectedVersion != null) 'expected_version': expectedVersion,
+      };
+}
+
 /// 重分类（= 详情「重分类」BottomSheet / update_item 的 item_type）。
 final class ReclassifyCommand extends ItemCommand {
   const ReclassifyCommand(this.id, this.to, {super.expectedVersion});
@@ -501,10 +551,16 @@ final class ReprocessCommand extends ItemCommand {
 ///
 /// 与 [TranscribeCommand] 对称（2026-09-28 用户拍板：分享摄入不默认 OCR，只存文件，
 /// 识别文字必须用户手动触发）。是**唯一**会真正跑 ML Kit 识别的入口。
+///
+/// [blockKey] 非空 = 行内图片块 OCR（块附件通道，§2.4 `block_ocr:<blockKey>`）：
+/// 校验下沉动作层（human_md 确有该图片媒体行），产出落 block_artifacts 不碰 human_md。
 final class OcrCommand extends ItemCommand {
-  const OcrCommand(this.id, {super.expectedVersion});
+  const OcrCommand(this.id, {this.blockKey, super.expectedVersion});
 
   final String id;
+
+  /// 行内块 key（`local://…`）；null = 条目级 OCR（顶级图片条目，现行行为）。
+  final String? blockKey;
 
   @override
   String get op => 'ocr';
@@ -516,6 +572,7 @@ final class OcrCommand extends ItemCommand {
   Map<String, Object?> toJson() => {
         'op': op,
         'id': id,
+        if (blockKey != null) 'block_key': blockKey,
         if (expectedVersion != null) 'expected_version': expectedVersion,
       };
 }
@@ -598,11 +655,26 @@ final class AnalyzeTextCommand extends ItemCommand {
 ///
 /// [targetLang] 为 BCP-47 目标语言（如 'zh'）；null = 沿用设置项所选目标语言。
 /// 语言合法性由动作层校验（防呆下沉），AI 换个入口也绕不过。
+///
+/// [blockKey] 非空 = 块产物翻译（§2.4 `block_translate:<blockKey>|<lang>|<srcKind>`）：
+/// [sourceKind] 必带（transcript/ocr_text/subtitle），校验「源产物已存在非空」下沉动作层。
 final class TranslateCommand extends ItemCommand {
-  const TranslateCommand(this.id, {this.targetLang, super.expectedVersion});
+  const TranslateCommand(
+    this.id, {
+    this.targetLang,
+    this.blockKey,
+    this.sourceKind,
+    super.expectedVersion,
+  });
 
   final String id;
   final String? targetLang;
+
+  /// 行内块 key（`local://…`）；null = 条目级翻译（现行行为）。
+  final String? blockKey;
+
+  /// 块翻译的源产物 kind；blockKey 非空时必带。
+  final String? sourceKind;
 
   @override
   String get op => 'translate';
@@ -615,6 +687,8 @@ final class TranslateCommand extends ItemCommand {
         'op': op,
         'id': id,
         if (targetLang != null) 'target_lang': targetLang,
+        if (blockKey != null) 'block_key': blockKey,
+        if (sourceKind != null) 'source_kind': sourceKind,
         if (expectedVersion != null) 'expected_version': expectedVersion,
       };
 }
@@ -625,10 +699,16 @@ final class TranslateCommand extends ItemCommand {
 /// 「端侧摘要」动作，是**唯一**会真正跑端侧 LLM 摘要的入口（与 OCR / 转写 / 翻译
 /// 同构：端侧重资源动作一律手动 / 显式触发，摄入不自动跑）。
 /// 「文本类条目且正文非空」校验下沉在动作层，AI 换入口也绕不过。
+///
+/// [blockKey] 非空 = 块产物摘要（§2.4 `block_summarize:<blockKey>`）：源为该块
+/// transcript/ocr_text（无源产物 → 动作层拒绝），产出落 block_artifacts。
 final class SummarizeCommand extends ItemCommand {
-  const SummarizeCommand(this.id, {super.expectedVersion});
+  const SummarizeCommand(this.id, {this.blockKey, super.expectedVersion});
 
   final String id;
+
+  /// 行内块 key（`local://…`）；null = 条目级摘要（现行行为）。
+  final String? blockKey;
 
   @override
   String get op => 'summarize';
@@ -640,6 +720,7 @@ final class SummarizeCommand extends ItemCommand {
   Map<String, Object?> toJson() => {
         'op': op,
         'id': id,
+        if (blockKey != null) 'block_key': blockKey,
         if (expectedVersion != null) 'expected_version': expectedVersion,
       };
 }
@@ -674,11 +755,15 @@ final class ExtractTagsCommand extends ItemCommand {
 /// [subtitleMode] / [targetLang] 为任务级覆盖（MCP transcribe_item 可选参数，
 /// 2026-10-02 拍板）：编码进队列动作串（`transcribe_audio:<mode>:<lang>`），缺省
 /// 沿用设置项。合法性校验下沉在 handler [_transcribe]（防呆不下放）。
+///
+/// [blockKey] 非空 = 行内媒体块转写（块附件通道，§2.4 `block_transcribe:<blockKey>|…`）：
+/// 源为块媒体文件、产物（transcript+subtitle 双产物）落 block_artifacts 不碰 human_md。
 final class TranscribeCommand extends ItemCommand {
   const TranscribeCommand(
     this.id, {
     this.subtitleMode,
     this.targetLang,
+    this.blockKey,
     super.expectedVersion,
   });
 
@@ -689,6 +774,9 @@ final class TranscribeCommand extends ItemCommand {
 
   /// 字幕译文目标语言覆盖（BCP-47）；null = 沿用设置项。
   final String? targetLang;
+
+  /// 行内块 key（`local://…`）；null = 条目级转写（顶级音/视频条目，现行行为）。
+  final String? blockKey;
 
   @override
   String get op => 'transcribe';
@@ -702,6 +790,35 @@ final class TranscribeCommand extends ItemCommand {
         'id': id,
         if (subtitleMode != null) 'subtitle_mode': subtitleMode,
         if (targetLang != null) 'target_lang': targetLang,
+        if (blockKey != null) 'block_key': blockKey,
+        if (expectedVersion != null) 'expected_version': expectedVersion,
+      };
+}
+
+/// 行内视频块提取音轨（块附件通道，= UI 三级页「提取音频」）：
+/// 入队 `block_extract_audio:<blockKey>`，产 audio_file 产物（file_path 落盘 WAV/AAC）。
+///
+/// 仅块级（blockKey 必带，fromJson 强制）——顶级视频条目的音轨沿用条目级通道，不走本命令。
+/// 源文件校验（块为视频后缀）下沉在 handler [_extractAudio]。
+final class ExtractAudioCommand extends ItemCommand {
+  const ExtractAudioCommand(this.id, {required this.blockKey, super.expectedVersion});
+
+  final String id;
+
+  /// 行内视频块 key（`local://…`）。
+  final String blockKey;
+
+  @override
+  String get op => 'extract_audio';
+
+  @override
+  String? get targetId => id;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'id': id,
+        'block_key': blockKey,
         if (expectedVersion != null) 'expected_version': expectedVersion,
       };
 }
@@ -775,6 +892,7 @@ final class CollectCommand extends ItemCommand {
   const CollectCommand({
     required this.itemType,
     this.sourceApp = 'unknown',
+    this.author = InboxItem.authorHuman,
     this.rawContent,
     this.rawFilePath,
     this.humanTitle,
@@ -787,6 +905,8 @@ final class CollectCommand extends ItemCommand {
 
   final String itemType;
   final String sourceApp;
+  /// 作者身份（ai-visibility v20）：默认人类收集；MCP add_item 传入 ai 以标记 AI 建条。
+  final String author;
   final String? rawContent;
   final String? rawFilePath;
   final String? humanTitle;
@@ -817,6 +937,7 @@ final class CollectCommand extends ItemCommand {
         'op': op,
         'item_type': itemType,
         'source_app': sourceApp,
+        'author': author,
         if (rawContent != null) 'content': rawContent,
         if (rawFilePath != null) 'file': rawFilePath,
         if (humanTitle != null) 'title': humanTitle,
@@ -826,6 +947,50 @@ final class CollectCommand extends ItemCommand {
         if (aspectRatio != null) 'aspect_ratio': aspectRatio,
         if (mediaDurationMs != null) 'media_duration_ms': mediaDurationMs,
         };
+}
+
+// ── AI 可见性分层（v20，ai-visibility）──
+// 两个开关仅允许 UI（CommandActor.ui）修改：AI（MCP 客户端）既读不到 ai_visible=0 的条目，
+// 也无法翻转开关本身（不入 ItemCommand.fromJson，外部不可构造）。人类给某条人类笔记开启
+// 「允许 AI 编辑」即视为静态同意；开启后 AI 方可修改（见 ItemActionHandler 的编辑门禁）。
+final class SetAiVisibleCommand extends ItemCommand {
+  const SetAiVisibleCommand(this.id, this.on, {super.expectedVersion});
+  final String id;
+  final bool on;
+  @override
+  String get op => 'set_ai_visible';
+  @override
+  String get targetId => id;
+  @override
+  Map<String, Object?> toJson() => {'op': op, 'id': id, 'on': on};
+}
+
+final class SetAiEditableCommand extends ItemCommand {
+  const SetAiEditableCommand(this.id, this.on, {super.expectedVersion});
+  final String id;
+  final bool on;
+  @override
+  String get op => 'set_ai_editable';
+  @override
+  String get targetId => id;
+  @override
+  Map<String, Object?> toJson() => {'op': op, 'id': id, 'on': on};
+}
+
+/// 管线回写授权（ai-visibility 补丁）：端侧管线（OCR / 翻译 / 摘要 / 转写 / 切片）
+/// 把 AI 产出回写进条目前的开关。**仅 [CommandActor.ui]**：AI 翻不动此开关。
+/// 默认关闭——人类笔记默认不允许管线处理，须人类在详情页显式开启「允许 AI 处理」。
+/// 不入 [ItemCommand.fromJson]：MCP 无法构造，但 MCP 本就无权触发管线回写。
+final class SetAiProcessCommand extends ItemCommand {
+  const SetAiProcessCommand(this.id, this.on, {super.expectedVersion});
+  final String id;
+  final bool on;
+  @override
+  String get op => 'set_ai_process';
+  @override
+  String get targetId => id;
+  @override
+  Map<String, Object?> toJson() => {'op': op, 'id': id, 'on': on};
 }
 
 /// 引用附件迁移（content-pipeline §7 引用模式兜底）：ref → owned。
@@ -990,6 +1155,64 @@ final class ApplyAiResultCommand extends ItemCommand {
       };
 }
 
+/// AI 写回会话态（ai-writeback-revert §4）：存于 `doc_meta_json.ai_session_state`，
+/// **仅一个短串**——正文快照一律走 `human_md_baseline` 列 / `ai_revisions` 表
+/// （§3.2：长文本进 Meta 会在文档列表页被批量反序列化，引发内存膨胀与卡顿）。
+enum AiSessionPhase {
+  /// CLOSED：普通编辑态，无未关闭的 AI 会话（`human_md_baseline` 为 null）。
+  idle,
+
+  /// AI_PENDING：AI 版在场，等用户处置（基线 = AI 动笔前的人类文本）。
+  pending,
+
+  /// RESTORED：已还原到基线，仍可一键换回 AI 版（恢复源 = ai_revisions 最新条）。
+  restored,
+}
+
+/// AI 写回会话态变更（ai-writeback-revert §4/§5）：**还原 / 恢复 AI 改动 /
+/// 接管闭环**的唯一落库路径。
+///
+/// **仅 [CommandActor.ui]**：会话态是「人撤销 AI」的人类侧工具，AI 不得自行
+/// 声明会话已关闭（否则可一键抹掉人类的还原权）。写回侧由
+/// [ApplyAiResultCommand] 置 pending——方向相反，互不替代。
+///
+/// 各态不变量由动作层强制（防呆下沉，UI 换入口也绕不过）：
+/// - restored / pending 要求基线非空（§3.1：基线非空 ⟺ 有未关闭会话）；
+/// - idle（接管）统一把基线置 null 并**同时落库当前文本**（§8.3：
+///   状态翻转与文本必须一起提交，否则重开时状态/文本 mismatch）。
+final class AiSessionCommand extends ItemCommand {
+  const AiSessionCommand(
+    this.id, {
+    required this.phase,
+    this.humanMd,
+    super.expectedVersion,
+  });
+
+  final String id;
+  final AiSessionPhase phase;
+
+  /// 目标正文：
+  /// - restored：省略（由动作层取基线，不给调用方伪造的机会）；
+  /// - pending：省略时回退 `ai_revisions` 最新条（§3.2 恢复源）；
+  /// - idle：编辑器当前文本（接管后的手改版）。
+  final String? humanMd;
+
+  @override
+  String get op => 'ai_session';
+
+  @override
+  String? get targetId => id;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'id': id,
+        'phase': phase.name,
+        if (humanMd != null) 'human_md': humanMd,
+        if (expectedVersion != null) 'expected_version': expectedVersion,
+      };
+}
+
 // ───────────────────────────── 工作区（2026-09-30） ─────────────────────────────
 //
 // Human-AI 对称性铁律：工作区若 UI 能建，AI 也必须能建——否则违反
@@ -1032,10 +1255,18 @@ final class RenameWorkspaceCommand extends ItemCommand {
 }
 
 /// 删除工作区（= MCP delete_workspace）；关系行由外键级联清理。
+/// 删除工作区（= MCP delete_workspace）；关系行由外键级联清理。
+///
+/// **非空守门**（docs/design/workspace.md §3.2 拍板 B）：非空删除必须
+/// [ackNonEmpty]=true 显式确认——ack 只能由人类 UI 弹窗（条数明示）产生；
+/// 非 ui actor 携 ack 被动作层拒绝（Human-AI 同守门，D-WS2）。
 final class DeleteWorkspaceCommand extends ItemCommand {
-  const DeleteWorkspaceCommand(this.workspaceId);
+  const DeleteWorkspaceCommand(this.workspaceId, {this.ackNonEmpty = false});
 
   final String workspaceId;
+
+  /// 非空删除的人类确认标记（弹窗「保留内容并删除」= 明知条目在、只删壳）。
+  final bool ackNonEmpty;
 
   @override
   String get op => 'delete_workspace';
@@ -1044,7 +1275,11 @@ final class DeleteWorkspaceCommand extends ItemCommand {
   String? get targetId => null;
 
   @override
-  Map<String, Object?> toJson() => {'op': op, 'workspace_id': workspaceId};
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'workspace_id': workspaceId,
+        if (ackNonEmpty) 'ack_non_empty': true,
+      };
 }
 
 /// 把条目加入工作区（= UI「加入工作区」/ MCP add_to_workspace）。

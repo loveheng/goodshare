@@ -252,4 +252,122 @@ void main() {
       expect(s.blocks[1].id, isNot(firstId)); // 新块获新身份
     });
   });
+
+    test('SetHeadingOp 段落→标题→正文互转，保留行内结构与块身份', () {
+      final s = EditSession('你好 **粗**\n\n普通段');
+      final headingId = s.blocks[0].id;
+      s.apply(SetHeadingOp(0, 1));
+      expect(s.blocks[0].block, isA<HeadingBlock>());
+      final h = s.blocks[0].block as HeadingBlock;
+      expect(h.level, 1);
+      expect(inlineToPlain(h.inline), '你好 粗'); // 行内结构保留
+      expect(s.blocks[0].id, headingId); // 块身份不变
+      s.apply(SetHeadingOp(0, 2));
+      expect((s.blocks[0].block as HeadingBlock).level, 2);
+      s.apply(SetHeadingOp(0, 0));
+      expect(s.blocks[0].block, isA<ParagraphBlock>());
+      expect(s.blocks[0].id, headingId);
+    });
+
+    test('SetHeadingOp 仅段落/标题可互转：列表/媒体/代码块不变换', () {
+      final s = EditSession('- 甲\n\n![图片](local://a.png)\n\n``````');
+      s.apply(SetHeadingOp(0, 1));
+      expect(s.blocks[0].block, isA<ListBlock>());
+      s.apply(SetHeadingOp(1, 1));
+      expect(s.blocks[1].block, isA<ImageBlock>());
+      // 越界静默忽略（防呆下沉会话层）
+      s.apply(SetHeadingOp(99, 1));
+    });
+
+
+  group('样式化输入 span 状态层（block-format-input §4 slice-2）', () {
+    test('seedSpanBlock：播种纯文本与 runs，markdown 出口不变', () {
+      final s = EditSession('前**粗**后\n\n普通段');
+      s.seedSpanBlock(0);
+      expect(s.isSpanBlock(0), isTrue);
+      expect(s.spanEditTextOf(0), '前粗后');
+      final b = s.blocks[0];
+      final bold = b.inlineRuns!.where((r) => r.mark == InlineMark.bold).single;
+      expect(b.inlinePlain!.substring(bold.start, bold.end), '粗');
+      expect(s.markdown, '前**粗**后\n\n普通段'); // 播种不改序列化出口
+      expect(s.isSpanBlock(1), isFalse); // 未播种块回落 md 路径
+    });
+
+    test('applySpanInput：run 内插入延展、run 边界外不越界', () {
+      final s = EditSession('前**粗体**后');
+      s.seedSpanBlock(0);
+      // 「粗体」中间插入 X（严格 run 内）：run 延展涵盖
+      s.applySpanInput(0, '前粗X体后', active: const {});
+      var bold = s.blocks[0].inlineRuns!.where((r) => r.mark == InlineMark.bold).single;
+      expect(s.blocks[0].inlinePlain!.substring(bold.start, bold.end), '粗X体');
+      // run 末尾之后追加 Y（无激活样式）：不入 run（先选后打拍板——
+      // 边界延续由激活态负责）
+      s.applySpanInput(0, '前粗X体后Y', active: const {});
+      bold = s.blocks[0].inlineRuns!.where((r) => r.mark == InlineMark.bold).single;
+      expect(s.blocks[0].inlinePlain!.substring(bold.start, bold.end), '粗X体');
+    });
+
+    test('applySpanInput：激活样式先选后打（新插入段落 run）', () {
+      final s = EditSession('前**粗**后');
+      s.seedSpanBlock(0);
+      s.applySpanInput(0, '前粗后X', active: const {InlineMark.underline});
+      final under = s.blocks[0].inlineRuns!.where((r) => r.mark == InlineMark.underline).single;
+      expect(s.blocks[0].inlinePlain!.substring(under.start, under.end), 'X');
+      // 重建的 inline 树经序列化后下划线标记在位
+      expect(s.markdown, contains('<u>X</u>'));
+    });
+
+    test('applySpanInput：删除裁剪 run，跨 run 删除不崩', () {
+      final s = EditSession('前**粗**后');
+      s.seedSpanBlock(0);
+      s.applySpanInput(0, '前后', active: const {}); // 删掉「粗」（run 整体删空）
+      expect(s.blocks[0].inlineRuns!.where((r) => r.mark == InlineMark.bold), isEmpty);
+      expect(s.markdown, contains('前后'));
+      s.applySpanInput(0, '前', active: const {}); // 继续删
+      expect(s.blocks[0].inlinePlain, '前');
+    });
+
+    test('splitSpanBlock：runs 按光标区间分到两侧，标题档保持', () {
+      final s = EditSession('# 前**粗**后');
+      s.seedSpanBlock(0);
+      // 光标在「前|粗后」= offset 1
+      s.splitSpanBlock(0, 1);
+      expect(s.blocks.length, 2);
+      expect(s.blocks[0].block, isA<HeadingBlock>()); // 原块保标题
+      expect(s.blocks[1].block, isA<ParagraphBlock>()); // 新块恒正文（拍板）
+      expect(s.spanEditTextOf(0), '前');
+      expect(s.spanEditTextOf(1), '粗后');
+      final bold = s.blocks[1].inlineRuns!
+          .where((r) => r.mark == InlineMark.bold).single;
+      expect(s.blocks[1].inlinePlain!.substring(bold.start, bold.end), '粗');
+      expect(s.markdown, contains('**粗**')); // 样式跨块保全
+    });
+
+    test('splitSpanBlock：光标落在 run 中间时两侧各得半段', () {
+      final s = EditSession('前**粗体**后');
+      s.seedSpanBlock(0);
+      s.splitSpanBlock(0, 2); // 「前粗|体后」——粗体 run 从中间切开
+      expect(s.spanEditTextOf(0), '前粗');
+      expect(s.spanEditTextOf(1), '体后');
+      expect(s.markdown, contains('前**粗**')); // 前半段：前缀 + 半段粗体
+      expect(s.markdown, contains('**体**后')); // 后半段：半段粗体 + 后缀
+    });
+
+    test('span 块提交后 markdown 序列化往返一致（数据无损）', () {
+      final s = EditSession('见[官网](https://a.com)即达');
+      s.seedSpanBlock(0);
+      // run 末尾之后插入（无激活样式）：X 落链接外，url 保全
+      s.applySpanInput(0, '见官网X即达', active: const {});
+      var md1 = s.markdown;
+      expect(md1, contains('[官网](https://a.com)X'));
+      // 字级替换（选中「网」打 X）：run 横跨替换窗保持连续，url 保全
+      final s2 = EditSession('见[官网](https://a.com)即达');
+      s2.seedSpanBlock(0);
+      s2.applySpanInput(0, '见官X即达', active: const {});
+      md1 = s2.markdown;
+      expect(md1, contains('[官X](https://a.com)'), reason: '字级替换不打断链接');
+      final s3 = EditSession(md1);
+      expect(s3.markdown, md1); // 二次解析稳定
+    });
+  });
 }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../service/mcp_controller.dart';
+import '../ui/confirm_dialog.dart';
 
 /// MCP 服务页：开关、端点、token、桌面接入指南。
 class McpPage extends StatefulWidget {
@@ -119,16 +120,11 @@ class _McpPageState extends State<McpPage> {
                   icon: const Icon(Icons.refresh),
                   tooltip: '重新生成（旧令牌立即失效）',
                   onPressed: () async {
-                    final ok = await showDialog<bool>(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        title: const Text('重新生成令牌？'),
-                        content: const Text('已配置的桌面客户端需要更新 token 才能继续访问。'),
-                        actions: [
-                          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-                          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('重新生成')),
-                        ],
-                      ),
+                    final ok = await confirmDialog(
+                      context,
+                      title: '重新生成令牌？',
+                      content: '已配置的桌面客户端需要更新 token 才能继续访问。',
+                      confirmText: '重新生成',
                     );
                     if (ok == true) await c.regenerateToken();
                   },

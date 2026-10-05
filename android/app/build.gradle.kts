@@ -32,6 +32,16 @@ android {
         // flag during build.
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // 只保 arm64-v8a（2026-10-03 用户拍板「不需要 x86_64 模拟器与 32 位的包」）：
+        // 插件原生库（ML Kit/onnxruntime/litertlm 等）默认按全 ABI 打包 ≈150MB+。
+        // 发布流水线走 --split-per-abi（拆分包）时由 AGP splits 分区（产物同样
+        // arm64 纯净），ndk.abiFilters 与 splits 并存会被 AGP 拒绝（Conflicting
+        // configuration），故仅在非 split 构建启用本过滤。
+        if (project.findProperty("split-per-abi")?.toString()?.toBoolean() != true) {
+            ndk {
+                abiFilters += listOf("arm64-v8a")
+            }
+        }
     }
 
     buildTypes {
@@ -56,6 +66,11 @@ dependencies {
     // 坐标经 AndroLLM 实际工程核实（2026-09-29）：artifact 为 litertlm-android，
     // 非 litert-lm（后者在 Maven Central 不存在，构建期即解析失败）。
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.16.0")
+
+    // 视频切片导出（media-native P3，ADR 见 context/decisions.md「media-native」节）：
+    // media3 Transformer 硬件编码 trim 导出，替代 ffmpeg libx264 软编（体积对冲：
+    // 净增 ~3-5MB 换 ffmpeg 整体出清 ~18MB/ABI）。版本对齐插件已缓存的 media3 系。
+    implementation("androidx.media3:media3-transformer:1.9.2")
 
     // 依赖对齐（2026-09-29 修复启动崩溃）：google_mlkit_entity_extraction 传递引入
     // androidx.work:work-runtime:2.7.0（2021 年老版本），其内嵌 Room 生成的 WorkDatabase

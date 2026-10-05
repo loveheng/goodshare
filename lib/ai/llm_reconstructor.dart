@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 
+import '../data/block_artifacts.dart' show BlockArtifactInput, BlockArtifactKind;
 import '../data/repository.dart';
 import 'llm.dart';
 import 'reconstructor.dart';
@@ -19,12 +20,69 @@ class LlmReconstructor implements AiReconstructor {
   Future<bool> get isAvailable async => true; // 恒 true：失败只是无产出，不能死信
 
   @override
-  Future<bool> handles(ReconstructInput input) async =>
-      input.taskAction == Repository.taskLlmSummarize ||
-      input.taskAction == Repository.taskLlmTags;
+  Future<bool> handles(ReconstructInput input) async {
+    // 块任务认领（block-artifact-workflow.md §2.5）：仅 block_summarize。
+    final block = Repository.parseBlockAction(input.taskAction);
+    if (block != null) return block.$1 == 'block_summarize';
+    return input.taskAction == Repository.taskLlmSummarize ||
+        input.taskAction == Repository.taskLlmTags;
+  }
 
   @override
   Future<ReconstructResult> reconstruct(ReconstructInput input) async {
+    // 块分支（§2.5）：源 = 块产物文本（transcript/ocr_text，动作层已校验非空），
+    // 摘要落 block_artifacts（summary），条目级 summary_md 零触碰。
+    final blockKey = input.blockKey;
+    if (blockKey != null) {
+      final text = input.blockSourceText?.trim() ?? '';
+      if (text.isEmpty) {
+        return ReconstructResult(
+          humanMd: input.rawContent ?? '',
+          blockKey: blockKey,
+          blockArtifacts: const [],
+          note: '源产物不存在或为空，无法摘要',
+        );
+      }
+      if (!await engine.isAvailable) {
+        // R1：同步 unavailableReason 会把「引擎初始化失败」误报成「未下载模型」，取异步真值
+        final reason = (await engine.unavailableReasonAsync()) ??
+            engine.unavailableReason ??
+            '端侧大模型引擎不可用';
+        debugPrint('[Llm] block summarize unavailable (item=${input.itemId}): $reason');
+        return ReconstructResult(
+          humanMd: input.rawContent ?? '',
+          blockKey: blockKey,
+          blockArtifacts: const [],
+          note: '未生成：$reason',
+        );
+      }
+      final prompt =
+          '请为以下收集内容写一段简明摘要（3-5 句，忠实原文，不要编造）：\n\n$text';
+      try {
+        final out = await engine.generate(prompt, maxTokens: 512);
+        if (out == null || out.trim().isEmpty) {
+          return ReconstructResult(
+            humanMd: input.rawContent ?? '',
+            blockKey: blockKey,
+            blockArtifacts: const [],
+            note: '端侧大模型未产出结果（模型未就绪或生成失败），可重试',
+          );
+        }
+        return ReconstructResult(
+          humanMd: input.rawContent ?? '',
+          blockKey: blockKey,
+          blockArtifacts: [BlockArtifactInput(BlockArtifactKind.summary, text: out.trim())],
+        );
+      } catch (e) {
+        debugPrint('[Llm] block generate failed (item=${input.itemId}): $e');
+        return ReconstructResult(
+          humanMd: input.rawContent ?? '',
+          blockKey: blockKey,
+          blockArtifacts: const [],
+          note: '端侧大模型生成异常：$e（可重试）',
+        );
+      }
+    }
     final base = input.humanMd ?? input.rawContent ?? '';
     final text = base.trim();
     if (text.isEmpty) {

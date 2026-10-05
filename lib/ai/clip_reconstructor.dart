@@ -1,12 +1,12 @@
 import 'dart:io';
 
-import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../data/repository.dart';
+import '../media/media_toolkit.dart';
+import '../media/wav16k.dart';
 import 'asr.dart';
 import 'llm.dart';
 import 'llm_reconstructor.dart';
@@ -70,19 +70,23 @@ class ClipReconstructor implements AiReconstructor {
     }
 
     try {
-      // ---- 步骤①：提取视频片段（libx264 精确重编码；产物相对 documents 存档）----
+      // ---- 步骤①：提取视频片段（media3 Transformer 硬编 trim 导出；
+      //      media-native P3——libx264 软编退役，产物相对 documents 存档）----
       if (steps.contains(kClipStepExtract)) {
         final docs = await getApplicationDocumentsDirectory();
         final outDir = Directory(p.join(docs.path, 'clip_segments'));
         await outDir.create(recursive: true);
         final out = File(p.join(outDir.path, '${input.itemId}.$startMs-$endMs.mp4'));
-        final session = await FFmpegKit.executeWithArguments(
-          buildClipCutArgs(srcPath, out.path, startMs, endMs),
+        final trimmed = await mediaToolkit.trimVideo(
+          srcPath,
+          out.path,
+          startMs: startMs,
+          endMs: endMs,
         );
-        if (ReturnCode.isSuccess(await session.getReturnCode())) {
+        if (trimmed != null) {
           clipPath = 'clip_segments/${p.basename(out.path)}';
         } else {
-          failures.add('片段提取失败（源文件可能已损坏）');
+          failures.add('片段提取失败（冷门格式暂不支持或文件损坏，可反馈需求走云端支持）');
         }
       }
 
@@ -98,16 +102,25 @@ class ClipReconstructor implements AiReconstructor {
           final tmp = await getTemporaryDirectory();
           final wav = File(p.join(tmp.path, 'clip_${startMs}_$endMs.wav'));
           try {
-            final session = await FFmpegKit.executeWithArguments(
-              buildClipAudioArgs(srcPath, wav.path, startMs, endMs),
+            final decoded = await extractWav16k(
+              srcPath,
+              wav.path,
+              startMs: startMs,
+              endMs: endMs,
             );
-            final raw = ReturnCode.isSuccess(await session.getReturnCode())
-                ? await AsrEngine.instance.transcribeToCues(wav.path, model, modelDir: modelDir)
+            final raw = decoded
+                ? await AsrEngine.instance
+                    .transcribeToCues(wav.path, model, modelDir: modelDir)
                 : null;
             final cues = raw ?? const [];
             final joined = cues.map((c) => c.text.trim()).where((s) => s.isNotEmpty).join('\n');
             if (joined.isEmpty) {
-              failures.add('区间未识别出语音内容（可能无对话、音量过低或语言与模型不匹配）');
+              if (decoded) {
+                failures.add('区间未识别出语音内容（可能无对话、音量过低或语言与模型不匹配）');
+              } else {
+                // R1：解码失败与「没有语音」必须区分——文案给可行动去向
+                failures.add('区间音轨解码失败（冷门格式暂不支持或文件损坏，可反馈需求走云端支持）');
+              }
             } else {
               text = joined;
             }

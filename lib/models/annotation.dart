@@ -151,16 +151,18 @@ class AnnotationStore {
   static Future<List<Annotation>> load(String itemId) async {
     try {
       final f = await _file(itemId);
-      if (!await f.exists()) return const [];
+      // 必须可变空列表：add()/removeWhere() 直接在此返回值上变更，
+      // const [] 会让首条标注崩「Cannot add to an unmodifiable list」。
+      if (!await f.exists()) return <Annotation>[];
       final raw = await f.readAsString();
       final list = jsonDecode(raw);
-      if (list is! List) return const [];
+      if (list is! List) return <Annotation>[];
       return [
         for (final e in list) Annotation.fromJson((e as Map).cast<String, Object?>())
       ];
     } catch (e) {
       debugPrint('[AnnotationStore] load failed: $e');
-      return const [];
+      return <Annotation>[];
     }
   }
 

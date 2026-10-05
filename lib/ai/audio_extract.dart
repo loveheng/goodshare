@@ -1,44 +1,40 @@
 import 'dart:io';
 
-import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter_new_min_gpl/ffprobe_kit.dart';
-import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
-/// 音轨提取（2026-09-28）：把音频 / 视频条目的音轨导出成独立音频文件。
-///
-/// **硬约束**：当前 ffmpeg 是 **min 变体**，README 包表的 min 列「external libraries」= `-`
-/// ——没有任何外部库，因此**不能凭空编码** mp3 / vorbis / opus（分别需要
-/// lame / libvorbis / libopus，只在 audio 及以上变体才有）。
-///
-/// 出路有两条，组合起来就是本期支持的全部格式：
-/// ① **流复制**（`-c:a copy`）：不需要任何编码器，源是什么编码就原样搬进目标容器，
-///    无损、秒出——源为 mp3 / opus / vorbis 时照样能导出 mp3 / ogg；
-/// ② **内置编码器**：ffmpeg 自带 `aac` / `flac` / `pcm_s16le`，可重编码为 m4a / flac / wav。
-///
-/// 因此默认策略是「跟随原格式无损复制」，转码只作为用户显式选择（兼容性 / 无损归档）。
+import '../media/media_toolkit.dart';
 
-/// 导出目标格式。[encoder] 为 null 表示**流复制**（无损、不需要编码器）。
+/// 音轨提取（2026-09-28 建，media-native P4 起走原生导出）：
+/// 把音频 / 视频条目的音轨导出成独立音频文件。
+///
+/// **原生能力分派**（MediaBridge.exportAudio，详见其注释）：
+/// - **流复制**（copy）：按源编码选容器——aac/alac→m4a、opus/vorbis→ogg 走
+///   MediaMuxer 逐样本搬移（无损、秒出）；mp3→原始流拼接；flac→「fLaC」+csd
+///   封装；pcm→WAV 头封装；装不下的编码回落重编码 m4a（与旧 ffmpeg 行为一致）。
+/// - **重编码**（m4a/flac/wav）：解码 → 系统编码器（AAC-LC / FLAC）→ 容器。
+///   重编码能力受设备编码器表约束（flac 编码器缺失时明确报错，R1）。
+///
+/// 「源编码 → 目标容器」映射 [extensionForCodec] 仍是 SSOT（MIME 归一由
+/// media_toolkit.audioCodecNameFromMime 供给）。
+
+/// 导出目标格式。
 enum AudioExportFormat {
-  copy('跟随原格式（无损复制，最快）', null),
-  m4a('M4A / AAC（通用性最好）', 'aac'),
-  flac('FLAC（无损压缩）', 'flac'),
-  wav('WAV（无损，体积最大）', 'pcm_s16le');
+  copy('跟随原格式（无损复制，最快）'),
+  m4a('M4A / AAC（通用性最好）'),
+  flac('FLAC（无损压缩）'),
+  wav('WAV（无损，体积最大）');
 
-  const AudioExportFormat(this.label, this.encoder);
+  const AudioExportFormat(this.label);
 
   final String label;
-
-  /// ffmpeg 编码器名；null = `-c:a copy`。
-  final String? encoder;
 }
 
 /// 源音频编码 → 目标扩展名（流复制时据此选容器）。
 ///
 /// 纯函数（不碰文件系统），便于单测；未知编码回落 `m4a`（mp4 容器能装 aac，
-/// 且 ffmpeg 内置 aac 编码器可兜底重编码）。
+/// 且系统 aac 编码器可兜底重编码）。
 String extensionForCodec(String? codec) => switch ((codec ?? '').toLowerCase()) {
       'aac' || 'alac' => 'm4a',
       'mp3' => 'mp3',
@@ -47,11 +43,6 @@ String extensionForCodec(String? codec) => switch ((codec ?? '').toLowerCase()) 
       'pcm_s16le' || 'pcm_s24le' || 'pcm_s32le' || 'pcm_u8' => 'wav',
       _ => 'm4a',
     };
-
-/// 构造提取命令参数（纯函数，便于单测）。
-/// `-vn` 丢视频轨、`-map 0:a:0` 只取首条音轨（多语言音轨场景取默认那条）。
-List<String> buildExtractArgs(String input, String output, String encoder) =>
-    ['-y', '-i', input, '-vn', '-map', '0:a:0', '-c:a', encoder, output];
 
 /// 音轨提取器：`documents/exports/` 下产出文件，返回路径供分享。
 class AudioExtractor {
@@ -65,13 +56,9 @@ class AudioExtractor {
   /// 探测首条音轨的编码（供流复制选容器）。探测失败返回 null，由调用方兜底。
   static Future<String?> probeAudioCodec(String input) async {
     try {
-      final session = await FFprobeKit.execute(
-        '-v error -select_streams a:0 -show_entries stream=codec_name '
-        '-of default=noprint_wrappers=1:nokey=1 "$input"',
-      );
-      final out = (await session.getOutput())?.trim() ?? '';
-      if (out.isEmpty) return null;
-      return out.split('\n').first.trim();
+      final mime = await mediaToolkit.audioCodec(input);
+      if (mime == null) return null;
+      return audioCodecNameFromMime(mime);
     } catch (e) {
       debugPrint('[AudioExtractor] probe failed: $e');
       return null;
@@ -81,12 +68,17 @@ class AudioExtractor {
   /// 提取音轨。**失败必须带回具体原因**（2026-09-28 决策：错误要被用户感知），
   /// 调用方直接展示 [AudioExtractResult.error]，不要自己猜一句通用文案。
   ///
-  /// [format] = [AudioExportFormat.copy] 时按源编码选容器并走 `-c:a copy`；
-  /// 其余用内置编码器重编码。
+  /// [format] = [AudioExportFormat.copy] 时按源编码选容器并走流复制；
+  /// 其余走系统编码器重编码。
+  ///
+  /// [fileStem] 输出文件名 stem 覆盖（块附件通道必传 [blockFileStem(blockKey)]
+  /// 产物 stem——2026-10-05 碰撞修复：缺省 stem=itemId 时同一便签内多个视频块
+  /// 的音轨互相覆盖，叠加「删行必删盘」会误删其他块正在引用的物理文件）。
   static Future<AudioExtractResult> extract(
     String input, {
     AudioExportFormat format = AudioExportFormat.copy,
     String? itemId,
+    String? fileStem,
   }) async {
     final src = File(input);
     if (!src.existsSync()) {
@@ -98,33 +90,33 @@ class AudioExtractor {
       return const AudioExtractResult.error('文件里没有可提取的音轨（可能是纯视频或已损坏）');
     }
     final dir = await _dir();
-    final stem = itemId ?? p.basenameWithoutExtension(input);
+    final stem = fileStem ?? itemId ?? p.basenameWithoutExtension(input);
     final ext = format == AudioExportFormat.copy ? extensionForCodec(codec) : format.name;
     final out = File(p.join(dir.path, '$stem.$ext'));
-    final encoder = format.encoder ?? 'copy';
-    final args = buildExtractArgs(input, out.path, encoder);
-    final session = await FFmpegKit.executeWithArguments(args);
-    final code = await session.getReturnCode();
-    if (!ReturnCode.isSuccess(code)) {
-      // 流复制失败（容器装不下该编码，如 opus → mp4）时兜底重编码为 aac
-      if (format == AudioExportFormat.copy) {
-        debugPrint('[AudioExtractor] copy failed, fallback to aac: $input');
-        final fallback = File(p.join(dir.path, '$stem.m4a'));
-        final s2 = await FFmpegKit.executeWithArguments(
-          buildExtractArgs(input, fallback.path, 'aac'),
-        );
-        if (ReturnCode.isSuccess(await s2.getReturnCode())) {
-          return AudioExtractResult.ok(fallback.path);
-        }
+    final bytes = await mediaToolkit.exportAudio(input, out.path, format: format.name);
+    if (bytes != null) {
+      debugPrint('[AudioExtractor] -> ${out.path} ($format, $bytes bytes)');
+      return AudioExtractResult.ok(out.path);
+    }
+    // 流复制失败（容器装不下该编码，如 amr → m4a）时兜底重编码为 aac
+    if (format == AudioExportFormat.copy) {
+      debugPrint('[AudioExtractor] copy failed, fallback to aac: $input');
+      final fallback = File(p.join(dir.path, '$stem.m4a'));
+      final r2 =
+          await mediaToolkit.exportAudio(input, fallback.path, format: 'm4a');
+      if (r2 != null) {
+        return AudioExtractResult.ok(fallback.path);
       }
-      debugPrint('[AudioExtractor] extract failed: $input');
       return AudioExtractResult.error(
-        '导出失败：源编码 $codec 无法写入所选格式'
-        '${format == AudioExportFormat.copy ? '（已尝试回落 M4A 仍失败）' : ''}，可换 M4A / WAV 重试',
+        '导出失败：源编码 $codec 无法写入所选格式（已尝试回落 M4A 仍失败），可换 M4A / WAV 重试',
       );
     }
-    debugPrint('[AudioExtractor] -> ${out.path} ($encoder)');
-    return AudioExtractResult.ok(out.path);
+    final hint = format == AudioExportFormat.flac
+        ? '该设备可能缺少 FLAC 编码器，可换 M4A / WAV'
+        : '可换 M4A / WAV 重试';
+    return AudioExtractResult.error(
+      '导出失败：源编码 $codec 无法写入所选格式（${format.name}），$hint',
+    );
   }
 }
 

@@ -98,11 +98,17 @@ scan_all() {
     "直接混用 WidgetsBindingObserver，退后台行为须订阅 AppLifecycleManager" \
     'with WidgetsBindingObserver' "lib/app/lifecycle_manager.dart"
   # R7 排版禁用已弃用 textScaleFactor + 裸 fontSize 字面量
-  # 白名单：pdf_export.dart——pdf 包的 TextStyle.fontSize 是 PDF 文档排版
-  # 参数（毫米级渲染），与 Flutter textTheme/textScaler 无关，规则不适用。
+  # 白名单（均为「规则不适用」的历史/性质例外，非待迁移的违规）：
+  # - pdf_export.dart：pdf 包的 TextStyle.fontSize 是 PDF 文档排版参数
+  #   （毫米级渲染），与 Flutter textTheme/textScaler 无关；
+  # - note_composer_editor.dart：**仅豁免悬浮球角标**（H1/H2/B/I…）一处
+  #   9px 微标签——自绘装饰件上的字数角标，M3 语义档位无 9px 对应（最小
+  #   labelSmall=11），改用 11 会让角标高度超过 Radii.sm 半径一半、退化成
+  #   胶囊（违反 ui-spec §2.3 全系统去胶囊）。其余排版一律走 textTheme
+  #   （同文件的 'Tt' 装饰字形已改 titleSmall=14，等值无视觉变化）。
   scan_pattern "R7-typography" "lib/pages lib/ui" \
     "裸 fontSize/textScaleFactor 字面量，须映射 M3 textTheme 并用 textScaler" \
-    '(fontSize:|textScaleFactor:)' "lib/pages/mcp_page.dart lib/ui/image_annotator.dart lib/ui/pdf_export.dart"
+    '(fontSize:|textScaleFactor:)' "lib/pages/mcp_page.dart lib/ui/image_annotator.dart lib/ui/pdf_export.dart lib/ui/note_composer_editor.dart"
   return 0
 }
 

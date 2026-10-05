@@ -7,6 +7,7 @@ import 'package:goodshare/data/db.dart';
 import 'package:goodshare/data/repository.dart';
 import 'package:goodshare/mcp/jsonrpc.dart';
 import 'package:goodshare/mcp/mcp_server.dart';
+import 'package:goodshare/models/item.dart';
 import 'package:goodshare/share/share_intake.dart';
 import 'package:goodshare/share/text_collector.dart';
 import 'package:receive_sharing_intent/receive_sharing_intent.dart';
@@ -111,6 +112,78 @@ void main() {
     final get = await rpc(env.client, env.base, 12, 'tools/call', {'name': 'get_item', 'arguments': {'id': id}});
     final text = ((resultOf(get.body)['content'] as List).first as Map)['text'] as String;
     expect(text, contains('example.com'));
+    env.client.close();
+    await env.server.stop();
+  });
+
+  test('块能力契约：block_transcribe_item 入队 → get_item 回 block_tasks（软引导）', () async {
+    final env = await spinUp();
+    const key = 'local://shares/a.m4a';
+    // 种子直接经服务端 repo 写入：ai_process 是 UI 专属开关（AI 不可自行授权，§2.6）
+    final it = await env.server.repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      sourceType: InboxItem.typeNote,
+      humanMd: '前言\n\n[录音]($key)',
+      collectMode: InboxItem.modeScatter,
+      aiVisible: true,
+      aiEditable: true,
+      aiProcess: true,
+      createdAt: 1,
+    ));
+
+    final call = await rpc(env.client, env.base, 20, 'tools/call', {
+      'name': 'block_transcribe_item',
+      'arguments': {'id': it.id, 'block_key': key},
+    });
+    expect(errorOf(call.body), isEmpty);
+    final queued = jsonDecode(
+      ((resultOf(call.body)['content'] as List).first as Map)['text'] as String,
+    ) as Map<String, Object?>;
+    expect(queued['status'], 'queued');
+    expect(queued['task_id'], isNotNull);
+
+    final get = await rpc(env.client, env.base, 21, 'tools/call', {
+      'name': 'get_item',
+      'arguments': {'id': it.id},
+    });
+    final itemJson = jsonDecode(
+      ((resultOf(get.body)['content'] as List).first as Map)['text'] as String,
+    ) as Map<String, Object?>;
+    final tasks = (itemJson['block_tasks'] as List).cast<Map<String, Object?>>();
+    expect(tasks.single['action'], 'block_transcribe');
+    expect(tasks.single['block_key'], key);
+    expect(tasks.single['status'], 'pending');
+    env.client.close();
+    await env.server.stop();
+  });
+
+  test('置顶契约：set_pin on → 快照 is_pinned=true，off → false', () async {
+    final env = await spinUp();
+    final add = await rpc(env.client, env.base, 10, 'tools/call', {
+      'name': 'add_item',
+      'arguments': {'content': 'pin 契约测试条目'},
+    });
+    expect(errorOf(add.body), isEmpty);
+    final addText = ((resultOf(add.body)['content'] as List).first as Map)['text'] as String;
+    final id = (jsonDecode(addText) as Map)['item']['id'];
+    final pinOn = await rpc(env.client, env.base, 11, 'tools/call', {
+      'name': 'set_pin',
+      'arguments': {'id': id, 'on': true},
+    });
+    expect(errorOf(pinOn.body), isEmpty);
+    final onSnapshot = jsonDecode(
+      ((resultOf(pinOn.body)['content'] as List).first as Map)['text'] as String,
+    ) as Map<String, Object?>;
+    expect((onSnapshot['item'] as Map)['is_pinned'], isTrue);
+    final pinOff = await rpc(env.client, env.base, 12, 'tools/call', {
+      'name': 'set_pin',
+      'arguments': {'id': id, 'on': false},
+    });
+    expect(errorOf(pinOff.body), isEmpty);
+    final offSnapshot = jsonDecode(
+      ((resultOf(pinOff.body)['content'] as List).first as Map)['text'] as String,
+    ) as Map<String, Object?>;
+    expect((offSnapshot['item'] as Map)['is_pinned'], isFalse);
     env.client.close();
     await env.server.stop();
   });

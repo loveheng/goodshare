@@ -58,6 +58,10 @@ class _HomeShellState extends State<HomeShell> {
   /// 保险箱视图（安全域）：由侧边栏入口或主列表「保险箱」chip 切换。
   bool _vaultOnly = false;
 
+  /// 主列表批量选择模式激活中（card-batch-selection §2.1）：底部导航与
+  /// 速记条让位——操作栏由 InboxPage 自己的 Scaffold bottomNavigationBar 承载。
+  bool _selectionMode = false;
+
   @override
   void initState() {
     super.initState();
@@ -70,15 +74,27 @@ class _HomeShellState extends State<HomeShell> {
     setState(() => _vaultOnly = v);
   }
 
+  /// 切 tab 即放弃选择（瞬态任务语义，拍板）；同时离开保险箱子态——
+  /// 保险箱仅存在于「全部」tab，从工作区/设置切回「全部」应回普通列表而非滞留。
+  void _selectTab(int i) {
+    setState(() {
+      _index = i;
+      if (i != 0) _selectionMode = false;
+      _vaultOnly = false;
+    });
+  }
+
   void _openVault() {
     Navigator.of(context).pop(); // 关抽屉
     setState(() => _index = 0);
     _setVaultOnly(true);
   }
 
-  late final List<Widget> _pages = [
-    InboxPage(
-      key: ValueKey<bool>(_vaultOnly),
+  // 必须是 getter（非 late final）：_vaultOnly 在运行期翻转，InboxPage 需随每次
+  // build 拿到最新 vaultOnly；否则首帧固化的 false 会让保险箱视图永远不出现。
+  List<Widget> get _pages => [
+        InboxPage(
+          key: ValueKey<bool>(_vaultOnly),
       repo: widget.repo,
       handler: widget.handler,
       collector: widget.collector,
@@ -86,6 +102,7 @@ class _HomeShellState extends State<HomeShell> {
       onOpenDrawer: () => _scaffoldKey.currentState?.openDrawer(),
       vaultOnly: _vaultOnly,
       onVaultOnlyChanged: _setVaultOnly,
+      onSelectionModeChanged: (v) => setState(() => _selectionMode = v),
     ),
     WorkspacePage(
       repo: widget.repo,
@@ -114,8 +131,10 @@ class _HomeShellState extends State<HomeShell> {
         children: [
           IndexedStack(index: _index, children: _pages),
           // 速记条：仅首页（「全部」tab）显示（2026-09-30 用户拍板：工作区不显示），
+          // 保险箱视图不显示（安全域为内容让路，采集动作与私密上下文冲突），
           // 详情页是 push 出去的新页面故天然不显示，不会与详情底部操作条并存。
-          if (_index == 0)
+          // 选择模式中让位（card-batch-selection §2.1 让位矩阵）。
+          if (_index == 0 && !_selectionMode && !_vaultOnly)
             Positioned(
               // 四边拉满：Stack 只在上下边同时给出时才收紧高度——此前仅 bottom
               // 锚点时高度无界，展开态 Column+Expanded 触发 unbounded flex
@@ -132,16 +151,21 @@ class _HomeShellState extends State<HomeShell> {
             ),
         ],
       ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.inbox_outlined), label: '全部'),
-          NavigationDestination(
-              icon: Icon(Icons.workspaces_outlined), label: '工作区'),
-          NavigationDestination(icon: Icon(Icons.settings_outlined), label: '设置'),
-        ],
-      ),
+      // 保险箱视图藏底栏（安全域沉浸，2026-10-05 拍板）：底栏是「全部」页的
+      // 导航 chrome，在保险箱里点工作区/设置还会打断隐私上下文；选择模式让位
+      // 逻辑不变（操作栏由 InboxPage 自己的 Scaffold 承载）。
+      bottomNavigationBar: (_selectionMode || _vaultOnly)
+          ? null
+          : NavigationBar(
+              selectedIndex: _index,
+              onDestinationSelected: _selectTab,
+              destinations: const [
+                NavigationDestination(icon: Icon(Icons.inbox_outlined), label: '全部'),
+                NavigationDestination(
+                    icon: Icon(Icons.workspaces_outlined), label: '工作区'),
+                NavigationDestination(icon: Icon(Icons.settings_outlined), label: '设置'),
+              ],
+            ),
     );
   }
 

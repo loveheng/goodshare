@@ -205,10 +205,10 @@ flowchart LR
 
 | Tool | 入参 | 行为 | 优先级 |
 |---|---|---|---|
-| `list_items` | `query?, type?, limit?, offset?` | 列/搜条目，时间倒序；**默认排除 `is_vault=1` 与 `is_deleted=1`** | MVP |
-| `get_item` | `id` | 全文 + 图片 base64（≤4MB）；`is_deleted=1` 条目不可读 | MVP |
-| `add_item` | `content, title?, tags?` | PC→手机写回（即 `sync_thought_to_mobile`） | MVP |
-| `query_machine_data` | `query, type?('url'\|'image'\|'video'\|'audio'\|'chatlog'\|'note'\|'document')` | 返回 `machine_json` 结构化数组，**过滤 Vault 与已删条目**；`type` 与 `item_type` 同源（canonical 枚举，见 §5.3），废弃旧 `invoice` 伪类型 | MVP |
+| `list_items` | `query?, type?, limit?, offset?` | 列/搜条目，时间倒序；**默认排除 `is_vault=1`、`is_deleted=1` 与 `ai_visible=0`** | MVP |
+| `get_item` | `id` | 全文 + 图片 base64（≤4MB）；`is_deleted=1` 或 `ai_visible=0` 条目 AI 不可读 | MVP |
+| `add_item` | `content, title?, tags?` | PC→手机写回（即 `sync_thought_to_mobile`）；经此 AI 建条入口创建的笔记 `author=ai`、`ai_visible=1`、`ai_editable=1` | MVP |
+| `query_machine_data` | `query, type?('url'\|'image'\|'video'\|'audio'\|'chatlog'\|'note'\|'document')` | 返回 `machine_json` 结构化数组，**过滤 Vault、已删与 `ai_visible=0` 条目**；`type` 与 `item_type` 同源（canonical 枚举，见 §5.3），废弃旧 `invoice` 伪类型 | MVP |
 | `get_timeline_context` | `date` | 返回 `{ health, events, ingested_items }`；MVP/V2 阶段 `health`/`events` 恒为空（健康/日历 V3 接入） | MVP |
 | `update_item` | `id, patch{title?,tldr?,tags?,human_md?,machine_json?,item_type?}` | 编辑（= UI 详情 / 侧边栏编辑），写回并可触发重处理；`machine_json` 落库前须通过对应领域 Schema 校验（如 `invoice.v1`），失败整单拒写；`item_type` 仅允许白名单方向 `image→document`（发票/文档截图）且要求 `source_type='image'`（人工/PC 纠正通道，2026-09-27 决策；2026-10-02 修订：聊天场景取消，`chatlog` 目标移除） | MVP |
 | `delete_item` | `id` | 软删除（`is_deleted`→1，关联 `ai_task_queue` 任务取消；30 天后物理清理，期间可恢复） | MVP |
@@ -222,11 +222,32 @@ flowchart LR
 
 （`execute_action` 统一入口已裁决 MVP 剔除（2026-09-27）：独立工具即结构化接口且各自带校验，避免冗余通用入口扩大校验面。`batch_items` 不是它的复活——只解决「复合操作的原子性」，不提供新的动作语义，每条命令仍走同一套校验。）
 
-**隐私硬约束**：所有 Machine-Readable 工具默认 `WHERE is_vault=0 AND is_deleted=0`，Vault 与已删数据物理不可被 PC 大模型读取；`set_vault` 仅改标记，不暴露 Vault 内容。
+**隐私硬约束**：所有 Machine-Readable 工具默认 `WHERE is_vault=0 AND is_deleted=0 AND ai_visible=1`，Vault、已删与「对 AI 不可见」数据物理不可被 PC 大模型读取；`set_vault` 仅改标记，不暴露 Vault 内容。
 
 **编辑锁约束**：`update_item` / `UpdateItemCommand` 在 `edit_locked=1`（合并模式默认）时拒绝写入，须先 `unlock_edit`（`edit_locked`→0）；UI 与 MCP 共用同一校验，行为一致。被拒时返回机器可读 `code=edit_locked` 与 `hint`，供大模型先解锁再重试。
 
-**主体门控约束**：`set_vault(on=false)` 移出保险箱、`delete_forever` 彻底删除仅允许手机 UI 主体；`apply_ai_result` 管线回写仅允许端侧 AI 主体。门控在动作层按 `CommandActor` 判定，主体由传输层注入、**不可由命令载荷伪造**。
+**主体门控约束**：`set_vault(on=false)` 移出保险箱、`delete_forever` 彻底删除、`set_ai_visible` / `set_ai_editable` 翻转 AI 可见性开关 仅允许手机 UI 主体；`apply_ai_result` 管线回写仅允许端侧 AI 主体。门控在动作层按 `CommandActor` 判定，主体由传输层注入、**不可由命令载荷伪造**。
+
+### AI 可见性分层（v20，ai-visibility）
+
+在保险箱（对其他用户可见性）之外，新增「是否对 AI 可见」的**逐条正交维度**。保险箱与 AI 可见性正交且**保险箱包住 AI**：`is_vault=1` 隐含对 AI 不可见，保留既有 `is_vault` 过滤，`ai_visible` 只约束非保险箱条目。
+
+**三个字段（inbox_items，v20 新增）**：
+
+| 字段 | 人类笔记默认 | AI 建条默认 | 谁能改 |
+|---|---|---|---|
+| `author`（human / ai / pipeline） | human（现有收集默认） | ai（经 AI 专用建条入口 `add_item` 标记） | 创建时定型 |
+| `ai_visible`（AI 读门禁） | 0 不可见 | 1 可见 | 仅 UI（`CommandActor.ui`） |
+| `ai_editable`（AI 写门禁 / 人类同意） | 0 不可编辑 | 1 可编辑 | 仅 UI（`CommandActor.ui`） |
+| `ai_process`（管线回写授权） | 0 不处理 | 1 可处理 | 仅 UI（`CommandActor.ui`） |
+
+**读门禁**：MCP 工具 `list_items` / `get_item` / `query_machine_data` / `get_timeline_context` 在 `is_vault=0 AND is_deleted=0` 之上**叠加 `ai_visible=1`**；故人类笔记默认对 AI 不可见，仅经 UI 开启后才可读。UI 侧阅读不受此字段限制。
+
+**写门禁（人类同意模型）**：外部 MCP（`CommandActor.ai`）改写 `author=human` 的笔记，动作层（`ItemActionHandler._update` / `_append`）要求 `ai_editable=1`，否则抛 `ActionException(code=forbidden, hint=在手机端开启「允许 AI 编辑」)`。端侧管线回写（`CommandActor.pipeline`，OCR / 翻译 / 摘要 / 转写 / 切片）同样受人类授权约束：要求 `ai_process=1`（**默认关闭**，即"授权才处理"而非"收集即同意"），否则动作层 `ItemActionHandler._applyAiResult` 抛 `ActionException(code=forbidden, hint=在手机端开启「允许 AI 处理」)`；队列消费侧亦在跑重建前 `skip` 该任务，避免误标失败与空耗算力。
+
+**开关命令（仅 UI 可改，不对 MCP 开放）**：`SetAiVisibleCommand` / `SetAiEditableCommand` / `SetAiProcessCommand` 三个命令**均不入 `ItemCommand.fromJson`**——MCP 无法从大模型 JSON 反序列化构造，且处理器强制 `actor==ui`，AI 既读不到未授权条目、也翻不动开关本身。UI 详情页溢出面板对「人类笔记」提供「对 AI 可见」「允许 AI 编辑」「允许 AI 处理」三个紧邻开关，均调 `CommandActor.ui` 执行。
+
+**对应产品要求**：① 人类编写的笔记默认对 AI 不可见；② AI 编写的笔记默认对 AI 可见；③ AI 操作人类编写的笔记需人类同意才可编辑（开启「允许 AI 编辑」即静态同意）；④ 端侧管线（OCR / 翻译 / 摘要 / 转写 / 切片）回写人类笔记需人类显式授权（开启「允许 AI 处理」），默认关闭、不再"收集即处理"。
 
 ## 8. 端到端流程
 
@@ -250,7 +271,14 @@ sequenceDiagram
 
 - **MVP（本次目标）**：重建 Schema（§5.3，含 `facets_json`；v1 旧表功能未经设计，直接弃旧数据重建、不做迁移）→ Share 入库 + 入队 → 扩展 MCP 机器态工具（§7）→ UI（时光机轻量版［=按天分组内容线］+ 全部·分类视图 + 详情 + MCP 设置页）→ AI 队列脚手架（§6 模块二 v1 行为；图片 OCR 与速记转写已提前实现（2026-09-27），LLM 双态重构仍为占位）。铁三角：*数据进得来、双态存得下、PC 读得到*。**MVP 不含**：Vault 真加密（V3）、离线双态 AI 重构（V2，仅接口与占位）、AI 多视角聚类（V2，facets 为空时 AI 分类空态）。导航 5 tab 全展示，但 AI 分类 / 保险箱 MVP 为占位空态，V2/V3 填充。
 - **V2**：以 `v2-requirements.md`（2026-10-02 收敛版）为准——媒体文本 MCP 优先加工（document 接线 + MCP 工具补齐）、摄入自动双态重构管线（R1）+ 隐私打码（R2）、通用截图解析（R3）、便签 AI 增强（R4）、温控节流（R5）；FTS 检索演进随量级触发（vector-embeddings.md 三步走）。
-- **V3**：Vault AES 加密、Health/日历静默抓取、锁屏/桌面组件、鸿蒙适配、**MCP 客户端分域授权**（客户端注册表：按客户端发 token + 三维权限域［工具域 tools/list 过滤 / 数据域类型·工作区白名单 / 内容形态 raw·processed，processed 与 V2 打码层协同］；V2 维持单 token + Vault 隔离信任模型，先把 MCP 加工链路走通——2026-10-02 拍板）。
+- **V3**（主题：**信任边界 → 新数据源 → 性能 → 平台扩展**；2026-10-02 重排拍板——敏感数据严格排在权限栅栏之后，先锁后开）：
+  1. **AI 可视性分级限制（保险箱概念演进：容器→标记）**——三层级标记（列表多选条目 / 详情区块级 / 更细层级单独限制），用户语言「仅自己可见」；保险箱重构为**受限视图**（审计界面）；继承单向（默认继承、子级只加严不放宽）；**备份语义反转**（受限内容进备份，排除逻辑=恢复丢失）；机器码按钮复用交互语言不复用语义；权限梯度=V2 自动打码 < 手动标记 < 分域授权；区块级标记走侧信道 JSON（锚点漂移实现期设计，BlockAnchorStore 经验）。**对抗性口径**：受限=对所有 AI 消费端不可见（MCP+本地管线），`CommandActor.agent` 同受约束不豁免；执行三原则=单点强制 / 只加严不放宽（AI 解除标记必须走 UI，set_vault 同款先例）/ 越权测试矩阵四用例；信任边界声明=标记只保证「经 App 接口」不可见，备份外流与物理 root 访问在模型外。
+  2. **MCP 客户端分域授权**——客户端注册表：按客户端发 token + 三维权限域［工具域 tools/list 过滤 / 数据域类型·工作区白名单（消费 1 的标记）/ 内容形态 raw·processed，processed 与 V2 打码层协同］；默认新客户端=只读+processed+受限排除；预设 2-3 档避免细粒度矩阵；V2 维持单 token 信任模型。
+  3. **Vault AES 加密**——SQLCipher（`sqflite_sqlcipher`）或文件级 AES-256 + FaceID 门；加密落地后备份排除语义重估。
+  4. **FTS 检索**——SQLite FTS5 + trigram 分词器替换 LIKE（vector-embeddings.md 三步走的中期档，量级触发条件大概率在本期内满足；接在安全项之后做，避免与权限改动撞数据层）。
+  5. **Health/日历静默抓取**——`health` + `device_calendar` 写 `daily_metrics`；健康截图解析 `health_record.v1` 复用 V2 R3 管线扩展 Schema；时间线 JOIN 健康样本。**严格晚于 1-3**：栅栏就位才开门接敏感数据。
+  6. **NPU 后端实装**——ExecuTorch QNN（高通，8 Gen 3 优先：`.pte` 导出验证+跑分+退化输出检查）→ LiteRT MTK CompiledModel（联发科，谷歌路线）；跟 4B 实测数据走（on-device-llm.md §2.1 分期②③），属性能增强非主线。
+  - **平台扩展轨（随缘，不阻塞主线，不占主线排序）**：锁屏/桌面组件（`home_widget`：录音转待办、相机 OCR 直达）、鸿蒙 OHOS 适配（flutter_flutter fork + 插件 ohos 化）。
 - **V4**：**app 内 agent/自动化引擎**——app 兼作 MCP host（命令层新增第四 `CommandActor.agent` 槽位），对外连接其他本地 MCP 服务（日历等），跨 app 编排收进端侧；起步走**固定工作流引擎**（确定性管道 + 局部 LLM 判断点，离线可靠），通用 LLM agent 后置（端侧 1.5B 多步工具调用可靠性不足、云端 API 破坏离线承诺）；独特价值=住进手机生命周期（充电/后台/定时触发，复用 AiQueueService 前台服务基建），补「桌面 host 不在线不交换」空档。硬纪律：独立成层、业务层零耦合，其他 app 只出现在工作流配置数据里。前置：V2 素材加工（event.v1 等结构化产物）与 V3 分域授权（agent host 属信任客户端档）。2026-10-02 拍板。
 
 ## 10. 风险与开放问题

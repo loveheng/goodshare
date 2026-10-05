@@ -34,6 +34,7 @@ class AnnotationCanvas extends StatefulWidget {
     this.selectedId,
     this.onSelectedChanged,
     this.background,
+    this.onInteractionChanged,
   });
 
   final List<Annotation> annotations;
@@ -60,6 +61,10 @@ class AnnotationCanvas extends StatefulWidget {
 
   /// 原图背景（loupe 镜中复渲染用；null = loupe 只镜标注层）。
   final Widget? background;
+
+  /// 交互态外报（§2 瞬隐纪律）：手指落在画布上=true、抬起/取消=false。
+  /// 悬浮控件（工具条/列表浮层）宿主据此瞬隐，防遮挡落点与手势互撞。
+  final ValueChanged<bool>? onInteractionChanged;
 
   @override
   State<AnnotationCanvas> createState() => _AnnotationCanvasState();
@@ -95,6 +100,15 @@ class _AnnotationCanvasState extends State<AnnotationCanvas> {
 
   static const _tapSlop = 8.0; // 逻辑像素（§5.1 拖拽阈值判定）
 
+  /// 瞬隐外报去重（只在翻转时回调，防逐帧连发）。
+  bool _interacting = false;
+
+  void _setInteracting(bool v) {
+    if (_interacting == v) return;
+    _interacting = v;
+    widget.onInteractionChanged?.call(v);
+  }
+
   String? get _effectiveSelected => widget.selectedId ?? _selectedId;
 
   void _setSelected(String? id, {int? anchor}) {
@@ -120,6 +134,7 @@ class _AnnotationCanvasState extends State<AnnotationCanvas> {
   );
 
   void _onPointerDown(PointerDownEvent e, Size size) {
+    _setInteracting(true);
     _lastNorm = _downNorm = _norm(e.localPosition, size);
     final creating = widget.createType;
     if (creating != null) {
@@ -229,6 +244,7 @@ class _AnnotationCanvasState extends State<AnnotationCanvas> {
   }
 
   void _onPointerUp(PointerUpEvent e, Size size) {
+    _setInteracting(false);
     final upNorm = _norm(e.localPosition, size);
     final moved =
         (upNorm.x - _downNorm.x).abs() * size.width > _tapSlop ||
@@ -274,6 +290,7 @@ class _AnnotationCanvasState extends State<AnnotationCanvas> {
   }
 
   void _onPointerCancel() {
+    _setInteracting(false);
     if (_mode == _GestureMode.creating) {
       _creating = null;
       widget.onCreateSettled?.call();
@@ -319,6 +336,10 @@ class _AnnotationCanvasState extends State<AnnotationCanvas> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
+                    // 原图层（2026-10-04 修「标注页不显示图片」）：此前 background
+                    // 只喂了 loupe，画布 Stack 里没有原图——标注画在黑底上，被
+                    // 标注的图根本不可见。fit fill 铺满画布，与归一化坐标同参照系。
+                    if (widget.background != null) widget.background!,
                     Listener(
                       behavior: HitTestBehavior.opaque,
                       onPointerDown: (e) => _onPointerDown(e, size),
@@ -379,6 +400,8 @@ class _AnnotationOverlay extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     // 吸附参考线（§5）：细线先画（垫底），命中即显示、松手即隐。
+    // 色值属「图上叠加墨水」（白系对任意底图成立），勿主题化——
+    // 口径 SSOT 见 render/annotation_painter.dart 顶部声明。
     for (final l in snapLines) {
       final paint = Paint()
         ..color = const Color(0x66FFFFFF)
@@ -426,6 +449,7 @@ class AnnotationToolbar extends StatelessWidget {
     this.onToggleFill,
     this.fillAvailable = false,
     this.currentFilled = false,
+    this.trailing = const <Widget>[],
   });
 
   /// 点工具 = 进入生成模式（下一次画布拖拽生成该类型）。
@@ -439,17 +463,21 @@ class AnnotationToolbar extends StatelessWidget {
   final bool fillAvailable;
   final bool currentFilled;
 
+  /// 追加在工具尾部的槽位（悬浮条形态下色板并入同卡，宿主经此注入）。
+  final List<Widget> trailing;
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    // Wrap 而非 Row：工具满排 + 遮挡/Toggle 在窄屏（逻辑宽 ~331dp）会溢出
+    // 出调试斜纹（2026-10-04 真机取证，与详情底栏 10-01 溢出同教训）。
     return Material(
       color: scheme.surfaceContainerHigh,
       // 全系统去胶囊（2026-10-01）：24 于 ~40dp 高即胶囊，改 lg16 矩形
       borderRadius: BorderRadius.circular(Radii.lg),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
+        child: Wrap(
           children: [
             _tool(context, Icons.arrow_outward, '箭头', AnnotationType.arrow),
             _tool(context, Icons.crop_square, '矩形', AnnotationType.rect),
@@ -476,6 +504,7 @@ class AnnotationToolbar extends StatelessWidget {
                 ),
                 tooltip: currentFilled ? '切换为空心线框' : '切换为实心遮挡',
               ),
+            ...trailing,
           ],
         ),
       ),

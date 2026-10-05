@@ -15,6 +15,10 @@ format: v3
 
 ## goodshare
 
+- [ ] [2026-10-04] (风险)(层:L1)(重:中) 保险箱视觉防线接线：`SecureWindow` 类已存在但 lib 内 **0 调用方**（FLAG_SECURE 未接线）——接线时一并做三件事：①FLAG_SECURE 按视图判定（保险箱视图 + vaultContext 详情层数，enter/exitVaultDetail 计数接口已备）；②Recents 多任务卡片缩略图替换鹦鹉螺品牌图（非模糊，ui-spec §4.4 隐私纵深拍板）；③保险箱内复制打 `EXTRA_IS_SENSITIVE` 剪贴板敏感标记（Android 13+，同节）。规范 SSOT：ui-spec §4.4 (src: ui-spec 过时点核对 + 用户拍板隐私纵深)
+- [ ] [2026-10-03] (功能)(层:L3)(重:中) AI 写入归一层：`lib/action/` 命令入口对格式全集外语法做**语义映射**而非剥壳，映射即降级须 R1 note 告知；v6 收窄——表格/高亮/删除线/自动链接已收编 GFM 全量不再映射，仅罕见结构（脚注等）走映射；MCP 文本写入工具的前置依赖；MCP 工具描述同步声明支持全集；原则 SSOT：rich-text-gfm.md §2 (src: 用户拍板, AI 写入格式讨论)
+- [ ] [2026-10-03] (功能)(层:L3)(重:中) 解析器 GFM 全量收编：`rich_text.dart` 加 `~~删除~~`/`==高亮==` 行内分组（strikethrough/highlight 枚举+三处同源）+ 表格块级分支（TableBlock + Table/DataTable 卡片渲染，窄屏适配）+ 自动链接 run 化 + 围栏代码块语言徽标；依附转盘 epic 动工时一并做，勿单独排期 (src: 用户拍板「GitHub md 全都要」, 知识收集场景修正)
+- [ ] [2026-10-02] (功能)(层:L4)(重:轻) 回收站（最近删除）页接入长按批量选择模式：动作集「恢复/彻底删除」，彻底删除需强二次确认；长按批量选择模式 epic 样板验收后另排 (src: 用户拍板)
 - [ ] [2026-10-02] (风险)(层:L0)(重:中) VAD `bufferSizeInSeconds=100` 对长音源溢出：>100s 音频触发 circular buffer overflow 告警（sherpa 报「数据未丢失」，桌面复现确认），与 2026-09-28 长视频 WAV 临时文件/超时风险条目同属长视频待验族，落地时一并实测 (src: ai, 字幕管线深度评估)
 - [ ] [2026-10-02] (功能)(层:L3)(重:中) document 归一化接线：`taskActionFor(document)` 由 null 接上队列（html/plain/pdf 三 normalizer 已建，接口位已存在），文件类分享自动出可读正文；content-pipeline §9 既有 Phase，半天级 (src: ai, app-share 链路评估)
 - [ ] [2026-10-02] (功能)(层:L1)(重:中) 图文同分享文案修复：receive_sharing_intent 的 toJsonObject 只取 uri 丢文案（小红书/微博类图文帖源头发内容损失），需 fork 插件或自写 intent 解析补齐；自 misc 低优升级（app 分享为主的使用方式） (src: ai, app-share 链路评估)
@@ -30,16 +34,17 @@ format: v3
 - [ ] [2026-10-01] (功能)(层:L3)(重:中) 视频主体条目（新 item_type，与附件视频姊妹）：入口分叉「添加附件 vs 视频条目」，主体态设宽门槛非零（拟 ≤10min / ≤500MB，待定），超限拦截拒收；门槛内不干预大小（无提示），工程防线后移：封面/转写 Job 化后台、播放懒加载、大文件三态兜底；不做「有无配文」隐式推断主体 (src: ai, 交互评估对话)
 - [ ] [2026-09-30] (功能)(层:L3)(重:中) 行内媒体块 V2 插入链路：图片相册选取+压缩+OSS 上传（产出 https url 写 ImageBlock，「📷」按钮）；音频/视频本地行内插入（依赖多端资产同步机制）；视频封面提取（顶级+行内，引入 video_thumbnail 类依赖走 Job 化） (src: rich-text-media §5)
 
-- [x] [2026-10-02] (功能)(层:L4)(重:中) 编辑态媒体块精细化（图/音/视频）：`_EditBody` 按块类型分流——媒体块渲染 `MediaBlockEditor`（预览+标签编辑+替换媒体），其余块保持 `TextField` 不变；替换媒体走新增 `ReplaceMediaOp(index, newUrl)` 经 `EditSession.apply`（事务一致性：取消即整体回滚，杜绝「独立 Command 绕过 Session」造成的脏状态分裂）。护栏：①`EditBlock` 加稳定 `id` 作 `ValueKey` 防结构变更后 Element 错位复用；②`MediaBlockEditor` 零本地私有状态、可视状态 100% 派生自 `blocks[i]`，替换成功经回调上抛顶层 `session.apply(ReplaceMediaOp)` 由重建驱动预览。标签编辑仍走 `CommitTextOp`/`rebuildBlock`（src: devlog 2026-10-02 后续迭代项②, 用户拍板 ReplaceMediaOp 方案）
 
 ## goodshare · 暂缓/候（已移出活跃区，状态结构化）
 
+- [ ] [2026-10-03] (功能)(候)(层:L3)(重:重) 冷门音视频格式云端处理体系：ffmpeg 替换为平台原生（MediaCodec/AVFoundation）后解不了的边缘格式（ac3/wma 等），**后续走云端体系处理**；现阶段一律降级提示「格式不支持」，不做静默失败。依附：ffmpeg→原生替换立项（P2 端侧转码管线落地时按此口径实现降级文案），勿单独排期 (src: 用户拍板)
 - [ ] [2026-10-02] (功能)(降级)(层:L4)(重:重) 工具箱收敛+预置链实施：详情页单一「工具」胶囊→工具箱 BottomSheet（预置链置顶+状态行，底栏 5 项恒定）；预置链「提取并翻译」（image=ocr→translate、audio/video=transcribe→translate，产品固定）；工程大头=TranslateCommand 产物化（译文写回 translated_md）+ 队列链式触发。**2026-10-02 降级**：加工主体拍板 MCP 优先，人类端只留按需轻量入口，排序殿后；预置内容建议补「转写并摘要」「OCR 并打标」 (src: ui-spec §4.3/§4.4, 2026-09-30 拍板)
 - [ ] [2026-10-02] (功能)(暂缓)(层:L4)(重:轻) 图片标注吸附数值微显（image-markup.md §5 标「可选」）：拖锚点时锚点旁浮出小数值（45°、宽 320px 等）、松手即隐——纯精度增强非必做项，用户已拍板**暂缓**（2026-10-02），真机验收反馈有需要再排期 (src: ai, 用户拍板暂缓)
 - [ ] [2026-10-02] (功能)(候)(层:L4)(重:中) 视频多段剪辑批次模型 + 音频剪辑复用预留：轻剪辑页一次进入=一个工作批次（区间逐个「收进本次」入暂存架，scrubber 色带防重叠、>10 段软提示，完成时逐区间过门槛、默认产出 N 个独立条目可选合并）；音频**不建剪辑页、不挂入口**（宽约束拦不到人+无截片段场景），仅架构预留（TrimAction 泛化 mediaType + 媒体无关壳，未来零返工接入）。**说明：交互设计已落档 docs/design/video-trim.md §1/§5.1，本条为实现候选项——轻剪辑页动工时一并实现，勿单独排期** (src: ai, 交互评估对话)
 
 ## misc
 
+- [ ] [2026-10-05] (功能)(层:L1)(重:重) 独立 MCP 日程 app「拾光/shiguang」（**已立项**，仓库 ~/app/shiguang，设计冻结稿 e72b737）：大脑在桌面 AI 客户端（零端侧 LLM，复刻 goodshare Human-AI 对称架构）；三表模型（plans 带 spec/open_items/importance、fixed_slots 带星期集合、blocks 带 source/pinned/label）、九工具面、三层行为层（instructions/prompts/skill）、确定性 Housekeeper 管家；SSOT=~/app/shiguang/docs/design/schedule-app.md（**已冻结**，十轮评审 392ea83：九工具面不变、模型仅 plans+5 字段 blocks+3 标志位）；下一步=flutter create + dev-init 起骨架、MCP 框架层搬运 (src: 用户发起，十轮评审后冻结)
 - [ ] [2026-10-02] (测试)(层:L0)(重:中) 端侧 LLM 4B 档真机实测（定 R1/R3 实现深度）：Qwen3-4B/3B int4 GPU 包在 8 Gen 3（OnePlus 13R）跑分（decode tk/s、内存峰值、发热）+ OCR 修正小样评估（命中率/误改率，含数字保护校验）；设备基线=8 Gen 3/天玑 9400 + 12GB（on-device-llm.md §3.1a） (src: ai, 4B/NPU 讨论链拍板)
 - [ ] (功能)(层:L3)(重:重) app 内 agent/自动化引擎（**已划 V4**，2026-10-02 拍板）：app 兼作 MCP host（第四 `CommandActor.agent` 槽位）+ 对外连其他本地 MCP 服务（日历等）；起步=固定工作流引擎（确定性管道+局部 LLM 判断点，离线可靠），通用 LLM agent 后置（端侧 1.5B 多步调用可靠性不足/云 API 破坏离线承诺）；价值=住进手机生命周期（充电/后台/定时，复用 AiQueueService 基建），补桌面 host 不在线空档。硬纪律：独立成层、业务层零耦合，其他 app 只出现在工作流配置数据里。前置：V2 素材加工（event.v1 等）+ V3 分域授权。SSOT：PRD §9 V4 行
 - [ ] (功能)(层:L1)(重:重) MCP 客户端分域授权（**已划 V3**，2026-10-02 拍板「V2 先把加工链路走通」）：客户端注册表（按客户端发 token）+ 三维权限域——工具域（tools/list 按 scope 过滤）、数据域（类型/工作区白名单，沿用 Vault 排除）、内容形态（raw/processed 二档，processed 与 V2 打码层协同）；默认新客户端=只读+processed+Vault 排除，预设 2-3 档避免细粒度矩阵；设置页「接入客户端」管理区（生成/吊销/选档）。方案评估见 2026-10-02 会话，SSOT：PRD §9 V3 行
@@ -48,10 +53,14 @@ format: v3
 - [ ] (功能)(层:L1)(重:中) ACTION_PROCESS_TEXT：任意 app 选中文本一键收集（需自定义平台通道）
 - [ ] (功能)(层:L4)(重:中) 标签管理（编辑/筛选）；数据量大后评估 FTS 全文索引替换 LIKE
 - [ ] (风险)(层:L1)(重:中) 国产 ROM 省电策略可能杀前台服务：真机验证华为/小米等存活情况，必要时引导加白名单
-- [x] (优化)(层:L4)(重:轻) 自定义 app 图标：flutter_launcher_icons 已接入（pubspec.yaml），源图 assets/icon/app_icon.png（1024²），生成 Android ic_launcher（mipmap 五套）+ iOS AppIcon（remove_alpha_ios: true，规避 App Store alpha 限制）
 - [ ] (功能)(层:L4)(重:轻) 启动页 splash 自定义（自「图标与启动页」拆出，待办）
 - [ ] (文档)(层:L1)(重:轻) release 签名配置文档化（keytool + signingConfig）
 - [ ] (功能)(层:L1)(重:中) Shorebird 接入收尾：本机被两件事挡住——官方安装脚本 404（改用 GitHub release 包手动装）+ api.shorebird.dev TLS 握手失败（需代理）；用户侧网络可用时按 docs/guide/self-update.md §2 走 shorebird init/login/release
 - [ ] (风险)(层:L1)(重:轻) 自更新 release 包当前用 debug 签名（模板默认），正式分发前配置 release keystore 并在 shorebird 流程中统一
 - [ ] (优化)(层:L4)(重:轻) 更新页增加「强制最低版本」逻辑（清单 minVersionCode，低于即全屏提示必须升级）
 - [ ] (优化)(暂缓)(层:L0)(重:轻) ASR 模型源迁移 R2 + 换新版（低优先/暂缓）：模型改为 csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09（model.int8.onnx 237,115,547 / tokens.txt 315,894）+ csukuangfj/sherpa-onnx-paraformer-zh-int8-2025-10-07（238,429,929 / 75,756，川渝方言版）；分发方式改为 Cloudflare R2 自托管 tar.gz 包（域名 https://r2.oklhj.eu.org，包的完整 URL 待用户提供），lib/ai/asr_model.dart 改「单包 + entries」结构、lib/ai/model_manager.dart 改下载→解压→逐文件校验→删包（需加 archive 依赖）。未决：是否保留 whisper-small 多语种档、方言版是否契合场景（否则换 paraformer-zh-2024-03-09，227,330,205 / 75,354）。现状可用（hf-mirror 三档已能下载），无需紧急处理
+- [ ] [2026-10-03] (环境)(层:L0)(重:轻) @todo-groom 洗盘：待办 35 条 > 30 阈值（context-lint GROOM 告警），归并去重、清理陈条 (src: ai, media-native ::done 审计)
+- [ ] [2026-10-03] (环境)(层:L0)(重:轻) goodshare epic memory.md 157 行 > 150 软上限（context-lint SIZE 告警）：考虑 ::done 收尾或拆分新 epic (src: ai, media-native ::done 审计)
+- [ ] [2026-10-03] (文档)(层:L0)(重:轻) 收敛复盘提议待确认：lessons「Scaffold body 内避让/高度手算」三连坑多次复现且表述稳定，拟固化进 goodshare-ui skill，确认后原条目降级 Ref (src: ai, media-native ::done 收敛复盘)
+- [ ] [2026-10-03] (功能)(候)(层:L3)(重:轻) 录音弹框语言选择：参考稿的「中文 ▼」暂未做——转写语言现状=ASR 模型档位 SSOT（asr.dart language:'auto'），「语言随条目走」管线未建，不做假下拉；待 item 级语言标注→transcribe 任务透传落地后补 (src: 用户参考稿, ai 权衡)
+- [ ] [2026-10-03] (环境)(层:L0)(重:轻) 编辑器统一死代码清偿：lib/doc/edit_session.dart（块模型/EditOp 家族，edit_session_test 约 40 钉子）与 lib/ui/format_toolbar.dart 已标 DEPRECATED 无 UI 消费，下一轮连同其单测删除；SSOT：docs/design/note-editor-unification.md §2 (src: 用户拍板「暂留标废弃」)

@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 import '../action/commands.dart';
 import '../action/item_action_handler.dart';
 import '../data/repository.dart';
 import '../models/item.dart';
+import '../ui/confirm_dialog.dart';
+import '../ui/feedback_views.dart';
 import '../ui/repo_auto_reload.dart';
 
 /// 最近删除：保留期内可恢复或手动彻底删除；30 天后启动时自动物理清理。
@@ -21,6 +24,10 @@ class _RecentDeletedPageState extends State<RecentDeletedPage> with RepoAutoRelo
   List<InboxItem> _items = [];
   bool _loading = true;
 
+  /// 清空胶囊滚动隐显（与首页顶栏 D1 同向口径）：下滑（继续浏览）隐藏、
+  /// 上滑（回看）与静止时显示——由用户滚动方向天然驱动，无手写阈值防抖。
+  bool _clearVisible = true;
+
   @override
   Repository get repo => widget.repo;
 
@@ -31,6 +38,13 @@ class _RecentDeletedPageState extends State<RecentDeletedPage> with RepoAutoRelo
   void initState() {
     super.initState();
     _reload();
+  }
+
+  /// 滚动方向驱动清空胶囊隐显。
+  bool _onUserScroll(UserScrollNotification n) {
+    final v = n.direction != ScrollDirection.reverse;
+    if (v != _clearVisible) setState(() => _clearVisible = v);
+    return false;
   }
 
   Future<void> _reload() async {
@@ -44,16 +58,12 @@ class _RecentDeletedPageState extends State<RecentDeletedPage> with RepoAutoRelo
 
   Future<void> _confirmClearAll() async {
     if (_items.isEmpty) return;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('清空最近删除？'),
-        content: Text('将立即彻底删除全部 ${_items.length} 条，不可恢复。'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('清空')),
-        ],
-      ),
+    final ok = await confirmDialog(
+      context,
+      title: '清空最近删除？',
+      content: '将立即彻底删除全部 ${_items.length} 条，不可恢复。',
+      confirmText: '清空',
+      danger: true,
     );
     if (ok == true) {
       await widget.handler.purgeAllDeleted();
@@ -62,16 +72,12 @@ class _RecentDeletedPageState extends State<RecentDeletedPage> with RepoAutoRelo
   }
 
   Future<void> _confirmDeleteForever(InboxItem it) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('彻底删除这条？'),
-        content: const Text('立即物理删除（含附件），不可恢复。'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('删除')),
-        ],
-      ),
+    final ok = await confirmDialog(
+      context,
+      title: '彻底删除这条？',
+      content: '立即物理删除（含附件），不可恢复。',
+      confirmText: '删除',
+      danger: true,
     );
     if (ok == true) {
       await widget.handler.execute(DeleteForeverCommand(it.id!));
@@ -81,61 +87,76 @@ class _RecentDeletedPageState extends State<RecentDeletedPage> with RepoAutoRelo
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false,
         title: const Text('最近删除'),
-        actions: [
-          IconButton(
-            tooltip: '清空',
-            icon: const Icon(Icons.clear_all),
-            onPressed: _confirmClearAll,
-          ),
-        ],
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _items.isEmpty
-              ? Center(
-                  child: Text('没有可恢复的条目', style: Theme.of(context).textTheme.bodySmall))
-              : ListView.builder(
-                  itemCount: _items.length,
-                  itemBuilder: (context, i) {
-                    final it = _items[i];
-                    final deletedAt = it.deletedAt == null
-                        ? null
-                        : DateTime.fromMillisecondsSinceEpoch(it.deletedAt!);
-                    return ListTile(
-                      leading: const Icon(Icons.delete_outline),
-                      title: Text(
-                        it.preview.isEmpty ? '（无文本内容）' : it.preview,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      subtitle: Text(deletedAt == null
-                          ? '已删除'
-                          : '删除于 ${deletedAt.month}-${deletedAt.day.toString().padLeft(2, '0')} '
-                              '${deletedAt.hour}:${deletedAt.minute.toString().padLeft(2, '0')}'),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          TextButton(
-                            onPressed: () async {
-                              await widget.handler.execute(RestoreCommand(it.id!));
-                              await _reload();
-                            },
-                            child: const Text('恢复'),
-                          ),
-                          IconButton(
-                            tooltip: '彻底删除',
-                            icon: const Icon(Icons.delete_forever_outlined),
-                            onPressed: () => _confirmDeleteForever(it),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
+      // 清空收底（2026-10-05 拍板）：破坏性动作离开顶栏高频区，落右下拇指区
+      // 悬浮胶囊；滚动方向隐显（下滑浏览隐藏、上滑回看/静止显示）。
+      body: NotificationListener<UserScrollNotification>(
+        onNotification: _onUserScroll,
+        child: _loading
+            ? const LoadingView()
+            : _items.isEmpty
+                ? const Center(child: EmptyStateView(text: '没有可恢复的条目'))
+                : ListView.builder(
+                    itemCount: _items.length,
+                    itemBuilder: (context, i) {
+                      final it = _items[i];
+                      final deletedAt = it.deletedAt == null
+                          ? null
+                          : DateTime.fromMillisecondsSinceEpoch(it.deletedAt!);
+                      return ListTile(
+                        leading: const Icon(Icons.delete_outline),
+                        title: Text(
+                          it.preview.isEmpty ? '（无文本内容）' : it.preview,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(deletedAt == null
+                            ? '已删除'
+                            : '删除于 ${deletedAt.month}-${deletedAt.day.toString().padLeft(2, '0')} '
+                                '${deletedAt.hour}:${deletedAt.minute.toString().padLeft(2, '0')}'),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            TextButton(
+                              onPressed: () async {
+                                await widget.handler.execute(RestoreCommand(it.id!));
+                                await _reload();
+                              },
+                              child: const Text('恢复'),
+                            ),
+                            IconButton(
+                              tooltip: '彻底删除',
+                              icon: const Icon(Icons.delete_forever_outlined),
+                              onPressed: () => _confirmDeleteForever(it),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+      ),
+      // 右下悬浮胶囊（danger 实底禁半透明罩；空态禁用）。
+      floatingActionButton: AnimatedOpacity(
+        duration: const Duration(milliseconds: 150),
+        opacity: _clearVisible && _items.isNotEmpty ? 1 : 0,
+        child: IgnorePointer(
+          ignoring: !_clearVisible || _items.isEmpty,
+          child: FloatingActionButton.extended(
+            heroTag: 'recent-deleted-clear',
+            elevation: 2,
+            backgroundColor: scheme.error,
+            foregroundColor: scheme.onError,
+            onPressed: _confirmClearAll,
+            icon: const Icon(Icons.clear_all),
+            label: Text('清空全部（${_items.length}）'),
+          ),
+        ),
+      ),
     );
   }
 }

@@ -63,7 +63,7 @@ curl -s http://127.0.0.1:8765/mcp \
 | 工具 | 参数 | 说明 |
 |---|---|---|
 | `list_items` | `query?` `type?` `limit?(≤100)` `offset?` | 关键词命中标题/正文/标签，时间倒序分页 |
-| `get_item` | `id` | 全文（含人类态/机器态）；图片返回 base64 image 内容块（≤4MB）；已转写的音/视频条目带 `subtitles` 字段（SRT/VTT 与译文文件内容内联，单文件 >256KB 只报 `size`） |
+| `get_item` | `id` | 全文（含人类态/机器态）；图片返回 base64 image 内容块（≤4MB）；已转写的音/视频条目带 `subtitles` 字段（SRT/VTT 与译文文件内容内联，单文件 >256KB 只报 `size`）；含行内媒体块的条目带 `block_artifacts`（block_key/kind/text_size/file_path/meta）与 `block_tasks`（活跃块任务：job_id/action/block_key/status/enqueued_at/note?）两个兄弟字段——前者是产物数据、后者是进度，**任务态不混进产物数组** |
 | `add_item` | `content` `title?` `tags?[]` | AI 侧写入文本/链接，自动识别纯 URL；不参与合并模式 |
 | `query_machine_data` | `query?` `type?` `limit?` `offset?` | 机器态结构化数组（仅含已有 machine_json 的条目） |
 | `get_timeline_context` | `date`（YYYY-MM-DD） | 当日多维上下文；健康/事件随 V3 健康接入填充，当前为空 |
@@ -82,6 +82,13 @@ curl -s http://127.0.0.1:8765/mcp \
 | `analyze_text_item` | `id` `expected_version?` | 端侧 ML Kit 分析笔记正文：语言识别 + 实体提取（日期/邮箱/电话/地址/URL/金额）。**异步入队**：落 `facets['语言']` 与 `facets['实体']`，随后 `get_item` 读取；仅笔记可用 |
 | `transcribe_item` | `id` `subtitle_mode?` `target_lang?` `expected_version?` | 端侧 Sherpa 离线转写音频/视频（与手机端「转写」按钮同一入口）。**异步入队**：文本并入 `human_md`，SRT/VTT 字幕落盘，完成后 `get_item` 读 `human_md` 与 `subtitles` 字段（`get_job_status` 可轮询）；仅音/视频可用，模型须已在手机上下载（未下载任务 note 明示）；`subtitle_mode`（bilingual/separate/sourceOnly）与 `target_lang` 为单次任务覆盖——如 `subtitle_mode=bilingual` 直接产出双语字幕，省略沿用 App 设置 |
 | `ocr_item` | `id` `expected_version?` | 端侧 ML Kit 识别图片文字（与手机端「识别文字」按钮同一入口）。**异步入队**：文本并入 `human_md`，随后 `get_item` 读取；仅图片可用 |
+| `block_transcribe_item` | `id` `block_key` `subtitle_mode?` `target_lang?` `expected_version?` | **行内音/视频媒体块**转写（与三级能力页该块「转写」按钮同一入口）。`block_key` = 正文媒体行的 `local://` 路径（逐字相等）。**异步入队**：调用即返 `{status:"queued", task_id, message}`，一步双产物（transcript 文本 + SRT/VTT 字幕）落块级产物表、**不冲刷 `human_md`**，稍后 `get_item` 读 `block_artifacts`；前置：条目须已开「允许 AI 处理」（AI 不可自行开）→ 否则 `forbidden`；同块同任务已在队列 → `invalid_request`（不必重试） |
+| `block_ocr_item` | `id` `block_key` `expected_version?` | **行内图片块**端侧 OCR（与三级页该块「识别文字」同入口）。异步入队：返 queued + task_id，产 ocr_text 落 `block_artifacts`；仅图片块可用，非图片被拒；同样受「允许 AI 处理」门禁 |
+| `block_translate_item` | `id` `block_key` `source_kind` `target_lang?` `expected_version?` | 翻译**块已有文本产物**：`source_kind` 必填（transcript / ocr_text / subtitle 选源），源产物不存在或为空会被拒（提示先转写/识别文字）。异步入队：返 queued + task_id，产 translation 落 `block_artifacts` |
+| `block_summarize_item` | `id` `block_key` `expected_version?` | 用端侧大模型为**块文本产物**（transcript / ocr_text）生成摘要（与三级页「摘要」同入口），无可用源产物被拒。异步入队：返 queued + task_id，产 summary 落 `block_artifacts` |
+| `block_extract_audio_item` | `id` `block_key` `expected_version?` | 从**行内视频块**提取音轨（与三级页「提取音轨」同入口），产 audio_file（可播放/导出/继续处理）；非视频块被拒。异步入队：返 queued + task_id |
+
+> 五个块能力工具**与三级页五步骤一一对应**（docs/design/block-artifact-workflow.md §7）；`block_key` 一律取自 `get_item` 返回正文里的媒体行 `local://` 路径，逐字相等。旧通道 `batch_items` + 同名 op 仍可用，不废弃。
 | `get_job_status` | `job_id?` 或 `id?` | 查询条目最近一次 AI 后台任务状态（pending/processing/completed/failed/paused/cancelled），含失败原因 `note`；耗时工具（summarize/translate/reprocess/transcribe 等）返回的 `job_id` 凭此确认进度 |
 | `list_jobs` | `limit?(≤50)` | 列出最近的 AI 后台任务（最新在前），总览队列积压或排查失败 |
 | `list_workspaces` / `create_workspace` / `rename_workspace` / `delete_workspace` | — | 工作区 CRUD（删除级联清理关系记录，条目不受影响） |

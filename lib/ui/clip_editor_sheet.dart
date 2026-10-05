@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -6,7 +7,9 @@ import 'package:video_player/video_player.dart';
 import '../action/commands.dart';
 import '../action/item_action_handler.dart';
 import '../ai/video_clips.dart';
+import '../doc/rich_text.dart' show MarkdownSubsetParser, VideoBlock;
 import '../models/item.dart';
+import '../share/attachments.dart' show resolveLocalMediaSrc;
 
 /// 视频切片编辑（2026-09-29 改版，设计 docs/design/video-clips.md §4）：
 /// **标记优先**——「设为起点 / 设为终点」捕获播放位置只登记时间点（不触发处理，
@@ -37,8 +40,39 @@ class _ClipEditorSheet extends StatefulWidget {
 }
 
 class _ClipEditorSheetState extends State<_ClipEditorSheet> {
-  late final VideoPlayerController _controller =
-      VideoPlayerController.file(File(widget.item.rawFilePath!));
+  // 来源分流（2026-10-04 修空白崩溃）：rawFilePath 可能是 null（速记内嵌视频
+  // 走 human_md 块，无条目级附件）或 content:// URI（引用模式，File 打不开）——
+  // 原先 `File(rawFilePath!)` 在 initState 空指针，Sheet 打开即一片空白。
+  // 2026-10-05 修「弹框永久转圈」：null 控制器原实现既不报错也不就绪，
+  // 转圈永挂=功能不可用——回退 human_md 首个视频块，仍无源则显式错误态。
+  late final VideoPlayerController? _controller = _buildController();
+  String? _error;
+  Timer? _initTimeout;
+
+  VideoPlayerController? _buildController() {
+    final raw = widget.item.rawFilePath;
+    if (raw != null && raw.isNotEmpty) {
+      if (raw.startsWith('content://')) {
+        return VideoPlayerController.contentUri(Uri.parse(raw));
+      }
+      return VideoPlayerController.file(File(resolveLocalMediaSrc(raw)));
+    }
+    return _firstVideoBlockController();
+  }
+
+  /// 条目级附件缺失时的回退源：human_md 里第一个视频块（速记内嵌视频）。
+  VideoPlayerController? _firstVideoBlockController() {
+    final md = widget.item.humanMd;
+    if (md == null || md.isEmpty) return null;
+    for (final b in const MarkdownSubsetParser().parse(md)) {
+      if (b is VideoBlock && b.url.isNotEmpty) {
+        final file = File(resolveLocalMediaSrc(b.url));
+        if (file.existsSync()) return VideoPlayerController.file(file);
+      }
+    }
+    return null;
+  }
+
   bool _ready = false;
   int? _start;
   final List<List<int>> _newMarks = []; // 本轮新打的标记 [startMs, endMs]
@@ -47,19 +81,35 @@ class _ClipEditorSheetState extends State<_ClipEditorSheet> {
   @override
   void initState() {
     super.initState();
-    _controller.initialize().then((_) {
+    final c = _controller;
+    if (c == null) {
+      _error = '未找到可切片的视频文件';
+      return;
+    }
+    // 初始化挂死兜底（contentUri 权限/损坏文件可能永不回调）：转圈最多
+    // 10s 后转可行动错误态
+    _initTimeout = Timer(const Duration(seconds: 10), () {
+      if (mounted && !_ready) {
+        setState(() => _error = '视频加载超时，请退出重试或检查文件');
+      }
+    });
+    c.initialize().then((_) {
+      _initTimeout?.cancel();
       if (mounted) setState(() => _ready = true);
     }).catchError((Object e) {
+      _initTimeout?.cancel();
       debugPrint('[ClipEditor] initialize failed: $e');
+      if (mounted) setState(() => _error = '视频加载失败：$e');
     });
-    _controller.addListener(() {
+    c.addListener(() {
       if (mounted) setState(() {}); // 播放位置驱动按钮态与进度条
     });
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    _initTimeout?.cancel();
+    _controller?.dispose();
     super.dispose();
   }
 
@@ -68,7 +118,8 @@ class _ClipEditorSheetState extends State<_ClipEditorSheet> {
     return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
   }
 
-  void _markStart() => setState(() => _start = _controller.value.position.inMilliseconds);
+  void _markStart() =>
+      setState(() => _start = _controller?.value.position.inMilliseconds);
 
   void _markEnd() {
     final messenger = ScaffoldMessenger.of(context);
@@ -77,7 +128,7 @@ class _ClipEditorSheetState extends State<_ClipEditorSheet> {
       messenger.showSnackBar(const SnackBar(content: Text('先点「设为起点」')));
       return;
     }
-    final e = _controller.value.position.inMilliseconds;
+    final e = _controller?.value.position.inMilliseconds ?? 0;
     if (!isValidClipInterval(s, e)) {
       messenger.showSnackBar(const SnackBar(content: Text('区间需 1 秒 ~ 30 分钟，且终点在起点之后')));
       return;
@@ -144,8 +195,8 @@ class _ClipEditorSheetState extends State<_ClipEditorSheet> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final existing = parseClipsJson(widget.item.clipsJson);
-    final pos = _controller.value.position.inMilliseconds;
-    final dur = _controller.value.duration.inMilliseconds;
+    final pos = _controller?.value.position.inMilliseconds ?? 0;
+    final dur = _controller?.value.duration.inMilliseconds ?? 0;
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
       child: SingleChildScrollView(
@@ -164,10 +215,25 @@ class _ClipEditorSheetState extends State<_ClipEditorSheet> {
                     .bodySmall
                     ?.copyWith(color: scheme.onSurfaceVariant)),
             const SizedBox(height: 8),
-            if (_ready && _controller.value.isInitialized)
+            if (_error != null)
+              Container(
+                height: 140,
+                alignment: Alignment.center,
+                padding: const EdgeInsets.all(16),
+                color: scheme.errorContainer,
+                child: Text(_error!,
+                    textAlign: TextAlign.center,
+                    style: Theme.of(context)
+                        .textTheme
+                        .bodySmall
+                        ?.copyWith(color: scheme.onErrorContainer)),
+              )
+            else if (_ready && _controller != null && _controller.value.isInitialized)
               GestureDetector(
                 onTap: () => setState(() {
-                  _controller.value.isPlaying ? _controller.pause() : _controller.play();
+                  _controller.value.isPlaying
+                      ? _controller.pause()
+                      : _controller.play();
                 }),
                 child: AspectRatio(
                   aspectRatio: _controller.value.aspectRatio,
@@ -179,7 +245,7 @@ class _ClipEditorSheetState extends State<_ClipEditorSheet> {
                 height: 140,
                 child: Center(child: CircularProgressIndicator()),
               ),
-            if (_ready) ...[
+            if (_ready && _controller != null) ...[
               Slider(
                 value: dur > 0 ? pos.clamp(0, dur).toDouble() : 0,
                 max: dur > 0 ? dur.toDouble() : 1,
@@ -188,7 +254,9 @@ class _ClipEditorSheetState extends State<_ClipEditorSheet> {
               Row(children: [
                 IconButton(
                   onPressed: () => setState(() {
-                    _controller.value.isPlaying ? _controller.pause() : _controller.play();
+                    _controller.value.isPlaying
+                        ? _controller.pause()
+                        : _controller.play();
                   }),
                   icon: Icon(_controller.value.isPlaying ? Icons.pause : Icons.play_arrow),
                 ),
@@ -261,7 +329,7 @@ class _ClipEditorSheetState extends State<_ClipEditorSheet> {
                           ),
                         ),
                         TextButton.icon(
-                          onPressed: _ready
+                          onPressed: (_ready && _controller != null)
                               ? () => _controller
                                   .seekTo(Duration(milliseconds: seg.startMs))
                               : null,

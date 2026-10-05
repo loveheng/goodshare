@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-09-30
+updated: 2026-10-03
 ---
 
 # docs/ 结构索引
@@ -25,10 +25,20 @@ updated: 2026-09-30
 ## design（UI 设计规范）
 
 - [ui-spec.md](design/ui-spec.md) — UI 设计规范：Material You/M3 视觉系统、5 底 tab + FAB 导航、页面清单、设置树、组件库与双态呈现；配套约束见项目 skill `goodshare-ui`。
+- [workspace.md](design/workspace.md) — 工作区管理闭环交互设计稿（active 2026-10-05）：删除守门与清空链路（删工作区≠删内容语义红线、列表层长按单删不做多选、非空守门 B 快捷删「保留内容并删除」、ackNonEmpty 仅 ui actor 的动作层同守门、重命名复用整页创建表单）；「移出本工作区」批量转正为独立候选。
+- [card-batch-selection.md](design/card-batch-selection.md) — 卡片长按批量选择模式方案蓝本（draft 未实现）：长按进选择模式 + 底部操作栏取代导航、四动作（置顶/工作区/保险箱/删除）声明式配置、置顶全链路（pinned_at + PinCommand + MCP set_pin）、四层抽象（词汇表/执行全共享，呈现分形态：列表选择栏/详情底栏/⋯面板）、整体落地切片。
+- [block-format-input.md](design/block-format-input.md) — 编辑态格式输入方案蓝本（draft 未实现）：键盘工具条「格式」按钮先选后打、块级标题/正文真所见即所得、行内加粗/斜体/下划线自研样式化编辑层（无 md 标记可见，不换编辑器）、`<u>` 语法扩展。
+- [quick-note-format-dial.md](design/quick-note-format-dial.md) — 速记格式转盘交互设计稿（draft 待过稿）：可收起三级径向盘（一级圆钮/二级三分类/三级联动）、松手即选、激活角标外显；仅转盘输入交互，渲染/GFM 收编拆至 rich-text-gfm.md。
+- [rich-text-gfm.md](design/rich-text-gfm.md) — 富文本 GFM 渲染收编与 AI 写入原则设计稿（draft 待拍板）：AI 写入三层处理链（引导/映射/R1 告知）、格式全量镜像对照表（与 rich_text.dart 同源）、GFM 收编语法实现契约（粗斜体/删除线/高亮/表格/自动链接/行内码防回溯方案）与渲染标准；自 quick-note-format-dial.md §3-§4 拆出。
+- [ai-writeback-revert.md](design/ai-writeback-revert.md) — AI 写回可逆与用户接管设计稿（active 2026-10-04）：单基线快照三件套（`human_md_baseline` 锚点 + `doc_meta_json.ai_session_state` 短枚举 + `ai_revisions` 有界日志表）、AI_PENDING/RESTORED/CLOSED 状态机、1.5s settle 接管判定（生命周期强制 flush + 显式按钮取消计时器的竞态防护）、只读 Inline Diff 与接管 Toast / 极简历史面板。与 rich-text-gfm.md 互补——那稿管「写入质量」，本稿管「写入后的可控性」。
+- [note-editor-unification.md](design/note-editor-unification.md) — 编辑器统一（active 2026-10-03）：详情编辑切换到速记作曲器形态（NoteComposerEditor 唯一编辑器）、human_md→草稿行转换（noteMdToDraftRows 字面保留裁决）、媒体替换钩子与 EditSession/FormatToolbar 废弃口径。
+- [quick-note-draft.md](design/quick-note-draft.md) — 速记条草稿持久化方案蓝本（draft 未实现）：QuickNoteBar 接入既有 drafts 表/DraftController 基建（防抖+退后台 flush+结构变更即写），static 内存草稿退役，进程被杀重开原样恢复（含媒体段）。
+- [detail-visual-hierarchy.md](design/detail-visual-hierarchy.md) — 详情页视觉层级方案蓝本（draft 未实现）：灵感区分区头统一换 SectionLegendCard 骑框签（消两套分区语言）、区块间距调档、便签标题槽显示规则（无标题显创建时间绝对格式、用户标题优先、不回写 human_title）；水平留白丢失 bug 已修复（空 SliverPadding 死代码）。
 - [detail-two-zone.md](design/detail-two-zone.md) — 详情页两区改版与区块能力平台设计：公共区/灵感区分工、区块能力分发（ContentCapability 自声明 + CapabilityChain 任务链）、单卡链式能力卡（不嵌套）、分享分流（截图 PNG / PDF 兜底）。
 - [asr-subtitle.md](design/asr-subtitle.md) — 音频转写与字幕生成设计：VAD 分段取时间戳的可选下载资源 `silero-vad-v5`、文本与 SRT/VTT 双产物、无 VAD 时降级为纯文本的门控；§8 为端侧翻译层（引擎接口/路由/双语字幕三模式/译文存储与命令）。
 - [ocr-cn-adaptation.md](design/ocr-cn-adaptation.md) — 中文 OCR 适配设计。
 - [ai-capabilities-overview.md](design/ai-capabilities-overview.md) — AI 能力总览。
+- [block-artifact-workflow.md](design/block-artifact-workflow.md) — 块附件通道与工作流式三级能力页：行内媒体块 AI 能力（block_artifacts 派生表 schema v21、block_* 队列动作串、手动即授权门禁豁免）、WorkflowSpec 声明式能力编排（一步双产物/锚点切换/应用导出动词）、三级页工作流轨重设计（结构保留只换芯）。
 - [on-device-llm.md](design/on-device-llm.md) — 端侧 LLM 设计：LiteRT-LM（Android，SoC 感知 NPU/GPU/CPU 模型包）+ FoundationModels（iOS 系统模型零下载）双端分治、模型分发与队列/命令整合。
 - [image-annotation.md](design/image-annotation.md) — 图片标注设计（元数据层架构 SSOT：overlay 不改像素、annotations JSON 随条目走、原图只读；交互层已改版为对象化标注，口径见 image-markup.md）。
 - [image-markup.md](design/image-markup.md) — 图片标注交互改版（对象化标注）：操作与呈现分离（标注列表主入口 + 画布微调台）、两级选择状态机、锚点精度栈（loupe/吸附线/触觉 tick）、画布恒定、文字不合成、首发工具集（箭头/圆角矩形/文字/序号+笔迹候选）、横屏推荐策略。
@@ -43,6 +53,8 @@ updated: 2026-09-30
 - [attach-ownership.md](design/attach-ownership.md) — 附件持有机制说明：导入=复制/分享=引用的语义总表、persist 授权决定可达性的 Android 链路、迁移兜底、按类型分档（纯文本释放 / PDF 一律持有作事实来源 / 媒体引用+迁移）、范围拍板（不考虑微信/QQ 源）与 iOS 缺口预留位。
 - [rich-text-component.md](design/rich-text-component.md) — 富文本组件分层与结构化编辑设计：ContentBody 公共组件（sliver/inline 双面）、三层架构（规则层 RichDocument / 呈现层 / 调用层）、抹去 App 内 Markdown 用户暴露（结构化块编辑替代源码编辑，不留逃生舱）、私有块类型三出口护栏、视觉元数据前置（尺寸/OG/主色调，mymind 吸收）。
 - [rich-text-media.md](design/rich-text-media.md) — 富文本行内媒体块设计：Image/Audio/Video 三块类型的三出口语法、ContentBody 呈现（AspectRatio 占位/播放条/封面播放卡）、编辑态直接操纵、插入链路分期（音频先行，图片/视频 V2）；顶级媒体与行内媒体的边界划分。
+- [md-template-schema.md](design/md-template-schema.md) — Markdown 模板文件格式约定（V2 资产协议）：Front Matter Schema + `{{slot}}` 占位符、解析容忍度基线（不崩溃不乱码）、存储边界（documents/templates/ 不进条目、进备份）；渲染/执行见 agent-workflow-skill.md。
+- [agent-workflow-skill.md](design/agent-workflow-skill.md) — V4 Agent 工作流与 Skill 体系：模板（用户视角）/Skill（AI 视角）一体、SlotSpan 双向渲染 AST 扩展、HCI 四对策（零阻力入口/先猜后问/生命周期/延迟透明化）、执行引擎归 AI 客户端、save_skill 高权限门控。
 
 ## engineering（工程规范）
 

@@ -79,18 +79,30 @@ void main() {
       expect(md2, '[现场记录]($appDir/a.mov)');
     });
 
-    test('标题取首个非空文本行，折叠空白截 30 字；无文字返回 null', () {
+    test('标题取第一个一级标题行（剥 md 标记）；无一级标题返回 null（时间兜底）', () {
       expect(
         noteTitleOf([
-          const NoteTextSegment('  \n'),
-          const NoteTextSegment('这是   标题行\n第二行'),
+          const NoteTextSegment('普通段落不算'),
+          const NoteTextSegment('# 真标题\n正文'),
         ]),
-        '这是 标题行 第二行',
+        '真标题',
       );
-      final long = noteTitleOf([NoteTextSegment('长' * 40)]);
-      expect(long!.length, 31); // 30 字 + 省略号
-      expect(long.endsWith('…'), isTrue);
+      // 二级标题不算一级
+      expect(noteTitleOf([const NoteTextSegment('## 二级')]), isNull);
+      // 前置空行/缩进容忍，纯标记行跳过
+      expect(
+        noteTitleOf([const NoteTextSegment('#  带空格的标题')]),
+        '带空格的标题',
+      );
       expect(noteTitleOf([NoteImageSegment('/tmp/a.jpg')]), isNull);
+      expect(noteTitleOf(const []), isNull);
+      // 一级标题行含行内标记（如 `<u>`）须原样保留——标记由渲染层决定样式
+      // （详情页标题栏渲染下划线、列表预览剥壳），此处不得剥壳，否则详情页
+      // 标题下划线丢失（契约见 note_composer.noteTitleOf 注释）
+      expect(
+        noteTitleOf([const NoteTextSegment('# <u>重要</u>')]),
+        '<u>重要</u>',
+      );
     });
   });
 
@@ -132,6 +144,90 @@ void main() {
       final reparsed = parser.parse(out);
       expect((reparsed[0] as ImageBlock).alt, '原话说明');
       expect((reparsed[1] as AudioBlock).label, '录音');
+    });
+  });
+
+  group('human_md → 草稿行（编辑器统一，2026-10-03）', () {
+    // 全链路往返：段 → md → 草稿行 →（seed/serialize 模拟编辑器进出）→ 段语义等价
+    List<NoteSegment> rowsToSegments(List<List<String>> rows) => [
+          for (final r in rows)
+            switch (r.first) {
+              'i' => NoteImageSegment(r[1], alt: r.length > 2 ? r[2] : ''),
+              'a' => NoteAudioSegment(r[1], label: r.length > 2 ? r[2] : '录音'),
+              'v' => NoteVideoSegment(r[1], label: r.length > 2 ? r[2] : '视频'),
+              _ => NoteTextSegment(r.length > 1 ? r[1] : ''),
+            },
+        ];
+
+    test('文本+媒体混合往返幂等（含转义 alt/label）', () {
+      final original = <NoteSegment>[
+        const NoteTextSegment('看这个\n第二行'),
+        NoteImageSegment('$appDir/p.jpg', alt: '含]转义'),
+        const NoteAudioSegment('$appDir/r.m4a', label: '会议录音'),
+        const NoteVideoSegment('$appDir/v.mp4'),
+      ];
+      final md = serializeNoteMd(original);
+      final rows = noteMdToDraftRows(md);
+      expect(rows[0], ['t', '看这个\n第二行']);
+      expect(rows[1], ['i', '$appDir/p.jpg', '含]转义']);
+      expect(rows[2], ['a', '$appDir/r.m4a', '会议录音']);
+      expect(rows[3], ['v', '$appDir/v.mp4', '视频']);
+      // 段语义往返：媒体行回到媒体段，文本段经编辑器 seed/serialize 逆变换后等价
+      final roundTripped = rowsToSegments(rows);
+      expect(noteHasMedia(roundTripped), isTrue);
+      expect(
+        serializeNoteMd(roundTripped),
+        serializeNoteMd([
+          const NoteTextSegment('看这个\n第二行'),
+          NoteImageSegment('$appDir/p.jpg', alt: '含]转义'),
+          const NoteAudioSegment('$appDir/r.m4a', label: '会议录音'),
+          const NoteVideoSegment('$appDir/v.mp4'),
+        ]),
+      );
+    });
+
+    test('标题/行内样式行保留原文（seed/serialize 由编辑器 codec 逆变换）', () {
+      final rows = noteMdToDraftRows('# 标题\n\n正文有 **粗体**');
+      expect(rows, [
+        ['t', '# 标题'],
+        ['t', '正文有 **粗体**'],
+      ]);
+    });
+
+    test('列表/引用/代码块/分隔线整块字面保留（段模型不认识的结构）', () {
+      const md = '- 第一项\n- 第二项\n\n> 引用一句\n\n```dart\ncode()\n```\n\n---';
+      final rows = noteMdToDraftRows(md);
+      expect(rows, [
+        ['t', '- 第一项\n- 第二项'],
+        ['t', '> 引用一句'],
+        ['t', '```dart\ncode()\n```'],
+        ['t', '---'],
+      ]);
+      // 字面保留 = 保存原样回写
+      final segments = rowsToSegments(rows);
+      expect(serializeNoteMd(segments), md);
+    });
+
+    test('外链图片行/纯链接行不误吞（非 local:// 保持文本段）', () {
+      final rows = noteMdToDraftRows('![封面](https://example.com/a.png)\n\n[某站](https://b.site)');
+      expect(rows, [
+        ['t', '![封面](https://example.com/a.png)'],
+        ['t', '[某站](https://b.site)'],
+      ]);
+    });
+
+    test('待办序列化产物按字面文本段保留（查看态仍渲染勾选行）', () {
+      final md = serializeNoteMd([const NoteTextSegment('买牛奶\n取快递')], todoMode: true);
+      expect(md, '- [ ] 买牛奶\n- [ ] 取快递');
+      final rows = noteMdToDraftRows(md);
+      expect(rows, [
+        ['t', '- [ ] 买牛奶\n- [ ] 取快递'],
+      ]);
+    });
+
+    test('空 md → 空行表（编辑器起手一段文本）', () {
+      expect(noteMdToDraftRows(''), isEmpty);
+      expect(noteMdToDraftRows('  \n\n  '), isEmpty);
     });
   });
 }

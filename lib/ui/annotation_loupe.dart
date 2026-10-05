@@ -12,6 +12,11 @@ import '../render/annotation_painter.dart';
 /// 多余图层全是噪音），经 [focusIds] 过滤。
 ///
 /// 边缘翻转（§5.1）：默认在手指斜上方，靠近顶/左边缘自动翻转到下方/右侧。
+///
+/// 图上叠加色声明（勿主题化）：镜框白边 `0xCCFFFFFF` / 投影黑 `0x66000000` /
+/// 准星白与 annotation_painter 同一对比度系统——底是任意用户图片而非
+/// App 表面，白+黑投影对任意底图成立；主题暖白/灰为暗室底设计，放到
+/// 白底截图会隐身。口径 SSOT 见 render/annotation_painter.dart 顶部声明。
 class AnnotationLoupe extends StatelessWidget {
   const AnnotationLoupe({
     super.key,

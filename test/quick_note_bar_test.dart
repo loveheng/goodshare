@@ -6,8 +6,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:goodshare/action/item_action_handler.dart';
 import 'package:goodshare/data/db.dart';
 import 'package:goodshare/data/repository.dart';
+import 'package:goodshare/models/draft_store.dart';
+import 'package:goodshare/ui/format_dial.dart';
 import 'package:goodshare/share/text_collector.dart';
 import 'package:goodshare/ui/quick_note_bar.dart';
+import 'package:goodshare/ui/video_cover.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -25,13 +28,6 @@ void main() {
     TestWidgetsFlutterBinding.ensureInitialized();
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(const MethodChannel('com.llfbandit.record/messages'),
-            (call) async => null);
-    // ffmpeg_kit 的会话事件通道在测试环境无平台实现，其 listen 的
-    // MissingPluginException 逃逸出 probeVideoDurationMs 的 try/catch
-    // （异步事件回调抛出），mock 掉保证视频门槛用例只走纯 Dart 分支
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(
-            const MethodChannel('flutter.arthenica.com/ffmpeg_kit_event'),
             (call) async => null);
   });
 
@@ -51,7 +47,11 @@ void main() {
               right: 0,
               top: 0,
               bottom: 0,
-              child: QuickNoteBar(collector: collector, handler: handler),
+              child: QuickNoteBar(
+                collector: collector,
+                handler: handler,
+                draftPersistencer: InMemoryDraftStore(),
+              ),
             ),
           ],
         ),
@@ -108,37 +108,157 @@ void main() {
     expect(find.text('保存'), findsOneWidget, reason: '上滑过阈值应完成展开');
   });
 
-  testWidgets('标题按钮：当前行加 ## 前缀，再点去除', (tester) async {
+  // 速记转盘（2026-10-03 拍板）：旧胶囊+小横条退役，换 48dp「Tt」圆钮 +
+  // 三级径向盘（挂载与交互见 format_dial.dart）。编辑区全程无 md 标记。
+  testWidgets('圆钮：点按展开转盘，再点 hub 收合（显式 toggle）', (tester) async {
     await pumpShell(tester);
-    void probe(String tag) {
-      // ignore: avoid_print
-      print('PROBE[$tag] tf=${find.byType(TextField).evaluate().length} '
-          'save=${find.text('保存').evaluate().length} '
-          'peek=${find.text('记点什么…').evaluate().length}');
-    }
-    probe('pump');
     await expandViaPeek(tester);
-    probe('after-expand');
-    await tester.enterText(find.byType(TextField), '购物清单');
-    await tester.tap(find.byIcon(Icons.title));
+    await tester.enterText(find.byType(TextField), '内容');
+    expect(find.text('Tt'), findsOneWidget, reason: '圆钮常驻可见');
+    expect(find.text('H'), findsNothing);
+    await tester.tap(find.text('Tt'));
     await tester.pumpAndSettle();
-    probe('after-title-tap');
-    final ctrl = tester.widget<TextField>(find.byType(TextField)).controller!;
-    expect(ctrl.text, '## 购物清单');
-    await tester.tap(find.byIcon(Icons.title));
+    // 二级 3 扇区：业界标识 H/Aa/BIU（「Aa」含 hub 盘面字两处）
+    expect(find.text('H'), findsOneWidget);
+    expect(find.text('Aa'), findsWidgets);
+    expect(find.text('BIU'), findsOneWidget);
+    // 展开期 hub 即格式按钮本体：原 Tt 钮隐藏（防双显重叠）
+    expect(find.text('Tt'), findsNothing, reason: '展开期原钮隐藏');
+    // 显式 toggle：点 hub（内整圆=原死区语义，根态松手=收合）
+    final hub =
+        tester.getRect(find.byType(FormatDial)).bottomRight -
+        const Offset(kDialHubRadius, kDialHubRadius);
+    await tester.tapAt(hub);
     await tester.pumpAndSettle();
-    expect(ctrl.text, '购物清单');
+    expect(find.text('H'), findsNothing, reason: '点 hub 应收合');
+    expect(find.text('Tt'), findsOneWidget, reason: '收合后原钮恢复');
   });
 
-  testWidgets('粗体按钮：无选中插入 **** 且光标居中', (tester) async {
+  /// 转盘拖选手势：在 [FormatDial] 角锚坐标系里按下-移动-松手。面板矩形
+  /// 已为 hub 完整圆外扩 hub 半径（锚点内收），扇心=右下角点向面板内收 (hubR,hubR)。
+  Future<void> dialDrag(
+    WidgetTester tester, {
+    required Offset at,
+    Offset? move,
+  }) async {
+    final origin =
+        tester.getRect(find.byType(FormatDial)).bottomRight -
+        const Offset(kDialHubRadius, kDialHubRadius);
+    final g = await tester.startGesture(origin + at);
+    await tester.pump();
+    if (move != null) {
+      await g.moveBy(move - at);
+      await tester.pump();
+    }
+    await g.up();
+    await tester.pump();
+  }
+
+  testWidgets('转盘选「一级标题」：当前行直设档位，编辑区无 # 前缀，角标 H1',
+      (tester) async {
+    await pumpShell(tester);
+    await expandViaPeek(tester);
+    await tester.enterText(find.byType(TextField), '购物清单');
+    await tester.tap(find.text('Tt'));
+    await tester.pumpAndSettle();
+    // 松手即选：按住「标题」扇区（idx0 中角 -165°、中径 70）扇出三级，
+    // 再滑 H1（叶子 idx0 中角 -157.5°、中径 122）
+    await dialDrag(
+      tester,
+      at: const Offset(-48.3, -12.9),
+      move: const Offset(-48.3, -12.9),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('H1'), findsOneWidget, reason: '三级扇出 H1/H2');
+    await dialDrag(tester, at: const Offset(-85.9, -35.6));
+    await tester.pumpAndSettle();
+    final ctrl = tester.widget<TextField>(find.byType(TextField)).controller!;
+    expect(ctrl.text, '购物清单', reason: '所见即所得：编辑区无 # 前缀');
+    expect(find.text('H1'), findsOneWidget, reason: '圆钮角标外显当前档位');
+  });
+
+  testWidgets('先选「加粗」后打：文字无 ** 标记，角标 B 外显', (tester) async {
+    await pumpShell(tester);
+    await expandViaPeek(tester);
+    // 先有激活段（_activeText 非空面板才挂载），再开转盘
+    await tester.enterText(find.byType(TextField), 'abc');
+    await tester.tap(find.text('Tt'));
+    await tester.pumpAndSettle();
+    // 按住「行内」扇区（idx2 中角 -105°、中径 70）期间 pump 150ms 触发
+    // hover 联动扇出，松手保持展开（与 format_dial_test 稳定手势同款）
+    final origin =
+        tester.getRect(find.byType(FormatDial)).bottomRight -
+        const Offset(kDialHubRadius, kDialHubRadius);
+    final g = await tester.startGesture(origin + const Offset(-12.9, -48.3));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 150));
+    await g.up();
+    await tester.pumpAndSettle();
+    // 行内子盘 B（idx0 中角 -157.5°、中径 122）松手即选
+    await dialDrag(tester, at: const Offset(-85.9, -35.6));
+    await tester.pumpAndSettle();
+    expect(find.text('B'), findsOneWidget, reason: '圆钮角标外显激活 mark');
+    await tester.enterText(find.byType(TextField), '重点');
+    final ctrl = tester.widget<TextField>(find.byType(TextField)).controller!;
+    expect(ctrl.text, '重点', reason: '所见即所得：编辑区无 ** 标记');
+  });
+
+  testWidgets('行内单选制：B 激活中再选 I → I 替换 B（不做复合选择）',
+      (tester) async {
     await pumpShell(tester);
     await expandViaPeek(tester);
     await tester.enterText(find.byType(TextField), 'abc');
-    await tester.tap(find.byIcon(Icons.format_bold));
+    await tester.tap(find.text('Tt'));
     await tester.pumpAndSettle();
-    final ctrl = tester.widget<TextField>(find.byType(TextField)).controller!;
-    expect(ctrl.text, 'abc****');
-    expect(ctrl.selection.baseOffset, 5, reason: '光标应落在 ** 中间');
+    // 激活 B（行内子盘 idx0，与上加粗用例同手势）
+    final origin =
+        tester.getRect(find.byType(FormatDial)).bottomRight -
+        const Offset(kDialHubRadius, kDialHubRadius);
+    final g = await tester.startGesture(origin + const Offset(-12.9, -48.3));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 150));
+    await g.up();
+    await tester.pumpAndSettle();
+    await dialDrag(tester, at: const Offset(-85.9, -35.6)); // B 松手挂起
+    await tester.pumpAndSettle(); // 倒计时走完提交并闭合
+    expect(find.text('B'), findsOneWidget, reason: 'B 已激活');
+    // 再开转盘选 I：单选制下应替换 B 而非叠加
+    await tester.tap(find.text('Tt'));
+    await tester.pumpAndSettle();
+    final origin2 =
+        tester.getRect(find.byType(FormatDial)).bottomRight -
+        const Offset(kDialHubRadius, kDialHubRadius);
+    final g2 = await tester.startGesture(origin2 + const Offset(-12.9, -48.3));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 150));
+    await g2.up();
+    await tester.pumpAndSettle();
+    // 行内子盘 I（idx1 中角 -135°、中径 122）
+    await dialDrag(tester, at: const Offset(-86.3, -86.3));
+    await tester.pumpAndSettle();
+    expect(find.text('I'), findsOneWidget, reason: 'I 替换生效，角标外显');
+    expect(find.text('B'), findsNothing, reason: '单选制：B 被替换熄灭，不叠加');
+  });
+
+  testWidgets('失焦自动闭合：失焦 1.5s 收合，回焦撤销（替代点空白命中层）', (tester) async {
+    await pumpShell(tester);
+    await expandViaPeek(tester);
+    await tester.enterText(find.byType(TextField), '失焦');
+    await tester.tap(find.text('Tt'));
+    await tester.pumpAndSettle();
+    expect(find.text('H'), findsOneWidget, reason: '转盘已展开');
+    // 失焦（清全场焦点）→ 1.5s 内回焦 = 撤销，超时 = 自动收合
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 800));
+    expect(find.text('H'), findsOneWidget, reason: '延时窗内未闭合');
+    await tester.enterText(find.byType(TextField), '回焦');
+    await tester.pump(const Duration(milliseconds: 1200));
+    expect(find.text('H'), findsOneWidget, reason: '回焦撤销延时器');
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1600));
+    expect(find.text('H'), findsNothing, reason: '失焦 1.5s 后自动闭合');
   });
 
   testWidgets('保存路由：纯文本走 collectText，保存成功清空内容区（可连续记）', (tester) async {
@@ -284,7 +404,8 @@ void main() {
       await tester.pump(const Duration(milliseconds: 50));
     }
     expect(tester.takeException(), isNull);
-    expect(find.text('视频（点按预览，保存后详情可播放）'), findsOneWidget,
+    // 视频卡=原生提帧封面组件（测试环境无平台实现→null 回落占位，组件仍在）
+    expect(find.byType(VideoCoverImage), findsOneWidget,
         reason: '校验通过的视频必须插入视频卡');
   });
 }

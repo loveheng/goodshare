@@ -17,6 +17,19 @@ import 'package:flutter/painting.dart' as pt;
 import '../models/annotation.dart';
 import '../models/annotation_geometry.dart';
 
+/// 图上叠加 chrome 色（锚点描边）：深墨蓝黑，与主题 `surfaceContainer`
+/// 卡片色同族——**刻意取同值但必须各自声明**：本文件是三消费方纯函数
+/// （画布/loupe/导出合成），无 BuildContext 拿不到 Theme，改主题时此处
+/// 需人工同步（见下方「图上叠加色」声明）。
+const ui.Color _kAnchorStroke = ui.Color(0xFF1C1F27);
+
+/// **图上叠加色声明（勿主题化）**：本文件的纯白/半透明黑系（0xFFFFFFFF /
+/// 0xCCFFFFFF / 0x99000000 等）是标注画布的「墨水」——底是任意用户图片
+/// 而非 App 表面，白+黑投影是对任意底图成立的最大对比组合（微信截图
+/// 标注 / iOS 标注 / Figma 同口径）。主题 `onSurface` 暖白、`onSurfaceVariant`
+/// 灰是为暗室底设计的，放到白底截图会隐身——mymind 基准管 App 表面，
+/// 管不到画布墨水，故不接主题、不做调色板入参。
+
 /// 把全部标注画上 [canvas]（像素坐标 = 归一化 × size）。
 ///
 /// [onlyIds]：非空时只画这些 ID（loupe 镜中「只渲染当前操作标注」用）；
@@ -160,7 +173,7 @@ void _paintSelectionOverlay(
       c,
       isHot ? 10 : 5,
       ui.Paint()
-        ..color = const ui.Color(0xFF1C1F27)
+        ..color = _kAnchorStroke
         ..style = ui.PaintingStyle.stroke
         ..strokeWidth = 1.5,
     );

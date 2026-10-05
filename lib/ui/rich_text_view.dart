@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../ai/capability.dart';
 import '../doc/rich_text.dart';
@@ -65,8 +66,7 @@ class RichTextView extends StatefulWidget {
 List<RichBlock> richBlocksOf(
   String markdown, [
   RichTextParser parser = const MarkdownSubsetParser(),
-]) =>
-    parser.parse(markdown);
+]) => parser.parse(markdown);
 
 // ---------- Phase 3：长文 Isolate 异步解析 ----------
 
@@ -180,105 +180,232 @@ Widget buildRichBlock(
     // 三级能力页（detail-two-zone.md §5.1 二次改版拍板——常驻 ✨ 入口密度
     // = 块密度，一行文本一个图标），与系统选字长按互不抢占。
     HeadingBlock(:final level, :final inline) => wrapWithCapabilityHost(
-        Text.rich(
-          _spans(context, inline, _headingStyle(theme, level, serif)),
-        ),
-        kind: BlockKind.text,
-        anchorLabel: '文本块',
-      ),
+      Text.rich(_spans(context, inline, _headingStyle(theme, level, serif))),
+      kind: BlockKind.text,
+      anchorLabel: '文本块',
+    ),
     ParagraphBlock(:final inline) => wrapWithCapabilityHost(
-        Text.rich(
-          _spans(context, inline, _bodyStyle(theme, serif)),
-        ),
-        kind: BlockKind.text,
-        anchorLabel: '文本块',
-      ),
+      Text.rich(_spans(context, inline, _bodyStyle(theme, serif))),
+      kind: BlockKind.text,
+      anchorLabel: '文本块',
+    ),
     QuoteBlock(:final children) => Container(
-        decoration: BoxDecoration(
-          border: Border(
-            left: BorderSide(width: 3, color: scheme.outlineVariant),
-          ),
+      decoration: BoxDecoration(
+        border: Border(
+          left: BorderSide(width: 3, color: scheme.outlineVariant),
         ),
-        padding: const EdgeInsets.only(left: Insets.md),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            for (final c in children) buildRichBlock(context, c, serif: serif),
-          ],
-        ),
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(Radii.sm),
       ),
-    CodeBlock(:final code) => wrapWithCapabilityHost(
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(Insets.md),
-          decoration: BoxDecoration(
-            color: scheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(Radii.md),
-          ),
-          child: Text(
-            code,
-            style: theme.textTheme.bodySmall?.copyWith(
-              fontFamily: 'monospace',
-              height: 1.5,
-            ),
-          ),
-        ),
-        kind: BlockKind.text,
-        anchorLabel: '代码块',
+      padding: const EdgeInsets.only(left: Insets.md, top: Insets.xs, bottom: Insets.xs),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final c in children) buildRichBlock(context, c, serif: serif),
+        ],
       ),
+    ),
+    CodeBlock(:final code, :final language) => wrapWithCapabilityHost(
+      _buildCodeBlock(context, code, language, scheme),
+      kind: BlockKind.text,
+      anchorLabel: '代码块',
+    ),
     DividerBlock() => Divider(height: 1, color: scheme.outlineVariant),
     ListBlock(:final items, :final ordered) => wrapWithCapabilityHost(
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            for (final (i, item) in items.indexed)
-              Padding(
-                padding: const EdgeInsets.only(bottom: Insets.xs),
-                child: _buildListItem(
-                  context,
-                  item,
-                  ordered ? '${i + 1}.' : '•',
-                  serif,
-                  onTodoToggle,
-                  todoDone,
-                ),
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final (i, item) in items.indexed)
+            Padding(
+              padding: const EdgeInsets.only(bottom: Insets.xs),
+              child: _buildListItem(
+                context,
+                item,
+                ordered ? '${i + 1}.' : '•',
+                serif,
+                onTodoToggle,
+                todoDone,
               ),
-          ],
-        ),
-        kind: BlockKind.text,
-        anchorLabel: '列表块',
+            ),
+        ],
       ),
+      kind: BlockKind.text,
+      anchorLabel: '列表块',
+    ),
     // 行内媒体块（SSOT：docs/design/rich-text-media.md §3）；QuoteBlock 子块
     // 经同一 buildRichBlock 递归，引用内媒体块照常渲染。
     // 媒体块统一包 BlockCapabilityHost：块本体点按=播放/预览不动，长按=
     // 三级能力页（无常驻图标，阅读态零 AI；detail-two-zone.md §5.1 拍板）。
     ImageBlock b => wrapWithCapabilityHost(
-        InlineMediaImage(block: b),
-        kind: BlockKind.image,
-        anchorLabel: '图片块',
-        trigger: BlockCapabilityTrigger.longPress,
-      ),
+      InlineMediaImage(block: b),
+      kind: BlockKind.image,
+      anchorLabel: '图片块',
+      trigger: BlockCapabilityTrigger.longPress,
+      // 行内块 key（块附件通道 §2.1）：媒体行 url 逐字即 key，长按进工作流页
+      blockKey: b.url,
+      // 预览激活源（能力页点预览全屏查看）：local:// 相对标记由查看器侧
+      // 统一解析；http(s) 走网络图出口。
+      previewFile: _isLocalMediaUrl(b.url) ? b.url : null,
+      previewUrl: _isLocalMediaUrl(b.url) ? null : b.url,
+    ),
     AudioBlock b => wrapWithCapabilityHost(
-        InlineMediaAudio(block: b),
-        kind: BlockKind.audio,
-        anchorLabel: '音频块',
-        trigger: BlockCapabilityTrigger.longPress,
-      ),
+      InlineMediaAudio(block: b),
+      kind: BlockKind.audio,
+      anchorLabel: '音频块',
+      trigger: BlockCapabilityTrigger.longPress,
+      blockKey: b.url,
+    ),
     VideoBlock b => wrapWithCapabilityHost(
-        InlineMediaVideo(block: b),
-        kind: BlockKind.video,
-        anchorLabel: '视频块',
-        trigger: BlockCapabilityTrigger.longPress,
+      // itemId 从 SubtitleScope 取（详情页注入；无 scope = ''，播放器无字幕轨）
+      InlineMediaVideo(
+        block: b,
+        itemId: SubtitleScope.maybeOf(context)?.itemId ?? '',
       ),
+      kind: BlockKind.video,
+      anchorLabel: '视频块',
+      trigger: BlockCapabilityTrigger.longPress,
+      blockKey: b.url,
+    ),
+    TableBlock(:final header, :final rows, :final align) => wrapWithCapabilityHost(
+      SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Table(
+          border: TableBorder.all(color: scheme.outlineVariant),
+          defaultColumnWidth: const IntrinsicColumnWidth(),
+          children: [
+            TableRow(
+              children: [
+                for (final (i, h) in header.indexed)
+                  _tableCell(context, h, bold: true, align: align?[i]),
+              ],
+            ),
+            for (final (ri, r) in rows.indexed)
+              TableRow(
+                children: [
+                  for (final (i, c) in r.indexed)
+                    _tableCell(context, c, align: align?[i], zebra: ri.isOdd),
+                ],
+              ),
+          ],
+        ),
+      ),
+      kind: BlockKind.text,
+      anchorLabel: '表格块',
+    ),
   };
 }
 
+/// 表格单元格：渲染层对单元格做行内解析（§3.5 / §5.4「表格内行内格式仍解析」），
+/// 存储层单元格仍是纯文本字面（避免 `|` 转义复杂度，往返幂等）。
+Widget _tableCell(
+  BuildContext context,
+  String text, {
+  bool bold = false,
+  bool zebra = false,
+  TableAlign? align,
+}) {
+  final alignX = switch (align) {
+    TableAlign.center => Alignment.center,
+    TableAlign.right => Alignment.centerRight,
+    _ => Alignment.centerLeft,
+  };
+  final theme = Theme.of(context);
+  final scheme = theme.colorScheme;
+  final base = theme.textTheme.bodySmall ?? const TextStyle();
+  final cellStyle = bold ? base.copyWith(fontWeight: FontWeight.w600) : base;
+  return Container(
+    padding: const EdgeInsets.all(Insets.sm),
+    decoration: zebra ? BoxDecoration(color: scheme.surfaceContainerLow) : null,
+    alignment: alignX,
+    child: Text.rich(_spans(context, MarkdownSubsetParser().parseInline(text), cellStyle)),
+  );
+}
+
+/// 代码块渲染：语言徽标 + 一键复制（复制后短暂显示对勾反馈）。
+Widget _buildCodeBlock(
+  BuildContext context,
+  String code,
+  String? language,
+  ColorScheme scheme,
+) {
+  var copied = false;
+  final theme = Theme.of(context);
+  return StatefulBuilder(
+    builder: (context, setState) => Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(Radii.md),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(
+              horizontal: Insets.md,
+              vertical: Insets.xs,
+            ),
+            decoration: BoxDecoration(
+              border: Border(
+                bottom: BorderSide(color: scheme.outlineVariant),
+              ),
+            ),
+            child: Row(
+              children: [
+                if (language != null)
+                  Text(
+                    language,
+                    style: theme.textTheme.labelSmall
+                        ?.copyWith(color: scheme.onSurfaceVariant),
+                  ),
+                const Spacer(),
+                IconButton(
+                  icon: Icon(
+                    copied ? Icons.check : Icons.copy,
+                    size: 18,
+                  ),
+                  color: scheme.onSurfaceVariant,
+                  tooltip: '复制代码',
+                  constraints: const BoxConstraints(),
+                  padding: EdgeInsets.zero,
+                  splashRadius: 18,
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: code));
+                    setState(() => copied = true);
+                    Future.delayed(const Duration(seconds: 1),
+                        () => setState(() => copied = false));
+                  },
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(Insets.md),
+            child: Text(
+              code,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontFamily: 'monospace',
+                height: 1.5,
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+/// 本地媒体口径（与 InlineMediaImage._isLocal 同判定）：非 http(s) 一律按
+/// 本地渲染（便签 `local://` 相对标记 / 历史绝对路径）。
+bool _isLocalMediaUrl(String url) =>
+    !url.startsWith('http://') && !url.startsWith('https://');
+
 double _gapAfter(RichBlock b) => switch (b) {
-      HeadingBlock() => Insets.lg,
-      DividerBlock() => Insets.lg,
-      CodeBlock() => Insets.lg,
-      _ => Insets.md,
-    };
+  HeadingBlock() => Insets.lg,
+  DividerBlock() => Insets.lg,
+  CodeBlock() => Insets.lg,
+  _ => Insets.md,
+};
 
 Widget _buildListItem(
   BuildContext context,
@@ -303,10 +430,13 @@ Widget _buildListItem(
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(
-              done ? Icons.check_box : Icons.check_box_outline_blank,
-              size: 20,
-              color: done ? scheme.primary : scheme.onSurfaceVariant,
+            // 待办复选框：一期只读（M3 Checkbox 紧凑形态，onChanged: null 点击不响应；
+            // 勾选状态随文本渲染，打勾反向更新原文二期再做）。
+            Checkbox(
+              value: done,
+              onChanged: null,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              visualDensity: VisualDensity.compact,
             ),
             const SizedBox(width: Insets.sm),
             Expanded(
@@ -334,7 +464,10 @@ Widget _buildListItem(
         width: 20,
         child: Text(
           marker,
-          style: _bodyStyle(theme, serif).copyWith(color: scheme.onSurfaceVariant),
+          style: _bodyStyle(
+            theme,
+            serif,
+          ).copyWith(color: scheme.onSurfaceVariant),
         ),
       ),
       Expanded(
@@ -375,34 +508,91 @@ TextStyle _headingStyle(ThemeData theme, int level, bool serif) {
 TextSpan _spans(BuildContext context, List<InlineNode> nodes, TextStyle base) =>
     TextSpan(children: [for (final n in nodes) _span(context, n, base)]);
 
-TextSpan _span(BuildContext context, InlineNode node, TextStyle base) {
+InlineSpan _span(BuildContext context, InlineNode node, TextStyle base) {
   final scheme = Theme.of(context).colorScheme;
   return switch (node) {
     InlineText(:final text) => TextSpan(text: text, style: base),
     InlineStrong(:final children) => TextSpan(
-        children: [for (final c in children) _span(context, c, base)],
-        style: base.copyWith(fontWeight: FontWeight.w700),
-      ),
+      children: [for (final c in children) _span(context, c, base)],
+      style: base.copyWith(fontWeight: FontWeight.w700),
+    ),
     InlineEm(:final children) => TextSpan(
-        children: [for (final c in children) _span(context, c, base)],
-        style: base.copyWith(fontStyle: FontStyle.italic),
+      children: [for (final c in children) _span(context, c, base)],
+      style: base.copyWith(fontStyle: FontStyle.italic),
+    ),
+    // 真机实证（2026-10-04，CPH2767/Android 16）：decoration 挂父 span 不落笔，
+    // 编辑态（span_text_controller 叶 span 直挂）才画线——装饰样式必须下发到叶，
+    // 让携带文字的叶 span 直接持有 decoration（与编辑态同构）；父 span 保留装饰
+    // 对支持的引擎无害。decorationColor 随 base.color 显式下发（null 色装饰
+    // 在部分引擎路径不绘制）；strikethrough 同机制同改。
+    InlineUnderline(:final children) => TextSpan(
+      children: [
+        for (final c in children)
+          _span(
+            context,
+            c,
+            base.copyWith(
+              decoration: TextDecoration.underline,
+              decorationColor: base.color,
+            ),
+          ),
+      ],
+      style: base.copyWith(
+        decoration: TextDecoration.underline,
+        decorationColor: base.color,
       ),
-    InlineCode(:final code) => TextSpan(
-        text: code,
-        style: base.copyWith(
-          fontFamily: 'monospace',
-          backgroundColor: scheme.surfaceContainerHighest,
+    ),
+    InlineStrikethrough(:final children) => TextSpan(
+      children: [
+        for (final c in children)
+          _span(
+            context,
+            c,
+            base.copyWith(
+              decoration: TextDecoration.lineThrough,
+              decorationColor: base.color,
+            ),
+          ),
+      ],
+      style: base.copyWith(
+        decoration: TextDecoration.lineThrough,
+        decorationColor: base.color,
+      ),
+    ),
+    InlineHighlight(:final children) => TextSpan(
+      children: [for (final c in children) _span(context, c, base)],
+      style: base.copyWith(
+        backgroundColor: scheme.secondaryContainer.withValues(alpha: 0.5),
+      ),
+    ),
+    // 行内码：浅色圆角 Tag（§3.5 定标：surfaceContainerHighest 背景 + 圆角 4dp +
+    // 水平内边距 3dp，monospace，主题色 primary 文字突出专业感）；无 tap，区别于链接。
+    InlineCode(:final code) => WidgetSpan(
+      alignment: PlaceholderAlignment.middle,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(
+          code,
+          style: base.copyWith(
+            fontFamily: 'monospace',
+            color: scheme.primary,
+          ),
         ),
       ),
+    ),
     InlineLink(:final label, :final url) => TextSpan(
-        text: label,
-        style: base.copyWith(
-          color: scheme.primary,
-          decoration: TextDecoration.underline,
-        ),
-        // 默认不可点击（不引 url_launcher）；URL 保留在语义里供后续启用
-        semanticsLabel: url.isEmpty ? label : '$label（$url）',
+      text: label,
+      style: base.copyWith(
+        color: scheme.primary,
+        decoration: TextDecoration.underline,
       ),
+      // 默认不可点击（不引 url_launcher）；URL 保留在语义里供后续启用
+      semanticsLabel: url.isEmpty ? label : '$label（$url）',
+    ),
   };
 }
 

@@ -41,6 +41,16 @@ class InlineEm extends InlineNode {
   final List<InlineNode> children;
 }
 
+/// 下划线（`<u>` 标签）。
+///
+/// Markdown 标准无下划线语法——`<u>` 是 md 生态事实标准（HTML 内嵌），桌面端
+/// 多数渲染器兼容；解析/渲染/序列化三出口同文件同源（block-format-input.md §2）。
+class InlineUnderline extends InlineNode {
+  const InlineUnderline(this.children);
+
+  final List<InlineNode> children;
+}
+
 /// 行内代码。
 class InlineCode extends InlineNode {
   const InlineCode(this.code);
@@ -50,11 +60,29 @@ class InlineCode extends InlineNode {
 
 /// 链接（`[文字](url)`）。**默认不可点击**（不引 `url_launcher`），
 /// 仅以链接样式呈现。
+///
+/// [autolink] = true 表示由自动链接（裸 `url` / `www.` / `mailto:`，见 §3.6 ⑤）
+/// 识别而来：label 即 url，序列化回裸 url（不包 `<>` / 不包 `[]()`）。
 class InlineLink extends InlineNode {
-  const InlineLink({required this.label, required this.url});
+  const InlineLink({required this.label, required this.url, this.autolink = false});
 
   final String label;
   final String url;
+  final bool autolink;
+}
+
+/// 删除线（~~text~~，GFM 官方扩展，§3.6 收编）。
+class InlineStrikethrough extends InlineNode {
+  const InlineStrikethrough(this.children);
+
+  final List<InlineNode> children;
+}
+
+/// 高亮（==text==，Pandoc/Obsidian 事实标准，§3.6 收编）。
+class InlineHighlight extends InlineNode {
+  const InlineHighlight(this.children);
+
+  final List<InlineNode> children;
 }
 
 // ---------- 块级 ----------
@@ -77,6 +105,20 @@ class ParagraphBlock extends RichBlock {
   const ParagraphBlock(this.inline);
 
   final List<InlineNode> inline;
+}
+
+/// 表格列对齐（GFM `:---` / `:--:` / `---:`）。
+enum TableAlign { left, center, right }
+
+/// 表格块（GFM 官方扩展，§3.6 ④）。单元格以**纯文本字面**存储（避免单元格内
+/// `|` 转义复杂度，列为后续项），渲染层对单元格做行内解析（§3.5 / §5.4
+/// 「表格内行内格式仍解析」），故往返幂等且 UI 无残壳。
+class TableBlock extends RichBlock {
+  const TableBlock({required this.header, required this.rows, this.align});
+
+  final List<String> header;
+  final List<List<String>> rows;
+  final List<TableAlign>? align;
 }
 
 /// 引用块（内部递归解析，支持引用内多段）。
@@ -197,6 +239,103 @@ Set<String> lostMediaUrls(String originalMd, String incomingMd) {
   return original.difference(mediaUrlsOf(incomingMd));
 }
 
+/// AI 写入归一结果（rich-text-gfm.md §2 层2 语义映射 + R1 note 载体）。
+///
+/// [markdown] = 归一后（子集内、无残壳）的 md；[notes] = 本次发生的降级映射
+/// 说明，供命令返回体/MCP 响应带 R1 note 回传 AI 可感知（映射即降级须告知）。
+class AiNormalizeResult {
+  const AiNormalizeResult(this.markdown, this.notes);
+
+  final String markdown;
+  final List<String> notes;
+}
+
+/// 检测子集外、会被解析器降级为段落的 GFM 语法（仅取低误报信号）：
+/// 块级数学式 `$$…$$`、行内 HTML 标签 `<…>`（跳过敏感代码围栏）。
+/// 命中即说明有内容会被「降级」而非「丢字」——用于 R1 告知 AI。
+bool _hasUnsupportedGfm(String markdown) {
+  final lines = markdown.split('\n');
+  var inFence = false;
+  for (final line in lines) {
+    if (line.trim().startsWith('```') || line.trim().startsWith('~~~')) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    if (line.contains(RegExp(r'\$\$'))) return true;
+    // 排除 GFM 角括号自动链接 <https://…>/<mailto:…>，避免误报为不支持 HTML
+    if (RegExp(r'<(?!https?://|mailto:)[a-zA-Z/!][^>\n]*>').hasMatch(line)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// AI 写入归一层（rich-text-gfm.md §2 层2，命令入口唯一收口）：对**全集外**语法
+/// 做语义映射（找最接近的子集形式降级，不做「剥成纯文本」），并集外降级进
+/// [AiNormalizeResult.notes] 供 R1 告知；**全集内**（表格/高亮/删除线/自动链接/
+/// R3 引用链接，`MarkdownSubsetParser` 已零映射零残壳）原样透传，不改动一字。
+///
+/// 当前全集外映射：
+/// 1. 脚注 `[^id]` + 定义 `[^id]: text`（含后续缩进续行）→ 括号注 `（text）`，
+///    定义行（含续行）作 meta 剥离；R1 note「脚注已转为括号注」。
+/// 2. 子集外结构（数学式/HTML 标签等）检测命中 → R1 note 告知「已降级为段落」。
+/// 未定义脚注 `[^id]` 留字面 + note「存在未定义脚注标记，已保留原样」
+/// （禁止静默丢格式）。其余未知结构由解析器降级为段落（不丢内容），不在本层二次处理。
+AiNormalizeResult normalizeAiMarkdown(String markdown) {
+  final notes = <String>[];
+
+  // 脚注定义收集（行首 `^\[\^id\]: text`，含后续缩进续行）
+  final defRe = RegExp(r'^\s*\[\^([^\]]+)\]:\s*(.*)$');
+  final defs = <String, String>{};
+  final removed = <int>{};
+  final lines = markdown.split('\n');
+  for (var i = 0; i < lines.length; i++) {
+    final m = defRe.firstMatch(lines[i]);
+    if (m == null) continue;
+    final id = m.group(1)!.toLowerCase();
+    final buf = [m.group(2)!.trim()];
+    removed.add(i);
+    // 续行：后续以空白缩进的行并入同一脚注正文（GFM 脚注续行约定）
+    var j = i + 1;
+    while (j < lines.length && RegExp(r'^[ \t]+\S').hasMatch(lines[j])) {
+      buf.add(lines[j].trim());
+      removed.add(j);
+      j++;
+    }
+    defs[id] = buf.join(' ');
+    i = j - 1; // 跳过已消费续行
+  }
+
+  // 剥离定义行 + 续行；行尾换行保留为空行，解析器忽略空行，不丢相邻内容
+  final outLines = <String>[
+    for (var i = 0; i < lines.length; i++)
+      if (!removed.contains(i)) lines[i],
+  ];
+  var out = outLines.join('\n');
+
+  // 内联 `[^id]` → `（text）`；未定义则留字面并记 orphan（禁止静默丢格式）
+  var orphan = false;
+  out = out.replaceAllMapped(RegExp(r'\[\^([^\]]+)\]'), (m) {
+    final text = defs[m.group(1)!.toLowerCase()];
+    if (text == null) {
+      orphan = true;
+      return m.group(0)!;
+    }
+    return '（$text）';
+  });
+
+  // 子集外结构降级告知（R1）
+  if (_hasUnsupportedGfm(out)) {
+    notes.add('检测到未支持的 GFM 语法（如数学式、HTML 标签），已降级为普通段落；'
+        '建议改用纯文本、表格或列表等已支持格式');
+  }
+
+  if (defs.isNotEmpty) notes.add('脚注已转为括号注');
+  if (orphan) notes.add('存在未定义脚注标记，已保留原样');
+  return AiNormalizeResult(out, notes);
+}
+
 /// 行内节点 → 纯文本（待办回调取文本、复制、检索预览用）。
 ///
 /// 只取「人读到的字」，不含标记符号。
@@ -204,8 +343,11 @@ String inlineToPlain(List<InlineNode> nodes) => nodes.map((n) => switch (n) {
       InlineText(:final text) => text,
       InlineStrong(:final children) => inlineToPlain(children),
       InlineEm(:final children) => inlineToPlain(children),
+      InlineUnderline(:final children) => inlineToPlain(children),
       InlineCode(:final code) => code,
       InlineLink(:final label) => label,
+      InlineStrikethrough(:final children) => inlineToPlain(children),
+      InlineHighlight(:final children) => inlineToPlain(children),
     }).join();
 
 /// 块 → 纯文本（预览 / 检索用）。
@@ -220,11 +362,255 @@ String blockToPlain(RichBlock block) => switch (block) {
       ImageBlock(:final alt) => alt.isEmpty ? '[图片]' : '[图片: $alt]',
       AudioBlock(:final label) => label.isEmpty ? '[音频]' : '[音频: $label]',
       VideoBlock(:final label) => label.isEmpty ? '[视频]' : '[视频: $label]',
+      TableBlock(:final header, :final rows) =>
+        [...header, for (final r in rows) ...r].join(' '),
     };
 
-// ---------- 序列化 ----------
+// ---------- 行内样式 run（block-format-input.md §4 样式化编辑层地基） ----------
 
-/// 行内纯文本需转义的字符：`\` 本身与子集语法标记（`*` `_` `[` `` ` ``）。
+/// 行内样式种类（编辑态样式化层用；渲染即 switch 出对应 TextStyle 增量）。
+enum InlineMark { bold, italic, code, underline, link, strikethrough, highlight }
+
+/// 一个样式 run：**纯文本坐标** [start, end)（标记字符已剥除）。
+/// 嵌套（如粗体含于下划线）以重叠 run 表达——渲染侧按字符合成样式。
+class InlineRun {
+  const InlineRun(this.start, this.end, this.mark, {this.url});
+
+  final int start;
+  final int end;
+  final InlineMark mark;
+
+  /// 仅 link run 携带：plain 只含 label，url 由 run 载荷保全（数据无损防线）。
+  final String? url;
+}
+
+/// 源 md 行内文本的样式化投影：[plain]（标记剥除后的纯文本）+ [runs]。
+///
+/// **同源护栏**：[plain] 必须与 `inlineToPlain(parseInline(source))` 逐字符
+/// 一致（单测锁定）——样式化编辑层的输入层与渲染层都以 [plain] 为唯一文本，
+/// 两层零位移（§4.2 对位风险的第一道防线）。分支顺序/转义/不闭合降级语义
+/// 必须与 [MarkdownSubsetParser.parseInline] 镜像，改一处必改另一处。
+InlineSpans inlineSpansOf(String source) {
+  final buf = StringBuffer();
+  final runs = <InlineRun>[];
+  final active = <InlineMark>{};
+
+  void emit(String plain, {String? url}) {
+    if (plain.isEmpty) return;
+    final start = buf.length;
+    buf.write(plain);
+    for (final m in active) {
+      runs.add(InlineRun(start, buf.length, m, url: url));
+    }
+  }
+
+  // 分支顺序与分组号与 parseInline 严格镜像（lesson：插分支必同步分组号）
+  void walk(String text) {
+    final codeSpans = MarkdownSubsetParser._extractCode(text);
+    final events = <_InlineEvent>[];
+    for (final c in codeSpans) {
+      events.add(_InlineEvent(c.$1, c.$2, code: c.$3));
+    }
+    for (final m in MarkdownSubsetParser._inlinePattern.allMatches(text)) {
+      if (codeSpans.any((c) => m.start < c.$2 && c.$1 < m.end)) continue;
+      events.add(_InlineEvent(m.start, m.end, match: m));
+    }
+    events.sort((a, b) => a.start.compareTo(b.start));
+
+    var pos = 0;
+    for (final ev in events) {
+      if (ev.start > pos) emit(text.substring(pos, ev.start));
+      if (ev.code != null) {
+        active.add(InlineMark.code);
+        emit(ev.code!);
+        active.remove(InlineMark.code);
+      } else {
+        final m = ev.match!;
+        if (m.group(1) != null) {
+          emit(m.group(1)!);
+        } else if (m.group(2) != null) {
+          active.add(InlineMark.link);
+          emit(m.group(2)!, url: m.group(2)!);
+          active.remove(InlineMark.link);
+        } else if (m.group(4) != null) {
+          active.add(InlineMark.bold);
+          active.add(InlineMark.italic);
+          walk(m.group(4)!);
+          active.remove(InlineMark.italic);
+          active.remove(InlineMark.bold);
+        } else if (m.group(6) != null) {
+          active.add(InlineMark.bold);
+          walk(m.group(6)!);
+          active.remove(InlineMark.bold);
+        } else if (m.group(8) != null) {
+          active.add(InlineMark.italic);
+          walk(m.group(8)!);
+          active.remove(InlineMark.italic);
+        } else if (m.group(9) != null) {
+          active.add(InlineMark.underline);
+          walk(m.group(9)!);
+          active.remove(InlineMark.underline);
+        } else if (m.group(10) != null) {
+          active.add(InlineMark.strikethrough);
+          walk(m.group(10)!);
+          active.remove(InlineMark.strikethrough);
+        } else if (m.group(11) != null) {
+          active.add(InlineMark.highlight);
+          walk(m.group(11)!);
+          active.remove(InlineMark.highlight);
+        } else if (m.group(12) != null) {
+          active.add(InlineMark.link);
+          emit(MarkdownSubsetParser._unescape(m.group(12)!),
+              url: m.group(13) ?? '');
+          active.remove(InlineMark.link);
+        }
+      }
+      pos = ev.end;
+    }
+    if (pos < text.length) emit(text.substring(pos));
+  }
+
+  walk(source);
+  return InlineSpans(plain: buf.toString(), runs: runs);
+}
+
+/// [inlineSpansOf] 的返回：纯文本 + 纯文本坐标的样式 run 列表。
+class InlineSpans {
+  const InlineSpans({required this.plain, required this.runs});
+
+  final String plain;
+  final List<InlineRun> runs;
+}
+
+/// 行内解析事件（[MarkdownSubsetParser.parseInline] / [inlineSpansOf] 共用）：
+/// 要么是一段行内码，要么是一处正则命中。
+class _InlineEvent {
+  const _InlineEvent(this.start, this.end, {this.code, this.match});
+  final int start;
+  final int end;
+  final String? code;
+  final RegExpMatch? match;
+}
+
+/// 行级档位 run（速记所见即所得的行标题，2026-10-03）：**纯文本坐标**
+/// [start, end)，恒与实际整行对齐（宿主侧 snap；详情页标题是块属性不用它）。
+class SpanLevelRun {
+  const SpanLevelRun(this.start, this.end, this.level);
+
+  final int start;
+  final int end;
+
+  /// 0 正文 / 1 一级标题 / 2 二级标题（0 不参与渲染，序列化侧消费）。
+  final int level;
+}
+
+/// 文本变更区间（旧坐标）：最长公共前/后缀夹出「删旧 + 插新」窗口。
+/// 纯函数，供 [adjustRuns] 与会话层随动使用。
+(int, int) spanChangeRange(String oldText, String newText) {
+  var p = 0;
+  while (p < oldText.length && p < newText.length && oldText[p] == newText[p]) {
+    p++;
+  }
+  var sOld = oldText.length;
+  var sNew = newText.length;
+  while (sOld > p && sNew > p && oldText[sOld - 1] == newText[sNew - 1]) {
+    sOld--;
+    sNew--;
+  }
+  return (p, sOld);
+}
+
+/// 文字变更时 run 随动（纯函数）：删除区裁剪、其后位移、run 内插入延展。
+/// 重叠模型下不做合并——渲染按字符合成，语义即正确。
+List<InlineRun> adjustRuns(
+  List<InlineRun> runs,
+  int start,
+  int oldEnd,
+  int insertLen,
+) {
+  final delta = insertLen - (oldEnd - start);
+  final out = <InlineRun>[];
+  for (final r in runs) {
+    var s = r.start;
+    var e = r.end;
+    if (e <= start) {
+      // 完全在变更区前：不动（含「插入点=run 末尾」——边界不延续，
+      // 新文字是否入格式由激活态决定，先选后打拍板）
+    } else if (s >= oldEnd) {
+      // 完全在变更区后（含「插入点=run 起点」）：整体位移
+      s += delta;
+      e += delta;
+    } else if (start == oldEnd) {
+      // 纯插入且严格位于 run 内部：延展
+      if (s < start) e += insertLen;
+    } else {
+      // 删除/替换：横跨（或触及）替换窗的 run 涵盖插入段（字级替换不打断
+      // 样式连续性），尾部在窗内的 run 裁掉窗内部分；完全在窗内的 run 删空。
+      final ns = s < start ? s : start;
+      final ne = e >= oldEnd
+          ? start + insertLen + (e - oldEnd)
+          : ns + (e - start > 0 ? 0 : 0) + (e - start).clamp(0, start - s);
+      s = ns;
+      e = ne;
+      if (e <= s) continue; // run 被删空
+    }
+    out.add(InlineRun(s, e, r.mark, url: r.url));
+  }
+  return out;
+}
+
+/// runs + plain → 行内节点树（slice-4 序列化回写与块重建的唯一出口）。
+/// 重叠 run 按字符合成标记集合，相邻同集合（含同 link url）段合并；
+/// 嵌套优先级固定为枚举顺序（bold > italic > code > underline > link）。
+/// link run 的 url 从载荷还原——编辑链接文字不丢 url（数据无损防线）。
+List<InlineNode> inlineNodesOf(String plain, List<InlineRun> runs) {
+  final sets = List<Set<InlineMark>>.generate(
+    plain.length,
+    (_) => {},
+    growable: false,
+  );
+  final urls = List<String?>.generate(plain.length, (_) => null, growable: false);
+  for (final r in runs) {
+    for (var i = r.start; i < r.end && i < plain.length; i++) {
+      sets[i].add(r.mark);
+      if (r.mark == InlineMark.link) urls[i] = r.url;
+    }
+  }
+  InlineNode styled(String text, Set<InlineMark> marks, String? url) {
+    InlineNode n = InlineText(text);
+    for (final m in InlineMark.values) {
+      if (!marks.contains(m)) continue;
+      n = switch (m) {
+        InlineMark.bold => InlineStrong([n]),
+        InlineMark.italic => InlineEm([n]),
+        InlineMark.code => InlineCode(text),
+        InlineMark.underline => InlineUnderline([n]),
+        InlineMark.link => InlineLink(label: text, url: url ?? ''),
+        InlineMark.strikethrough => InlineStrikethrough([n]),
+        InlineMark.highlight => InlineHighlight([n]),
+      };
+    }
+    return n;
+  }
+
+  final out = <InlineNode>[];
+  var i = 0;
+  while (i < plain.length) {
+    var j = i + 1;
+    while (j < plain.length &&
+        sets[j].length == sets[i].length &&
+        sets[j].containsAll(sets[i]) &&
+        urls[j] == urls[i]) {
+      j++;
+    }
+    final seg = plain.substring(i, j);
+    out.add(styled(seg, sets[i], urls[i]));
+    i = j;
+  }
+  return out;
+}
+
+// ---------- 序列化 ----------/// 行内纯文本需转义的字符：`\` 本身与子集语法标记（`*` `_` `[` `` ` ``）。
 final RegExp _escapeInlineRe = RegExp(r'[\\*_[`]');
 
 String _escapeText(String s) =>
@@ -236,9 +622,12 @@ String serializeInline(List<InlineNode> nodes) => nodes.map((n) => switch (n) {
       InlineText(:final text) => _escapeText(text),
       InlineStrong(:final children) => '**${serializeInline(children)}**',
       InlineEm(:final children) => '*${serializeInline(children)}*',
+      InlineUnderline(:final children) => '<u>${serializeInline(children)}</u>',
       InlineCode(:final code) => '`$code`',
-      InlineLink(:final label, :final url) =>
-        '[${_escapeText(label)}]($url)',
+      InlineLink(:final label, :final url, :final autolink) =>
+        autolink ? url : '[${_escapeText(label)}]($url)',
+      InlineStrikethrough(:final children) => '~~${serializeInline(children)}~~',
+      InlineHighlight(:final children) => '==${serializeInline(children)}==',
     }).join();
 
 /// 块 → Markdown 子集串。与 [MarkdownSubsetParser.parse] 互逆（三出口护栏
@@ -267,7 +656,31 @@ String serializeBlock(RichBlock block) => switch (block) {
       ImageBlock(:final url, :final alt) => '![${_escapeText(alt)}]($url)',
       AudioBlock(:final url, :final label) => '[${_escapeText(label)}]($url)',
       VideoBlock(:final url, :final label) => '[${_escapeText(label)}]($url)',
+      TableBlock(:final header, :final rows, :final align) =>
+        _serializeTable(header, rows, align),
     };
+
+/// 表格 → Markdown 子集串（GFM 管线语法；无尾随换行，交由 [serializeBlocks] 块间空行）。
+String _serializeTable(
+  List<String> header,
+  List<List<String>> rows,
+  List<TableAlign>? align,
+) {
+  String row(List<String> cells) => '| ${cells.join(' | ')} |';
+  final a = align ?? [for (final _ in header) TableAlign.left];
+  final sep = '| ${a.map((al) => switch (al) {
+        TableAlign.center => ':---:',
+        TableAlign.right => '---:',
+        TableAlign.left => ':---',
+      }).join(' | ')} |';
+  final buf = StringBuffer()
+    ..writeln(row(header))
+    ..writeln(sep);
+  for (final r in rows) {
+    buf.writeln(row(r));
+  }
+  return buf.toString().trimRight();
+}
 
 /// 块列表 → Markdown 子集串（块间空行分隔；编辑器回写唯一出口）。
 String serializeBlocks(List<RichBlock> blocks) =>
@@ -303,9 +716,120 @@ class MarkdownSubsetParser implements RichTextParser {
   /// 列表项里的待办标记：`[ ]` / `[x]`。
   static final RegExp _todo = RegExp(r'^\[([ xX])\]\s+(.*)$');
 
+  /// 行内合并正则（与 [inlineSpansOf] 共用单一事实源，分组号见 §3.6 ②）：
+  /// 转义 → 自动链接 → 粗斜体 → 粗体 → 斜体 → 下划线 → 删除线 → 高亮 → 链接。
+  /// 行内码（`code`）不在此正则内——走 [_extractCode] 预处理双扫描（防回溯）。
+  static final RegExp _inlinePattern = RegExp(
+    r'\\([\\`*_\[])' // 1 转义：`\X` → 字面 X
+    r'|(https?://[^\s<>()]+|www\.[^\s<>()]+|mailto:[^\s<>()]+)' // 2 自动链接（裸 url/www./mailto:）
+    r'|(\*\*\*)(.+?)\*\*\*' // 3,4 粗斜体（插在粗体前，最长匹配优先）
+    r'|(\*\*|__)(.+?)\5' // 5,6 粗体（\5 反向引用粗体定界符）
+    r'|(\*|_)(.+?)\7' // 7,8 斜体（\7 反向引用斜体定界符）
+    r'|<u>(.+?)</u>' // 9 下划线
+    r'|\~\~(.+?)\~\~' // 10 删除线
+    r'|==([^\s=]+(?:\s+[^\s=]+)*)==' // 11 高亮（两侧非空白非=）
+    r'|!?\[([^\]]*)\]\(([^)]*)\)', // 12,13 链接
+    dotAll: true,
+  );
+
+  /// 行内码双扫描：先定位连续反引号定界符（`+），再找同长度闭合——线性时间，
+  /// 无回溯（§3.6，弃正则防灾难性回溯）。返回 (start, end, content)，end 为闭合 run 之后。
+  static List<(int, int, String)> _extractCode(String text) {
+    final out = <(int, int, String)>[];
+    var i = 0;
+    while (i < text.length) {
+      if (text[i] != '`') {
+        i++;
+        continue;
+      }
+      var k = 0;
+      while (i + k < text.length && text[i + k] == '`') {
+        k++;
+      }
+      final openStart = i;
+      i += k;
+      var j = i;
+      var found = false;
+      while (j < text.length) {
+        if (text[j] == '`') {
+          var m = 0;
+          while (j + m < text.length && text[j + m] == '`') {
+            m++;
+          }
+          if (m == k) {
+            out.add((openStart, j + k, text.substring(openStart + k, j)));
+            i = j + k;
+            found = true;
+            break;
+          }
+          j += m;
+          continue;
+        }
+        j++;
+      }
+      if (!found) i = openStart + k;
+    }
+    return out;
+  }
+
+  /// 行内正则命中 → [InlineNode]（分组号对应 [_inlinePattern]）。
+  static InlineNode _inlineNodeFromMatch(RegExpMatch m) {
+    if (m.group(1) != null) {
+      return InlineText(m.group(1)!); // 转义
+    } else if (m.group(2) != null) {
+      return InlineLink(label: m.group(2)!, url: m.group(2)!, autolink: true);
+    } else if (m.group(4) != null) {
+      return InlineStrong([InlineEm(const MarkdownSubsetParser().parseInline(m.group(4)!))]);
+    } else if (m.group(6) != null) {
+      return InlineStrong(const MarkdownSubsetParser().parseInline(m.group(6)!));
+    } else if (m.group(8) != null) {
+      return InlineEm(const MarkdownSubsetParser().parseInline(m.group(8)!));
+    } else if (m.group(9) != null) {
+      return InlineUnderline(const MarkdownSubsetParser().parseInline(m.group(9)!));
+    } else if (m.group(10) != null) {
+      return InlineStrikethrough(const MarkdownSubsetParser().parseInline(m.group(10)!));
+    } else if (m.group(11) != null) {
+      return InlineHighlight(const MarkdownSubsetParser().parseInline(m.group(11)!));
+    } else if (m.group(12) != null) {
+      return InlineLink(label: _unescape(m.group(12)!), url: m.group(13) ?? '');
+    }
+    return InlineText(m.group(0)!);
+  }
+
   @override
-  List<RichBlock> parse(String markdown) =>
-      _parseBlocks(markdown.replaceAll(RegExp(r'\r\n?'), '\n').split('\n'));
+  List<RichBlock> parse(String markdown) {
+    final lines = markdown.replaceAll(RegExp(r'\r\n?'), '\n').split('\n');
+
+    // R3 第一遍：收集引用定义 `[id]: url`（id 大小写不敏感），定义行作 meta 剥离，不渲染残壳。
+    final refDefs = <String, String>{};
+    final body = <String>[];
+    final defRe = RegExp(r'^\s*\[([^\]]+)\]:\s*(\S+)');
+    for (final line in lines) {
+      final m = defRe.firstMatch(line);
+      if (m != null) {
+        refDefs[m.group(1)!.toLowerCase()] = m.group(2)!;
+      } else {
+        body.add(line);
+      }
+    }
+
+    // R3 第二遍：已识别的 `[text][id]` 重写为 `[text](url)`（沿用既有链接正则）；
+    // 孤立 `[text][id]`（id 无定义）留字面——R1 护城河由动作层标注，解析器不静默吞。
+    final resolved = refDefs.isEmpty
+        ? body.join('\n')
+        : _resolveRefLinks(body.join('\n'), refDefs);
+    return _parseBlocks(resolved.split('\n'));
+  }
+
+  /// R3：[label][id] → [label](url)；id 未定义则保留原串。
+  static String _resolveRefLinks(String text, Map<String, String> refDefs) {
+    final refRe = RegExp(r'\[([^\]]*)\]\[([^\]]*)\]');
+    return text.replaceAllMapped(refRe, (m) {
+      final url = refDefs[m.group(2)!.toLowerCase()];
+      if (url == null) return m.group(0)!;
+      return '[${m.group(1)}]($url)';
+    });
+  }
 
   List<RichBlock> _parseBlocks(List<String> lines) {
     final blocks = <RichBlock>[];
@@ -332,6 +856,13 @@ class MarkdownSubsetParser implements RichTextParser {
       if (_divider.hasMatch(line)) {
         blocks.add(const DividerBlock());
         i++;
+        continue;
+      }
+
+      if (_isTableStart(lines, i)) {
+        final (block, consumed) = _parseTable(lines, i);
+        blocks.add(block);
+        i += consumed;
         continue;
       }
 
@@ -415,7 +946,10 @@ class MarkdownSubsetParser implements RichTextParser {
 
       // 段落：连续非空且非块起始的行
       final buf = <String>[];
-      while (i < lines.length && lines[i].trim().isNotEmpty && !_isBlockStart(lines[i])) {
+      while (i < lines.length &&
+          lines[i].trim().isNotEmpty &&
+          !_isBlockStart(lines[i]) &&
+          !_isTableStart(lines, i)) {
         buf.add(lines[i]);
         i++;
       }
@@ -442,6 +976,54 @@ class MarkdownSubsetParser implements RichTextParser {
           classifyMediaUrl(_linkLine.firstMatch(line)!.group(2)!) !=
               MediaSuffix.unknown);
 
+  // ---- 表格（GFM 官方扩展，§3.6 ④）----
+  /// 表格起始：当前行是表行（含 `|`）且下一行是分隔线（`:?-+:?` 由 `|` 分隔）。
+  static bool _isTableStart(List<String> lines, int i) {
+    if (i + 1 >= lines.length) return false;
+    return _isRowLine(lines[i]) && _isSeparatorLine(lines[i + 1]);
+  }
+
+  static bool _isRowLine(String line) => line.trim().contains('|');
+
+  static bool _isSeparatorLine(String line) {
+    final t = line.trim();
+    if (!t.contains('|')) return false;
+    final noPipes = t.replaceAll('|', '');
+    if (!noPipes.contains('-')) return false;
+    return RegExp(r'^[\s:\-]+$').hasMatch(noPipes);
+  }
+
+  static List<String> _splitRow(String line) {
+    var t = line.trim();
+    if (t.startsWith('|')) t = t.substring(1);
+    if (t.endsWith('|')) t = t.substring(0, t.length - 1);
+    return t.split('|').map((c) => c.trim()).toList();
+  }
+
+  static TableAlign _alignOf(String sep) {
+    final t = sep.trim();
+    final left = t.startsWith(':');
+    final right = t.endsWith(':');
+    if (left && right) return TableAlign.center;
+    if (right) return TableAlign.right;
+    return TableAlign.left;
+  }
+
+  static (TableBlock, int) _parseTable(List<String> lines, int i) {
+    final header = _splitRow(lines[i]);
+    final seps = _splitRow(lines[i + 1]);
+    final align = [for (final s in seps) _alignOf(s)];
+    final rows = <List<String>>[];
+    var j = i + 2;
+    while (j < lines.length && _isRowLine(lines[j])) {
+      final cells = _splitRow(lines[j]);
+      if (cells.length != header.length) break; // 列数不一致则停止（防吞后续）
+      rows.add(cells);
+      j++;
+    }
+    return (TableBlock(header: header, rows: rows, align: align), j - i);
+  }
+
   ListItem _listItem(String content) {
     final todo = _todo.firstMatch(content);
     if (todo != null) {
@@ -458,39 +1040,35 @@ class MarkdownSubsetParser implements RichTextParser {
   /// 保证 parse→serialize→parse 块树逐节点相等）。
   @override
   List<InlineNode> parseInline(String text) {
-    if (text.isEmpty) return const <InlineNode>[];
+    if (text.isEmpty) return const <InlineNode>[InlineText('')];
 
-    final pattern = RegExp(
-      r'\\([\\`*_\[])' // 1 转义：`\X` → 字面 X
-      r'|(\*\*|__)(.+?)\2' // 2,3 粗体
-      r'|(\*|_)(.+?)\4' // 4,5 斜体
-      r'|`([^`]+)`' // 6 行内码
-      r'|!?\[([^\]]*)\]\(([^)]*)\)', // 7,8 链接（`!` 前缀吞掉：行内图片降级 InlineLink，消灭「!+链接」残留）
-      dotAll: true,
-    );
+    final codeSpans = _extractCode(text);
+    bool overlapsCode(int s, int e) =>
+        codeSpans.any((c) => s < c.$2 && c.$1 < e);
+
+    // 事件化：行内码与正则命中按文档序排布，互不重叠（命中与码区间重叠则丢弃该命中）。
+    final events = <_InlineEvent>[];
+    for (final c in codeSpans) {
+      events.add(_InlineEvent(c.$1, c.$2, code: c.$3));
+    }
+    for (final m in _inlinePattern.allMatches(text)) {
+      if (overlapsCode(m.start, m.end)) continue;
+      events.add(_InlineEvent(m.start, m.end, match: m));
+    }
+    events.sort((a, b) => a.start.compareTo(b.start));
 
     final out = <InlineNode>[];
     var pos = 0;
-    for (final m in pattern.allMatches(text)) {
-      if (m.start > pos) {
-        out.add(InlineText(text.substring(pos, m.start)));
+    for (final ev in events) {
+      if (ev.start > pos) out.add(InlineText(text.substring(pos, ev.start)));
+      if (ev.code != null) {
+        out.add(InlineCode(ev.code!));
+      } else {
+        out.add(_inlineNodeFromMatch(ev.match!));
       }
-      if (m.group(1) != null) {
-        out.add(InlineText(m.group(1)!));
-      } else if (m.group(3) != null) {
-        out.add(InlineStrong(parseInline(m.group(3)!)));
-      } else if (m.group(5) != null) {
-        out.add(InlineEm(parseInline(m.group(5)!)));
-      } else if (m.group(6) != null) {
-        out.add(InlineCode(m.group(6)!));
-      } else if (m.group(7) != null) {
-        out.add(InlineLink(label: _unescape(m.group(7)!), url: m.group(8) ?? ''));
-      }
-      pos = m.end;
+      pos = ev.end;
     }
-    if (pos < text.length) {
-      out.add(InlineText(text.substring(pos)));
-    }
+    if (pos < text.length) out.add(InlineText(text.substring(pos)));
     return out.isEmpty ? [InlineText(text)] : _mergeText(out);
   }
 

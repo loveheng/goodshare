@@ -2,20 +2,20 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 
-import 'package:ffmpeg_kit_flutter_new_min_gpl/ffmpeg_kit.dart';
-import 'package:ffmpeg_kit_flutter_new_min_gpl/return_code.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
+import '../media/wav16k.dart';
 import 'asr_model.dart';
 import 'subtitle.dart';
 
 /// Sherpa-ONNX 离线转写引擎（2026-09-28）：
-/// - 主 isolate：ffmpeg 异步转 16kHz 单声道 WAV（原生进程，不冻 UI），再派给 worker；
-///   输入对音频与视频通用（ffmpeg 自动 demux 取首条音频流，视频流被 WAV 容器丢弃）；
+/// - 主 isolate：解码输入为 16kHz 单声道 WAV（原生 MediaCodec 解码 + Dart isolate
+///   重采样，media-native P2，均不冻 UI；输入对音频与视频通用，视频流被
+///   WAV 容器丢弃），再派给 worker；
 /// - worker isolate：sherpa decode 是同步 FFI 调用（期间阻塞所在 isolate 事件循环），
 ///   必须离开主 isolate；recognizer 在 worker 内按模型缓存，切档才重建；
 /// - 通信：worker 启动后先回传自己的任务 SendPort（握手），此后主→worker 发任务、
@@ -68,14 +68,14 @@ class AsrEngine {
       debugPrint('[AsrEngine] audio not found: $audioPath');
       return null;
     }
-    // 1) ffmpeg 转码（async 原生进程，不阻塞 UI）
+    // 1) 解码为 16k 单声道 WAV（原生解码不阻塞 UI；重采样在独立 isolate）
     final ts = DateTime.now().microsecondsSinceEpoch;
     final wav = File(
         '${Directory.systemTemp.path}/asr_${modelId}_${ts}_${audioPath.hashCode.abs()}.wav')
       ..createSync();
     try {
       if (!await _toWav16k(audioPath, wav.path)) {
-        debugPrint('[AsrEngine] ffmpeg convert failed: $audioPath');
+        debugPrint('[AsrEngine] decode/resample failed: $audioPath');
         return null;
       }
       // 2) worker 识别（同步 FFI，脱离 UI 线程）
@@ -171,14 +171,11 @@ class AsrEngine {
     _resultPort = rp;
   }
 
-  /// ffmpeg 转 16kHz 单声道 WAV；成功 true。
-  Future<bool> _toWav16k(String inPath, String outPath) async {
-    final cmd = '-hide_banner -loglevel error -y -i "$inPath" '
-        '-ar 16000 -ac 1 -c:a pcm_s16le "$outPath"';
-    final session = await FFmpegKit.execute(cmd);
-    final rc = await session.getReturnCode();
-    return ReturnCode.isSuccess(rc);
-  }
+  /// 解码为 16kHz 单声道 WAV（原生解码 + isolate 重采样）；成功 true。
+  /// 失败多为冷门格式原生解不了（ac3/wma 等）或文件损坏——上层按 R1 给
+  /// 「格式不支持」类文案，云端处理为后续规划。
+  Future<bool> _toWav16k(String inPath, String outPath) =>
+      extractWav16k(inPath, outPath);
 }
 
 // ---------------------------------------------------------------------------

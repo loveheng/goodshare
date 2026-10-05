@@ -7,6 +7,7 @@ import 'package:sqflite/sqflite.dart';
 import '../ai/video_clips.dart';
 import '../models/item.dart';
 import '../models/workspace.dart';
+import 'block_artifacts.dart';
 import 'db.dart';
 
 /// 列表排序（2026-09-30：时光机降为主列表的「排序维度」后新增）。
@@ -18,7 +19,10 @@ enum ItemSort {
   newest('created_at DESC, rowid DESC'),
 
   /// 最早在前（时光机的「从头看」）。
-  oldest('created_at ASC, rowid ASC');
+  oldest('created_at ASC, rowid ASC'),
+
+  /// 置顶时间倒序（全部页独立置顶区，card-batch-selection）。
+  pinnedNewest('pinned_at DESC, created_at DESC');
 
   const ItemSort(this.orderBy);
 
@@ -33,6 +37,11 @@ class Repository extends ChangeNotifier {
   Database? _db;
 
   Future<Database> _database() async => _db ??= await Db.instance();
+
+  /// 块产物派生数据存取（schema v21，docs/design/block-artifact-workflow.md §2.2）：
+  /// 行内媒体块 AI 能力产物（转写/字幕/OCR/译文/摘要/音轨）。派生缓存原语，
+  /// 同 item_embeddings 口径——不进备份、恢复即清（含文件产物删盘）。
+  late final BlockArtifactStore blockArtifacts = BlockArtifactStore(_database);
 
   /// 写路径 FIFO 队尾（串行锁的实现载体，见 [synchronized]）。
   Future<void> _tail = Future<void>.value();
@@ -179,6 +188,132 @@ class Repository extends ChangeNotifier {
     return lang.isEmpty ? null : lang;
   }
 
+  // ---- block_* 动作串（schema v21，docs/design/block-artifact-workflow.md §2.4）----
+
+  /// block 动作头枚举（解析与 §6.6 入队互斥共用）。
+  ///
+  /// 解析规则（§2.4，二轮评审拍板）：前缀后**首个 ':'** 切动作名与 payload；
+  /// payload 内一律按 **'|'** 分段，首段恒为 blockKey——blockKey 含 `://`，
+  /// 按冒号分段会拦腰截断路径。构造走 [_blockAction]，解析走 [parseBlockAction]。
+  static const blockActionHeads = [
+    'block_transcribe',
+    'block_ocr',
+    'block_translate',
+    'block_summarize',
+    'block_extract_audio',
+  ];
+
+  /// block 动作串解析：`(动作头, blockKey, 参数段)`；非 block 串 / 格式非法 → null
+  /// （§6.1 防呆：blockKey 须 `local://` 开头且不含 '|'）。null 时调用方按非法
+  /// 任务处理（failed + note），不得静默当顶级动作跑。
+  static (String head, String blockKey, List<String> params)? parseBlockAction(String? action) {
+    if (action == null) return null;
+    final ci = action.indexOf(':');
+    if (ci <= 0) return null;
+    final head = action.substring(0, ci);
+    if (!blockActionHeads.contains(head)) return null;
+    final parts = action.substring(ci + 1).split('|');
+    final key = parts.first.trim();
+    if (!key.startsWith('local://') || key.length <= 'local://'.length) return null;
+    return (head, key, parts.skip(1).map((s) => s.trim()).toList());
+  }
+
+  static bool isBlockAction(String? action) => parseBlockAction(action) != null;
+
+  static String _blockAction(String head, String blockKey, Iterable<String> params) {
+    assert(!blockKey.contains('|'), 'blockKey 含分段符，构造前须经 _blockGate 防呆');
+    final p = params.where((s) => s.isNotEmpty).toList();
+    return '$head:$blockKey${p.isEmpty ? '' : '|${p.join('|')}'}';
+  }
+
+  static String blockTranscribeTaskAction(
+    String blockKey, {
+    String? subtitleMode,
+    String? targetLang,
+  }) =>
+      _blockAction('block_transcribe', blockKey, [?subtitleMode, ?targetLang]);
+
+  static String blockOcrTaskAction(String blockKey) =>
+      _blockAction('block_ocr', blockKey, const []);
+
+  /// [sourceKind] 必带：重建器据此读 block_artifacts 源产物（transcript/ocr_text/subtitle）。
+  static String blockTranslateTaskAction(
+    String blockKey, {
+    String? targetLang,
+    required String sourceKind,
+  }) =>
+      _blockAction('block_translate', blockKey, [?targetLang, sourceKind]);
+
+  static String blockSummarizeTaskAction(String blockKey) =>
+      _blockAction('block_summarize', blockKey, const []);
+
+  static String blockExtractAudioTaskAction(String blockKey) =>
+      _blockAction('block_extract_audio', blockKey, const []);
+
+  /// block_translate 的源产物 kind（payload 末段，构造端必带）；非块翻译串 → null。
+  static String? blockTranslateSourceKindOf(String? action) {
+    final b = parseBlockAction(action);
+    if (b == null || b.$1 != 'block_translate' || b.$3.isEmpty) return null;
+    return b.$3.last;
+  }
+
+  /// block_translate 的单次目标语言（payload 首段，可缺省）；缺省 / 非块翻译串 → null。
+  static String? blockTranslateLangOf(String? action) {
+    final b = parseBlockAction(action);
+    if (b == null || b.$1 != 'block_translate' || b.$3.length < 2) return null;
+    final lang = b.$3.first;
+    return lang.isEmpty ? null : lang;
+  }
+
+  /// block_transcribe 的字幕译文模式（payload 第 1 段，可缺省；坏值 → null 沿用设置项）。
+  static String? blockTranscribeModeOf(String? action) {
+    final b = parseBlockAction(action);
+    if (b == null || b.$1 != 'block_transcribe' || b.$3.isEmpty) return null;
+    final mode = b.$3.first;
+    return transcribeSubtitleModes.contains(mode) ? mode : null;
+  }
+
+  /// block_transcribe 的目标语言（payload 第 2 段，可缺省）；缺省 / 非块转写串 → null。
+  static String? blockTranscribeLangOf(String? action) {
+    final b = parseBlockAction(action);
+    if (b == null || b.$1 != 'block_transcribe' || b.$3.length < 2) return null;
+    final lang = b.$3[1];
+    return lang.isEmpty ? null : lang;
+  }
+
+  /// 某条目 active（pending/processing）任务的 block 动作串（§6.6 入队互斥与
+  /// MCP get_item 的 block_tasks 字段共用；非 block 动作不入列）。
+  Future<List<String>> activeBlockActionsOf(String itemId) async {
+    final db = await _database();
+    final rows = await db.rawQuery(
+      "SELECT task_action FROM ai_task_queue "
+      "WHERE item_id = ? AND status IN ('pending', 'processing')",
+      [itemId],
+    );
+    return [
+      for (final r in rows)
+        if (isBlockAction(r['task_action'] as String?)) r['task_action'] as String,
+    ];
+  }
+
+  /// 某条目 active（pending/processing）的 **block 任务行**（block-artifact-workflow
+  /// §7：`get_item` 的 `block_tasks` 字段数据源）。与 [activeBlockActionsOf] 同口径
+  /// 但带任务元数据——该字段是给 AI 的**软引导**（看到任务在跑即自我抑制重复发起），
+  /// 与动作层 §6.6 入队互斥的硬拒绝构成「软硬双保险」。
+  ///
+  /// 只列 block 动作（顶级裸动作不进此字段）；已完成 / 失败 / 取消不入列——
+  /// 任务态回答的是「还在跑吗」，产出看 `block_artifacts`。
+  Future<List<Map<String, Object?>>> activeBlockTasksOf(String itemId) async {
+    final db = await _database();
+    final rows = await db.rawQuery(
+      "SELECT task_id, task_action, status, updated_at, last_note FROM ai_task_queue "
+      "WHERE item_id = ? AND status IN ('pending', 'processing') "
+      "ORDER BY rowid",
+      [itemId],
+    );
+    return [for (final r in rows) if (isBlockAction(r['task_action'] as String?)) r];
+  }
+
   /// item_type → 默认队列动作；note/document 无专属动作返回 null（消费者按类型通用重构）。
   static String? taskActionFor(String itemType) => switch (itemType) {
         InboxItem.typeUrl => taskSummarizeUrl,
@@ -209,6 +344,8 @@ class Repository extends ChangeNotifier {
     String? type,
     bool vault = false,
     bool includeDeleted = false,
+    bool? pinned,
+    bool aiVisible = false,
     ItemSort sort = ItemSort.newest,
     int limit = 50,
     int offset = 0,
@@ -219,6 +356,8 @@ class Repository extends ChangeNotifier {
       type: type,
       vault: vault,
       includeDeleted: includeDeleted,
+      pinned: pinned,
+      aiVisible: aiVisible,
     );
     final rows = await db.query(
       'inbox_items',
@@ -246,9 +385,9 @@ class Repository extends ChangeNotifier {
     return rows.map(InboxItem.fromMap).toList();
   }
 
-  Future<int> count({String? query, String? type, bool vault = false}) async {
+  Future<int> count({String? query, String? type, bool vault = false, bool aiVisible = false}) async {
     final db = await _database();
-    final (where, args) = _filters(query: query, type: type, vault: vault);
+    final (where, args) = _filters(query: query, type: type, vault: vault, aiVisible: aiVisible);
     final rows = await db.rawQuery(
       'SELECT COUNT(*) c FROM inbox_items WHERE $where',
       args,
@@ -261,6 +400,7 @@ class Repository extends ChangeNotifier {
     String id, {
     bool includeDeleted = false,
     bool includeVault = false,
+    bool aiVisible = false,
     Transaction? txn,
   }) async {
     final db = txn ?? await _database();
@@ -268,6 +408,8 @@ class Repository extends ChangeNotifier {
     final args = <Object?>[id];
     if (!includeDeleted) conds.add('is_deleted = 0');
     if (!includeVault) conds.add('is_vault = 0');
+    // AI 可见性读门禁（v20）：保险箱浏览（includeVault）属 UI 口径，不叠加此过滤。
+    if (aiVisible && !includeVault) conds.add('ai_visible = 1');
     final rows = await db.query(
       'inbox_items',
       where: conds.join(' AND '),
@@ -366,12 +508,14 @@ class Repository extends ChangeNotifier {
   Future<List<InboxItem>> listWorkspaceItems(
     String workspaceId, {
     bool vault = false,
+    bool aiVisible = false,
   }) async {
     final db = await _database();
     final rows = await db.rawQuery(
       'SELECT i.* FROM inbox_items AS i '
       'JOIN workspace_items AS wi ON wi.item_id = i.id '
       'WHERE wi.workspace_id = ? AND i.is_vault = ? AND i.is_deleted = 0 '
+      '${aiVisible ? "AND i.ai_visible = 1 " : ""}'
       'ORDER BY i.created_at DESC',
       [workspaceId, vault ? 1 : 0],
     );
@@ -402,13 +546,14 @@ class Repository extends ChangeNotifier {
   }
 
   /// 某天的公开条目（本机时区；供 get_timeline_context 时光机上下文）。
-  Future<List<InboxItem>> listByDate(String date, {int limit = 200}) async {
+  Future<List<InboxItem>> listByDate(String date, {int limit = 200, bool aiVisible = false}) async {
     final db = await _database();
     final rows = await db.rawQuery(
       "SELECT * FROM inbox_items WHERE is_vault = 0 AND is_deleted = 0 "
+      "AND ai_visible = ? "
       "AND date(created_at/1000, 'unixepoch', 'localtime') = ? "
       'ORDER BY created_at ASC LIMIT ?',
-      [date, limit],
+      [aiVisible ? 1 : 0, date, limit],
     );
     return rows.map(InboxItem.fromMap).toList();
   }
@@ -489,6 +634,9 @@ class Repository extends ChangeNotifier {
           if (await file.exists()) await file.delete();
         } catch (_) {/* 附件可能已不存在，忽略 */}
       }
+      // 块产物文件联动清理（§2.2 纪律 7）：须在删条目行之前——行删即外键级联，
+      // 产物行与 file_path 一并消失，物理文件会成孤儿
+      await blockArtifacts.clearForItem(r['id'] as String);
       await db.delete('inbox_items', where: 'id = ?', whereArgs: [r['id']]);
     }
     if (rows.isNotEmpty) notifyListeners();
@@ -509,6 +657,8 @@ class Repository extends ChangeNotifier {
         if (await file.exists()) await file.delete();
       } catch (_) {/* 附件可能已不存在，忽略 */}
     }
+    // 块产物文件联动清理（§2.2 纪律 7）：先于删行收集 file_path（行删即级联丢路径）
+    await blockArtifacts.clearForItem(id, txn: txn);
     final db = txn ?? await _database();
     await db.delete('inbox_items', where: 'id = ?', whereArgs: [id]);
     if (txn == null) notifyListeners();
@@ -530,6 +680,70 @@ class Repository extends ChangeNotifier {
       'updated_at': DateTime.now().millisecondsSinceEpoch,
     });
     return taskId;
+  }
+
+  // ---- AI 写回可逆日志（ai-writeback-revert §3/§6，schema v19）----
+
+  /// 追加一条 AI 写回快照。非事务内调用时顺手做有界清理（每篇最近 20 条 + 30 天 TTL）。
+  Future<void> insertAiRevision(
+    String docId,
+    String snapshot, {
+    String source = 'ai_writeback',
+    String? metaJson,
+    Transaction? txn,
+  }) async {
+    final db = txn ?? await _database();
+    await db.insert('ai_revisions', {
+      'doc_id': docId,
+      'ts': DateTime.now().millisecondsSinceEpoch,
+      'snapshot': snapshot,
+      'source': source,
+      'meta_json': metaJson,
+    });
+    if (txn == null) await pruneAiRevisions(docId);
+  }
+
+  /// 有界保留：每篇最近 20 条 + 30 天 TTL。
+  Future<void> pruneAiRevisions(String docId, {Transaction? txn}) async {
+    final db = txn ?? await _database();
+    const keep = 20;
+    await db.rawDelete(
+      'DELETE FROM ai_revisions WHERE doc_id = ? AND id NOT IN '
+      '(SELECT id FROM ai_revisions WHERE doc_id = ? ORDER BY ts DESC LIMIT $keep)',
+      [docId, docId],
+    );
+    final cutoff =
+        DateTime.now().millisecondsSinceEpoch - const Duration(days: 30).inMilliseconds;
+    await db.rawDelete('DELETE FROM ai_revisions WHERE ts < ?', [cutoff]);
+  }
+
+  /// 最新一条 AI 写回快照（RESTORED 态「恢复 AI 改动」的恢复源）。
+  Future<String?> latestAiRevision(String docId, {Transaction? txn}) async {
+    final db = txn ?? await _database();
+    final rows = await db.query(
+      'ai_revisions',
+      columns: ['snapshot'],
+      where: 'doc_id = ?',
+      whereArgs: [docId],
+      orderBy: 'ts DESC',
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.first['snapshot'] as String?;
+  }
+
+  /// 列出某篇的 AI 写回快照（接管后历史检索面用，按时间倒序）。
+  Future<List<Map<String, Object?>>> listAiRevisions(
+    String docId, {
+    Transaction? txn,
+  }) async {
+    final db = txn ?? await _database();
+    return db.query(
+      'ai_revisions',
+      where: 'doc_id = ?',
+      whereArgs: [docId],
+      orderBy: 'ts DESC',
+      limit: 50,
+    );
   }
 
   /// 待处理任务总数（前台服务通知进度用）。
@@ -763,7 +977,9 @@ class Repository extends ChangeNotifier {
           .first['c'] as int? ?? 0;
       final embCount =
           (await snap.rawQuery('SELECT COUNT(*) c FROM item_embeddings')).first['c'] as int? ?? 0;
-      if (count > 0 || embCount > 0) {
+      final blockArtCount =
+          (await snap.rawQuery('SELECT COUNT(*) c FROM block_artifacts')).first['c'] as int? ?? 0;
+      if (count > 0 || embCount > 0 || blockArtCount > 0) {
         await snap.transaction((txn) async {
           // 先删依赖方（队列按 item_id 级联/草稿按 target_id 前缀 'edit:<itemId>:<field>'），再删本体
           await txn.rawQuery(
@@ -774,8 +990,10 @@ class Repository extends ChangeNotifier {
             "WHERE v.is_vault = 1 AND drafts.target_id LIKE 'edit:' || v.id || ':%')",
           );
           await txn.rawQuery('DELETE FROM inbox_items WHERE is_vault = 1');
-          // 向量等派生数据整表不进备份（可全量重算，备份只保护事实源）
+          // 向量等派生数据整表不进备份（可全量重算，备份只保护事实源）；
+          // block_artifacts 同口径（块产物文件本身不在快照里，快照副本清行即可）
           await txn.execute('DELETE FROM item_embeddings');
+          await txn.execute('DELETE FROM block_artifacts');
         });
         await snap.execute('VACUUM'); // 物理回收页：已删正文不得留在文件里
       }
@@ -805,6 +1023,9 @@ class Repository extends ChangeNotifier {
   /// 属用户事实数据非派生，须随备份带入；漏恢复会导致「备份里有、恢复后丢」的不一致）。
   Future<RestoreResult> restoreFrom(File src) async {
     final db = await _database();
+    // 恢复即清的文件侧准备（§2.2 纪律 2/7）：先收本地产物文件路径——事务内
+    // 清行后文件路径无从再查；文件删除是文件系统副作用，放事务外（不随回滚）。
+    final staleArtifactFiles = await blockArtifacts.allFilePaths();
     await db.execute("ATTACH DATABASE ? AS gs_backup", [src.path]);
     try {
       await db.transaction((txn) async {
@@ -820,12 +1041,15 @@ class Repository extends ChangeNotifier {
           await txn.execute('INSERT INTO $t SELECT * FROM gs_backup.$t');
         }
         // 派生向量随本地事实源一起失效（快照里本就没有；旧向量指向恢复前条目），
-        // 清空待重算，恢复语义恒为「事实源全量替换 + 缓存归零」
+        // 清空待重算，恢复语义恒为「事实源全量替换 + 缓存归零」；
+        // block_artifacts 同口径（含其 file_path 引用的产物文件，事务外删盘）
         await txn.execute('DELETE FROM item_embeddings');
+        await txn.execute('DELETE FROM block_artifacts');
       });
     } finally {
       await db.execute('DETACH DATABASE gs_backup');
     }
+    await blockArtifacts.deleteArtifactFiles(staleArtifactFiles);
     final kept = (await db.rawQuery('SELECT COUNT(*) c FROM inbox_items')).first['c'] as int? ?? 0;
     notifyListeners(); // 恢复后 UI 整体刷新（与 [transaction] 同口径：导入完成统一广播一次）
     return RestoreResult(itemCount: kept);
@@ -897,10 +1121,17 @@ class Repository extends ChangeNotifier {
     String? type,
     bool vault = false,
     bool includeDeleted = false,
+    bool? pinned,
+    bool aiVisible = false,
   }) {
     final where = <String>['is_vault = ?'];
     final args = <Object?>[vault ? 1 : 0];
     if (!includeDeleted) where.add('is_deleted = 0');
+    // AI 可见性读门禁（v20）：为真时仅返回对 AI 可见（ai_visible=1）的条目；
+    // 默认 false——UI 阅读不受限。与 is_vault 过滤叠加：保险箱包住 AI。
+    if (aiVisible) where.add('ai_visible = 1');
+    // 置顶过滤（v18）：true=仅置顶（独立置顶区），false=仅未置顶（主瀑布流）。
+    if (pinned != null) where.add(pinned ? 'pinned_at IS NOT NULL' : 'pinned_at IS NULL');
     final q = query?.trim() ?? '';
     if (q.isNotEmpty) {
       final like = '%$q%';

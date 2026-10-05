@@ -12,10 +12,22 @@ import 'tokens.dart';
 /// 为主体；底部统一元信息行。非图片条目高度由内容自然决定，MasonryGridView
 /// 负责按实际高度排布。
 class ContentCard extends StatelessWidget {
-  const ContentCard({super.key, required this.item, this.onTap});
+  const ContentCard({
+    super.key,
+    required this.item,
+    this.onTap,
+    this.onLongPress,
+    this.selected = false,
+  });
 
   final InboxItem item;
   final VoidCallback? onTap;
+
+  /// 长按进选择模式（card-batch-selection.md §2.1）；触觉反馈由调用方给。
+  final VoidCallback? onLongPress;
+
+  /// 选择模式选中态：2dp 品牌色描边（拍板：无对勾圆标）。
+  final bool selected;
 
   static IconData iconOf(String type) => switch (type) {
         InboxItem.typeUrl => Icons.link,
@@ -92,9 +104,16 @@ class ContentCard extends StatelessWidget {
       elevation: 0,
       // mymind 基准（ui-spec §2.1/§2.3）：卡层色 + 大圆角 20（Radii.xl）。
       color: scheme.surfaceContainerLow,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(Radii.xl)),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(Radii.xl),
+        // 选中描边贴卡边（Inside 裁切在 antiAlias 下不溢出）
+        side: selected
+            ? BorderSide(color: scheme.primary, width: 2)
+            : BorderSide.none,
+      ),
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [

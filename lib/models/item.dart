@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:math';
 
+import '../doc/rich_text.dart';
+
 /// 收集条目：分享进来的「好东西」统一数据模型。
 /// 三层结构（PRD §5.3）：raw_content 原始层 → human_md 人类态 / machine_json 机器态。
 class InboxItem {
@@ -25,6 +27,11 @@ class InboxItem {
   static const attachOwned = 'owned'; // 已持有副本（app 私有目录）
   static const attachLost = 'lost'; // 原件不可访问（已删或授权失效）
 
+  // author 作者身份（ai-visibility v20）：人类收集 / AI 建条 / 端侧管线回写
+  static const authorHuman = 'human';
+  static const authorAi = 'ai';
+  static const authorPipeline = 'pipeline';
+
   InboxItem({
     this.id,
     required this.itemType,
@@ -35,6 +42,7 @@ class InboxItem {
     this.humanTitle,
     this.humanTldr,
     this.humanMd,
+    this.humanMdBaseline,
     this.machineJson,
     this.translatedMd,
     this.translateLang,
@@ -45,8 +53,13 @@ class InboxItem {
     this.attachState = attachOwned,
     this.aspectRatio,
     this.mediaDurationMs,
+    this.pinnedAt,
     List<String> tags = const [],
     Map<String, List<String>>? facets,
+    this.author = authorHuman,
+    this.aiVisible = false,
+    this.aiEditable = false,
+    this.aiProcess = false,
     this.isVault = false,
     this.isProcessed = 0,
     this.collectMode = modeScatter,
@@ -71,6 +84,9 @@ class InboxItem {
   final String? humanTitle; // AI 重构标题
   final String? humanTldr; // AI 3 句摘要
   final String? humanMd; // AI 重构 Markdown（含 [ ] 待办）
+  /// AI 写回可逆锚点：AI 动笔前的人类态文本（schema v19，2026-10-04）。
+  /// 非空 ⟺ 存在一个未关闭的 AI 会话（ai-writeback-revert §3.1 不变量）。
+  final String? humanMdBaseline;
   final String? machineJson; // 强类型结构化 JSON
   final String? translatedMd; // 译文（翻译层产出；与 humanMd 并列，不覆盖原文）
   final String? translateLang; // 译文语言码（BCP-47），与 translatedMd 成对
@@ -83,6 +99,17 @@ class InboxItem {
   final List<String> tags;
   final Map<String, List<String>>? facets; // 多视角聚类：视角 → 标签（AI 分类页消费，V2）
   final bool isVault;
+  // ── AI 可见性分层（v20，ai-visibility）──
+  /// 作者身份：human=人类收集 / ai=AI 建条 / pipeline=端侧管线回写。决定 ai_visible/ai_editable 默认值。
+  final String author;
+  /// 对 AI 读门禁：false=AI（MCP）不可见；true=可见。仅 UI 可改（CommandActor.ui）。
+  final bool aiVisible;
+  /// 对 AI 写门禁 / 人类同意：false=AI 不可编辑该人类笔记；true=已授权可编辑。仅 UI 可改。
+  final bool aiEditable;
+  /// 管线回写授权（ai-visibility 补丁）：false=端侧管线（OCR/翻译/摘要/转写/切片）
+  /// 不处理、不回写此人类笔记；true=已授权管线处理。默认关闭——收集即处理不再默认开启，
+  /// 须人类在详情页显式开启「允许 AI 处理」。仅 UI 可改（CommandActor.ui）。
+  final bool aiProcess;
   final int isProcessed; // 0 待处理 / 1 完成 / -1 失败
   final String collectMode;
   final List<AppendixEntry> appendix; // 合并模式的各段附加记录
@@ -112,16 +139,30 @@ class InboxItem {
   /// 渲染处秒显进度条总时长、省去每次播放前临时建播放器探测。null=未探测。
   final int? mediaDurationMs;
 
+  /// 置顶时间戳（毫秒，schema v18，2026-10-02）：NULL=未置顶；
+  /// 全部页独立置顶区按此倒序（card-batch-selection）。仅显示层消费，不回写用户数据。
+  final int? pinnedAt;
+
+  bool get isPinned => pinnedAt != null;
+
   bool get isImage => itemType == typeImage;
   bool get hasAttachment => rawFilePath != null && rawFilePath!.isNotEmpty;
 
   /// 列表/搜索预览：优先标题，其次 TL;DR，最后原文首行。
+  ///
+  /// 标题若来自一级标题行派生（`noteTitleOf`），可能携带行内标记（如 `<u>`）；
+  /// 预览与详情页标题栏都是纯文本展示，故对标题做行内剥壳，避免列表卡片、
+  /// 顶栏出现 `<u>` 残壳（下划线等行内格式只在详情页正文阅读态呈现）。
   String get preview {
-    final base = humanTitle?.isNotEmpty ?? false
-        ? humanTitle!
-        : (humanTldr?.isNotEmpty ?? false)
-            ? humanTldr!
-            : (rawContent ?? '');
+    final String base;
+    if (humanTitle?.isNotEmpty ?? false) {
+      // 标题含行内标记（如 `<u>`）→ 纯文本预览须剥壳
+      base = inlineToPlain(const MarkdownSubsetParser().parseInline(humanTitle!));
+    } else if (humanTldr?.isNotEmpty ?? false) {
+      base = humanTldr!;
+    } else {
+      base = rawContent ?? '';
+    }
     final oneLine = base.replaceAll(RegExp(r'\s+'), ' ').trim();
     return oneLine.length > 120 ? '${oneLine.substring(0, 120)}…' : oneLine;
   }
@@ -131,6 +172,9 @@ class InboxItem {
 
   /// 是否引用原件（未复制）——app 不持有，原件失效即不可访问。
   bool get isRef => attachState == attachRef;
+
+  /// AI 写回会话态（ai-writeback-revert §4）：idle/pending/restored，存于 doc_meta_json。
+  String? get aiSessionState => docMeta?['ai_session_state'] as String?;
 
   /// 归一化元信息（坏 JSON 返回 null，不抛——防御与 facets 同口径）。
   Map<String, Object?>? get docMeta {
@@ -157,6 +201,7 @@ class InboxItem {
         'human_title': humanTitle,
         'human_tldr': humanTldr,
         'human_md': humanMd,
+        'human_md_baseline': humanMdBaseline,
         'machine_json': machineJson,
         'translated_md': translatedMd,
         'translate_lang': translateLang,
@@ -167,9 +212,14 @@ class InboxItem {
         'attach_state': attachState,
         'aspect_ratio': aspectRatio,
         'media_duration_ms': mediaDurationMs,
+        'pinned_at': pinnedAt,
         'tags': jsonEncode(tags),
         'facets_json': facets == null ? null : jsonEncode(facets),
         'is_vault': isVault ? 1 : 0,
+        'author': author,
+        'ai_visible': aiVisible ? 1 : 0,
+        'ai_editable': aiEditable ? 1 : 0,
+        'ai_process': aiProcess ? 1 : 0,
         'is_processed': isProcessed,
         'collect_mode': collectMode,
         'appendix_json':
@@ -229,6 +279,7 @@ class InboxItem {
       humanTitle: map['human_title'] as String?,
       humanTldr: map['human_tldr'] as String?,
       humanMd: map['human_md'] as String?,
+      humanMdBaseline: map['human_md_baseline'] as String?,
       machineJson: map['machine_json'] as String?,
       translatedMd: map['translated_md'] as String?,
       translateLang: map['translate_lang'] as String?,
@@ -239,9 +290,14 @@ class InboxItem {
       attachState: (map['attach_state'] as String?) ?? attachOwned,
       aspectRatio: (map['aspect_ratio'] as num?)?.toDouble(),
       mediaDurationMs: (map['media_duration_ms'] as int?),
+      pinnedAt: map['pinned_at'] as int?,
       tags: tagsOf(map['tags']),
       facets: facetsOf(map['facets_json']),
       isVault: (map['is_vault'] as int? ?? 0) == 1,
+      author: (map['author'] as String?) ?? authorHuman,
+      aiVisible: (map['ai_visible'] as int? ?? 0) == 1,
+      aiEditable: (map['ai_editable'] as int? ?? 0) == 1,
+      aiProcess: (map['ai_process'] as int? ?? 0) == 1,
       isProcessed: map['is_processed'] as int? ?? 0,
       collectMode: (map['collect_mode'] as String?) ?? modeScatter,
       appendix: listOf(map['appendix_json'], AppendixEntry.fromJson),
@@ -264,6 +320,7 @@ class InboxItem {
     String? humanTitle,
     String? humanTldr,
     String? humanMd,
+    String? humanMdBaseline,
     String? machineJson,
     String? translatedMd,
     String? translateLang,
@@ -275,6 +332,10 @@ class InboxItem {
     int? mediaDurationMs,
     List<String>? tags,
     Map<String, List<String>>? facets,
+    String? author,
+    bool? aiVisible,
+    bool? aiEditable,
+    bool? aiProcess,
     bool? isVault,
     int? isProcessed,
     String? collectMode,
@@ -296,6 +357,7 @@ class InboxItem {
         humanTitle: humanTitle ?? this.humanTitle,
         humanTldr: humanTldr ?? this.humanTldr,
         humanMd: humanMd ?? this.humanMd,
+        humanMdBaseline: humanMdBaseline ?? this.humanMdBaseline,
         machineJson: machineJson ?? this.machineJson,
         translatedMd: translatedMd ?? this.translatedMd,
         translateLang: translateLang ?? this.translateLang,
@@ -307,6 +369,10 @@ class InboxItem {
         mediaDurationMs: mediaDurationMs ?? this.mediaDurationMs,
         tags: tags ?? this.tags,
         facets: facets ?? this.facets,
+        author: author ?? this.author,
+        aiVisible: aiVisible ?? this.aiVisible,
+        aiEditable: aiEditable ?? this.aiEditable,
+        aiProcess: aiProcess ?? this.aiProcess,
         isVault: isVault ?? this.isVault,
         isProcessed: isProcessed ?? this.isProcessed,
         collectMode: collectMode ?? this.collectMode,

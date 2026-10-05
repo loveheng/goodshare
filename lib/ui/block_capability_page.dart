@@ -5,6 +5,10 @@ import '../ai/capability_chain.dart';
 import 'block_capability_card.dart';
 import 'tokens.dart';
 
+/// 能力页预览最大高度（逻辑像素）：首屏必须同现「查看区（预览）+ 操作区
+/// （链式卡/独立能力）」（2026-10-04 真机取证修复）。
+const double kPreviewMaxHeight = 280;
+
 /// 区块三级能力页（detail-two-zone.md §5.1 四版拍板 2026-10-01）：
 /// 文本块划词菜单「AI 处理本段」/ 媒体块长按 = **单入口直进本页**——不再弹
 /// 能力清单菜单；资源预览 + 全部适用能力（链式步骤）+ 产出回注/Reset 一页
@@ -19,6 +23,7 @@ class BlockCapabilityPage extends StatelessWidget {
     required this.chain,
     this.anchorLabel,
     this.preview,
+    this.onPreviewActivate,
     this.initialOutputs = const {},
     required this.onRunStep,
     required this.onReset,
@@ -37,7 +42,16 @@ class BlockCapabilityPage extends StatelessWidget {
 
   /// 资源预览（Host 传入被长按块的已渲染形态；音频条出页后播放能力
   /// 随播放服务作用域降级，仅作占位预览——可接受）。
+  ///
+  /// **预览限高（kPreviewMaxHeight）**：预览是原块的完整渲染，竖图/截图
+  /// 按原始纵横比会超出视口，把链式工作台与独立能力全部顶出首屏——能力
+  /// 页首屏只剩一张图、看似「没有操作区」（2026-10-04 真机取证）。限高 +
+  /// 裁切让「查看区（预览）+ 操作区（卡/能力）」一屏同现；看全图走
+  /// [onPreviewActivate] 全屏查看。
   final Widget? preview;
+
+  /// 预览激活（图片块 = 点按全屏查看；null = 预览不可激活）。
+  final VoidCallback? onPreviewActivate;
 
   final Map<int, String> initialOutputs;
 
@@ -52,9 +66,8 @@ class BlockCapabilityPage extends StatelessWidget {
     final standalone = standaloneFor(kind);
     return Scaffold(
       appBar: AppBar(
-        // 出口=返回手势/箭头（与详情页二级页同口径）
+        // 无返回箭头（ui-spec §3）：出口=系统手势/返回键
         automaticallyImplyLeading: false,
-        leading: BackButton(onPressed: () => Navigator.pop(context)),
         title: const Text('区块能力'),
       ),
       body: SafeArea(
@@ -70,7 +83,15 @@ class BlockCapabilityPage extends StatelessWidget {
                     Insets.lg,
                     0,
                   ),
-                  child: preview,
+                  child: GestureDetector(
+                    onTap: onPreviewActivate,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(
+                        maxHeight: kPreviewMaxHeight,
+                      ),
+                      child: ClipRect(child: preview),
+                    ),
+                  ),
                 ),
               // 卡内链式工作台（含卡头锚点 + Reset 二次确认）
               BlockCapabilityCard(
@@ -98,10 +119,8 @@ class BlockCapabilityPage extends StatelessWidget {
                       Text(
                         '独立能力',
                         style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
                       ),
                       const SizedBox(height: Insets.sm),
                       Wrap(
@@ -135,6 +154,7 @@ Future<void> showBlockCapabilityPage(
   required CapabilityChain chain,
   String? anchorLabel,
   Widget? preview,
+  VoidCallback? onPreviewActivate,
   Map<int, String> initialOutputs = const {},
   required Future<String?> Function(ContentCapability step) onRunStep,
   required Future<void> Function() onReset,
@@ -150,6 +170,7 @@ Future<void> showBlockCapabilityPage(
         chain: chain,
         anchorLabel: anchorLabel,
         preview: preview,
+        onPreviewActivate: onPreviewActivate,
         initialOutputs: initialOutputs,
         onRunStep: onRunStep,
         onReset: onReset,

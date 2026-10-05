@@ -34,20 +34,27 @@ void main() {
     await repo.purgeDeleted(retention: Duration.zero);
   });
 
-  InboxItem newItem({String? type, String? sourceType, bool locked = false, bool vault = false}) =>
+  InboxItem newItem({
+    String? type,
+    String? sourceType,
+    bool locked = false,
+    bool vault = false,
+    bool aiEditable = false,
+  }) =>
       InboxItem(
         itemType: type ?? InboxItem.typeNote,
         sourceType: sourceType,
         rawContent: 'raw body',
         editLocked: locked,
         isVault: vault,
+        aiEditable: aiEditable,
         createdAt: DateTime.now().millisecondsSinceEpoch,
       );
 
   // ───────── §1 命令模式：UI 与 AI 同一入参 ─────────
 
   test('命令 JSON 往返：toJson → fromJson 与 UI 组装的等价', () async {
-    final it = await repo.add(newItem());
+    final it = await repo.add(newItem(aiEditable: true)); // 已授权：AI 方可改写人类笔记
     const uiBuilt = UpdateItemCommand(id: 'x', title: 't', tags: ['a', 'b'], humanMd: '# m');
     final fromAi = ItemCommand.fromJson(uiBuilt.toJson());
     expect(fromAi, isA<UpdateItemCommand>());
@@ -165,6 +172,56 @@ void main() {
     await handler.execute(DeleteItemCommand(it.id!));
     expect(await repo.byId(it.id!), isNull);
     expect((await repo.listDeleted()).length, 1);
+  });
+
+  // ───────── §1b AI 可见性分层（v20，ai-visibility）─────────
+
+  test('AI 编辑人类笔记需授权：未开启「允许 AI 编辑」被拒，UI 授权后可改', () async {
+    final it = await repo.add(newItem()); // 人类笔记，默认 ai_editable=false
+    expect(
+      () => handler.execute(
+        UpdateItemCommand(id: it.id!, title: 'AI 想改'),
+        actor: CommandActor.ai,
+      ),
+      throwsA(isA<ActionException>()),
+      reason: '人类笔记默认对 AI 只读，未授权编辑被拒',
+    );
+    // 人类在手机端开启授权（仅 UI 可改）
+    await handler.execute(SetAiEditableCommand(it.id!, true), actor: CommandActor.ui);
+    expect((await repo.byId(it.id!))!.aiEditable, isTrue);
+    final r = await handler.execute(
+      UpdateItemCommand(id: it.id!, title: 'AI 已获授权改'),
+      actor: CommandActor.ai,
+    );
+    expect(r.item!.humanTitle, 'AI 已获授权改');
+  });
+
+  test('AI 不得翻转可见性/编辑授权开关本身（仅 UI 可改）', () async {
+    final it = await repo.add(newItem());
+    expect(
+      () => handler.execute(SetAiEditableCommand(it.id!, true), actor: CommandActor.ai),
+      throwsA(isA<ActionException>()),
+    );
+    await handler.execute(SetAiVisibleCommand(it.id!, true), actor: CommandActor.ui);
+    expect((await repo.byId(it.id!))!.aiVisible, isTrue);
+  });
+
+  test('AI 建条默认对 AI 可见且可编辑；人类收集默认不可见不可编辑', () async {
+    final human = await repo.add(newItem()); // 经 newItem：人类，ai_visible/editable 默认 false
+    expect(human.author, InboxItem.authorHuman);
+    expect(human.aiVisible, isFalse);
+    expect(human.aiEditable, isFalse);
+
+    // 经 CollectCommand（正式建条入口）创建 AI 笔记：默认值按 author 推导（见 _collect）
+    final ai = await handler.execute(CollectCommand(
+      itemType: InboxItem.typeNote,
+      rawContent: 'AI 写的',
+      author: InboxItem.authorAi,
+    ));
+    final aiItem = ai.item!;
+    expect(aiItem.author, InboxItem.authorAi);
+    expect(aiItem.aiVisible, isTrue, reason: 'AI 建条默认对 AI 可见');
+    expect(aiItem.aiEditable, isTrue, reason: 'AI 建条默认可编辑');
   });
 
   // ───────── §2 防呆下沉：越权在动作层拦截，不在传输层 ─────────
@@ -289,6 +346,7 @@ void main() {
       rawContent: '首段',
       collectMode: InboxItem.modeMerge,
       editLocked: true,
+      aiEditable: true, // 已授权：AI 主体同样可往合并链追加
       createdAt: DateTime.now().millisecondsSinceEpoch,
     ));
     final r = await handler.execute(
@@ -426,6 +484,7 @@ void main() {
       sourceType: InboxItem.typeNote,
       rawContent: '前文',
       humanMd: md,
+      aiProcess: true, // 授权管线处理（默认关闭，测试显式开启）
       createdAt: 1,
     ));
     // AI 润色产出把媒体块删了 → human_md 必须保留原文，原因进 note 可感知
@@ -450,6 +509,7 @@ void main() {
       sourceType: InboxItem.typeNote,
       rawContent: '纯文本',
       humanMd: '原文',
+      aiProcess: true, // 授权管线处理
       createdAt: 2,
     ));
     await handler.execute(
@@ -457,6 +517,66 @@ void main() {
       actor: CommandActor.pipeline,
     );
     expect((await repo.byId(it2.id!))!.humanMd, 'AI 版');
+  });
+
+  test('AI 回填原文（占位/降级兜底）不覆盖用户编辑保存的正文', () async {
+    // 用户从「最初摄入的原文」起，在详情页编辑态加了下划线并保存 → human_md
+    // 是带 <u> 的版本；此后任何 AI 回写若只把 raw_content 回填（占位实现 /
+    // 队列超时兜底都是这个产出），等于把正文静默打回最初版本——表现即「编辑态
+    // 有下划线、详情读态没有」（两态读的都是 bodyText，只是被换了份旧的）。
+    const edited = '原文\n\n<u>带下划线的文字</u>';
+    final it = await repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      sourceType: InboxItem.typeNote,
+      rawContent: '最初摄入的原文',
+      humanMd: edited,
+      aiProcess: true, // 授权管线处理（默认关闭，测试显式开启）
+      createdAt: 3,
+    ));
+    await handler.execute(
+      ApplyAiResultCommand(
+        it.id!,
+        const ReconstructResult(humanMd: '最初摄入的原文'),
+      ),
+      actor: CommandActor.pipeline,
+    );
+    final after = await repo.byId(it.id!);
+    expect(after!.humanMd, edited, reason: '产出 = raw_content 视为「AI 没产出新正文」，正文保持用户版本');
+    expect(after.isProcessed, 1, reason: '处理态照常推进（不写正文 ≠ 没跑）');
+    expect(after.aiSessionState, isNot('pending'),
+        reason: '回填原文不算 AI 动笔，不该挂出「还原后毫无变化」的空会话（§3.1）');
+  });
+
+  test('管线回写门禁（ai_process）：人类笔记未授权 → 拒绝；授权后通过', () async {
+    final it = await repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      sourceType: InboxItem.typeNote,
+      rawContent: 'r',
+      humanMd: '原文',
+      createdAt: 1,
+    )); // 默认 ai_process=false
+    // 未授权 → 管线（CommandActor.pipeline）回写被拒
+    expect(
+      () => handler.execute(
+        ApplyAiResultCommand(it.id!, const ReconstructResult(humanMd: 'AI 版')),
+        actor: CommandActor.pipeline,
+      ),
+      throwsA(isA<ActionException>()),
+    );
+    // 人类在详情页开启「允许 AI 处理」（仅 UI 可改）后通过
+    await handler.execute(SetAiProcessCommand(it.id!, true), actor: CommandActor.ui);
+    await handler.execute(
+      ApplyAiResultCommand(it.id!, const ReconstructResult(humanMd: 'AI 版')),
+      actor: CommandActor.pipeline,
+    );
+    final after = await repo.byId(it.id!);
+    expect(after!.humanMd, 'AI 版', reason: '授权后管线回写落库');
+    expect(after.aiProcess, isTrue);
+    // AI 不得翻转管线处理授权开关
+    expect(
+      () => handler.execute(SetAiProcessCommand(it.id!, false), actor: CommandActor.ai),
+      throwsA(isA<ActionException>()),
+    );
   });
 
   // ───────── 引用附件迁移（content-pipeline §7 兜底）─────────

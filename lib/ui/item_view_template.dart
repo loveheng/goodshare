@@ -12,9 +12,11 @@ import '../ai/video_clips.dart';
 import '../ai/subtitle.dart';
 import '../ai/url_extract.dart';
 import '../ai/palette_reconstructor.dart' show colorFromMachineJson;
+import '../data/block_artifacts.dart' show BlockArtifactKind;
 import '../models/item.dart';
 import 'block_capability_host.dart';
 import 'content_body.dart';
+import 'image_viewer.dart';
 import 'media_blocks.dart';
 import 'section_legend.dart';
 import 'tokens.dart';
@@ -298,37 +300,46 @@ class _ImageView extends StatelessWidget {
       children: [
         if (item.hasAttachment)
           // 顶级图片也包能力外壳（detail-two-zone.md §5.1 拍板：
-          // 长按进三级能力页——整条图片条目与行内图片块同一入口）
+          // 长按进三级能力页——整条图片条目与行内图片块同一入口）。
+          // 点按 = 全屏查看（2026-10-03 拍板「图片区域点击之后图片全屏查看」
+          // 在二级详情页的兑现——此前只接了作曲器编辑器）。
           wrapWithCapabilityHost(
-            ClipRRect(
-              borderRadius: BorderRadius.circular(Radii.md),
-              // 尺寸前置（§6.1 V1）+ 主色调占位（V3）：提前摆好版面且以图片
-              // 主色铺底，解码完成无白闪、无布局跳动
-              child: item.aspectRatio != null
-                  ? Container(
-                      color:
-                          colorFromMachineJson(item.machineJson) ??
-                          scheme.surfaceContainerHighest,
-                      child: AspectRatio(
-                        aspectRatio: item.aspectRatio!,
-                        child: Image.file(
-                          File(item.rawFilePath!),
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, _, _) =>
-                              const _EmptyView(text: '图片文件已不存在'),
+            GestureDetector(
+              onTap: () =>
+                  showImageFullScreen(context, file: File(item.rawFilePath!)),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(Radii.md),
+                // 尺寸前置（§6.1 V1）+ 主色调占位（V3）：提前摆好版面且以图片
+                // 主色铺底，解码完成无白闪、无布局跳动
+                child: item.aspectRatio != null
+                    ? Container(
+                        color:
+                            colorFromMachineJson(item.machineJson) ??
+                            scheme.surfaceContainerHighest,
+                        child: AspectRatio(
+                          aspectRatio: item.aspectRatio!,
+                          child: Image.file(
+                            File(item.rawFilePath!),
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, _, _) =>
+                                const _EmptyView(text: '图片文件已不存在'),
+                          ),
                         ),
+                      )
+                    : Image.file(
+                        File(item.rawFilePath!),
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, _, _) =>
+                            const _EmptyView(text: '图片文件已不存在'),
                       ),
-                    )
-                  : Image.file(
-                      File(item.rawFilePath!),
-                      fit: BoxFit.contain,
-                      errorBuilder: (_, _, _) =>
-                          const _EmptyView(text: '图片文件已不存在'),
-                    ),
+              ),
             ),
             kind: BlockKind.image,
             anchorLabel: '图片条目',
+            // 顶级条目统一（§2.7）：长按进工作流页（OCR→翻译→摘要，与行内块同通道）
+            blockKey: BlockArtifactKind.topLevelKey,
             trigger: BlockCapabilityTrigger.longPress,
+            previewFile: item.rawFilePath,
           ),
         if (item.bodyText.isNotEmpty)
           // 媒体附文与文本类正文共用 ContentBody（消除裸 SelectableText 渲染降级）
@@ -366,6 +377,8 @@ List<Widget> _audioView(BuildContext context, InboxItem item) {
             kind: BlockKind.audio,
             anchorLabel: '音频条目',
             trigger: BlockCapabilityTrigger.longPress,
+            // 顶级条目统一（§2.7）：同视频区，长按进工作流页
+            blockKey: BlockArtifactKind.topLevelKey,
           ),
         ],
       ),
@@ -391,6 +404,7 @@ List<Widget> _videoView(BuildContext context, InboxItem item) {
           wrapWithCapabilityHost(
             _VideoPlayer(
               path: item.rawFilePath!,
+              itemId: item.id?.toString(),
               initialDurationMs: item.mediaDurationMs,
               jumpTargets: [
                 for (final c in parseClipsJson(item.clipsJson)) c.startMs,
@@ -399,6 +413,9 @@ List<Widget> _videoView(BuildContext context, InboxItem item) {
             kind: BlockKind.video,
             anchorLabel: '视频条目',
             trigger: BlockCapabilityTrigger.longPress,
+            // 顶级条目统一（§2.7）：固定 key='item'，长按进工作流页（与行内
+            // 块同通道，产物落 block_artifacts 的 item 分组）
+            blockKey: BlockArtifactKind.topLevelKey,
           ),
           if (parseClipsJson(item.clipsJson).isNotEmpty) _ClipsList(item: item),
         ],
@@ -568,11 +585,7 @@ Future<void> extractAudioTrack(BuildContext context, InboxItem item) async {
   if (fmt == null || !context.mounted) return;
   final messenger = ScaffoldMessenger.of(context);
   messenger.showSnackBar(const SnackBar(content: Text('正在提取音轨…')));
-  final res = await AudioExtractor.extract(
-    path,
-    format: fmt,
-    itemId: item.id,
-  );
+  final res = await AudioExtractor.extract(path, format: fmt, itemId: item.id);
   messenger.hideCurrentSnackBar();
   if (!res.ok) {
     messenger.showSnackBar(
@@ -623,12 +636,16 @@ class _AudioPlayer extends StatelessWidget {
 class _VideoPlayer extends StatefulWidget {
   const _VideoPlayer({
     required this.path,
+    this.itemId,
     this.jumpTargets = const [],
     this.initialDurationMs,
   });
 
   final List<int> jumpTargets;
   final String path;
+
+  /// 所属条目 id（块字幕装载用；顶级播放器暂无块 key，传 null 无字幕轨）。
+  final String? itemId;
 
   /// 预存总时长（毫秒）；未初始化前先以此显示总时长，避免「0:00」。
   final int? initialDurationMs;
@@ -705,6 +722,7 @@ class _VideoPlayerState extends State<_VideoPlayer> {
     final end = await showInlineVideoPlayer(
       context,
       url: widget.path,
+      itemId: widget.itemId ?? '',
       label: '视频',
       startAt: from,
     );
@@ -732,8 +750,8 @@ class _VideoPlayerState extends State<_VideoPlayer> {
     final total = dur > Duration.zero
         ? dur
         : (widget.initialDurationMs != null && widget.initialDurationMs! > 0
-            ? Duration(milliseconds: widget.initialDurationMs!)
-            : Duration.zero);
+              ? Duration(milliseconds: widget.initialDurationMs!)
+              : Duration.zero);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -778,8 +796,11 @@ class _VideoPlayerState extends State<_VideoPlayer> {
                             borderRadius: BorderRadius.circular(999),
                           ),
                           padding: const EdgeInsets.all(20),
-                          child: const Icon(Icons.play_arrow,
-                              size: 48, color: Colors.white),
+                          child: const Icon(
+                            Icons.play_arrow,
+                            size: 48,
+                            color: Colors.white,
+                          ),
                         ),
                       ),
                   ],

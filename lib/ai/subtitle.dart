@@ -127,6 +127,47 @@ String serializeVtt(List<AsrCue> cues, {SubtitleMode mode = SubtitleMode.sourceO
   return b.toString();
 }
 
+/// SRT/VTT 时间戳 → 秒（`HH:MM:SS,mmm` 或 `HH:MM:SS.mmm`，兼容两种分隔符）。
+double? _parseTimestamp(String s) {
+  final m = RegExp(r'^(\d+):(\d+):(\d+)[,.](\d+)$').firstMatch(s.trim());
+  if (m == null) return null;
+  return int.parse(m.group(1)!) * 3600 +
+      int.parse(m.group(2)!) * 60 +
+      int.parse(m.group(3)!) +
+      int.parse(m.group(4)!) / 1000;
+}
+
+/// SRT/VTT 全文 → cue 列表（播放器字幕轨装载用，2026-10-05 块附件通道）。
+///
+/// 口径与序列化对偶：空文本 cue 丢弃（[usableCues] 同规则）、序号行跳过、
+/// cue 间以空行分隔。VTT cue 标识行（非时间戳的单行）同样跳过。
+/// 解析失败不抛（字幕轨是增强不是必需）：坏时间戳的段整体跳过。
+List<AsrCue> parseSrtVtt(String content) {
+  final cueRe = RegExp(r'(\d+:\d+:\d+[,.]\d+)\s*-->\s*(\d+:\d+:\d+[,.]\d+)');
+  final cues = <AsrCue>[];
+  final blocks = content.replaceAll('\r\n', '\n').split('\n\n');
+  for (final block in blocks) {
+    final lines = block.split('\n').where((l) => l.trim().isNotEmpty).toList();
+    if (lines.isEmpty) continue;
+    var idx = cueRe.firstMatch(lines.first) != null ? 0 : 1;
+    if (idx >= lines.length) continue;
+    final m = cueRe.firstMatch(lines[idx]);
+    if (m == null) continue; // 坏段跳过（增强非必需，不抛）
+    final start = _parseTimestamp(m.group(1)!);
+    if (start == null) continue;
+    final end = _parseTimestamp(m.group(2)!);
+    final text = lines.skip(idx + 1).join('\n').trim();
+    if (text.isEmpty) continue;
+    cues.add(AsrCue(
+      start: start,
+      duration: end == null ? 0 : (end - start).clamp(0, double.infinity).toDouble(),
+      text: text,
+    ));
+  }
+  cues.sort((a, b) => a.start.compareTo(b.start));
+  return cues;
+}
+
 /// 一条字幕产物文件：[lang] 为 null 表示主文件（仅原文 / 双语），否则为目标语言码。
 class SubtitleFile {
   const SubtitleFile({required this.path, required this.ext, this.lang});
@@ -150,6 +191,16 @@ String? translationLangOf(String itemId, String fileName) {
 /// 字幕文件存取：`documents/subtitles/{itemId}.srt|.vtt`（与附件 documents/shares、
 /// 标注 documents/annotations 同层的 app 私有目录）。
 class SubtitleStore {
+  /// 块级字幕的文件名 stem（block-artifact-workflow.md §2.5）：
+  /// `{itemId}.{blockStem}`——blockStem 由 block_key 相对路径转写（`/`→`_`，
+  /// 去掉 `local://` 前缀），可读且文件名安全；与条目级 `{itemId}` 不冲突。
+  static String blockFileStem(String blockKey) {
+    final rel = blockKey.startsWith('local://')
+        ? blockKey.substring('local://'.length)
+        : blockKey;
+    return rel.replaceAll(RegExp(r'[/\\]'), '_');
+  }
+
   static Future<Directory> _dir() async {
     final docs = await getApplicationDocumentsDirectory();
     final d = Directory(p.join(docs.path, 'subtitles'));
@@ -216,4 +267,18 @@ class SubtitleStore {
     debugPrint('[Subtitle] saved ${cues.length} cues -> ${srt.path} (mode=${mode.name})');
     return srt.path;
   }
+
+  /// 块级字幕落盘（block-artifact-workflow.md §2.5）：文件名
+  /// `{itemId}.{blockStem}.srt|.vtt`（blockStem 由 block_key 转写），与条目级
+  /// `{itemId}.srt` 不冲突。失败抛出由调用方按「双产物原子性」处置——
+  /// 块级字幕落盘失败 = 转写任务整单失败（不留有文本无文件的半态口径由
+  /// 调用方选择降级为 transcript-only，见 AsrReconstructor）。
+  static Future<String> saveBlock(
+    String itemId,
+    String blockKey,
+    List<AsrCue> cues, {
+    SubtitleMode mode = SubtitleMode.sourceOnly,
+    String? targetLang,
+  }) =>
+      save('$itemId.${blockFileStem(blockKey)}', cues, mode: mode, targetLang: targetLang);
 }
