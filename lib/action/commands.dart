@@ -244,6 +244,7 @@ sealed class ItemCommand {
           id,
           startMs: _int(json['start_ms']) ?? -1,
           endMs: _int(json['end_ms']) ?? -1,
+          blockKey: _str(json['block_key']),
           expectedVersion: ev,
         );
       case 'clip_process':
@@ -252,6 +253,7 @@ sealed class ItemCommand {
           startMs: _int(json['start_ms']) ?? -1,
           endMs: _int(json['end_ms']) ?? -1,
           steps: _strList(json['steps']) ?? const [],
+          blockKey: _str(json['block_key']),
           expectedVersion: ev,
         );
       case 'extract_tags':
@@ -321,9 +323,9 @@ sealed class ItemCommand {
           ),
         );
       case 'classify':
-        return ClassifyCommand(id, expectedVersion: ev);
+        return ClassifyCommand(id, blockKey: _str(json['block_key']), expectedVersion: ev);
       case 'scan_barcode':
-        return ScanBarcodeCommand(id, expectedVersion: ev);
+        return ScanBarcodeCommand(id, blockKey: _str(json['block_key']), expectedVersion: ev);
       case 'analyze_text':
         return AnalyzeTextCommand(id, expectedVersion: ev);
       case 'add_to_workspace':
@@ -343,13 +345,14 @@ sealed class ItemCommand {
     }
   }
 
-  /// 所有合法命令字（错误提示与文档同步用）。
+  /// 所有合法命令字（错误提示与文档同步用）。仅列 AI 可经 fromJson 构造
+  /// 的 op——set_ai_visible / set_ai_editable 是 UI 专属命令（fromJson 无
+  /// case，AI 翻自己的权限开关属提权），不在此宣告（2026-10-05 修谎报：
+  /// 此前列出但 AI 真发必报未知命令）。
   static const supportedOps = [
     'update',
     'delete',
     'set_vault',
-    'set_ai_visible',
-    'set_ai_editable',
     'set_pin',
     'reclassify',
     'reprocess',
@@ -390,6 +393,7 @@ final class UpdateItemCommand extends ItemCommand {
     this.machineJson,
     this.itemType,
     this.inspirationMd,
+    this.todoState,
     super.expectedVersion,
   });
 
@@ -402,6 +406,11 @@ final class UpdateItemCommand extends ItemCommand {
   /// 灵感区文本（schema v16）：用户私密碎片想法，与 AI 产出区分家
   /// （detail-two-zone.md §3）。
   final String? inspirationMd;
+
+  /// 待办勾选状态（todo_state_json，2026-10-05 接线）：按行内容 hash 平行
+  /// 挂账、不改正文。**UI 专属字段**——fromJson 不解析（AI 不许翻用户的
+  /// 勾选本，与 set_ai_visible 同口径）；null = 不动，空表 = 清空。
+  final List<TodoMark>? todoState;
 
   /// machine_json 原文（字符串或对象皆可，落库前过领域 Schema 强校验）。
   final String? machineJson;
@@ -416,7 +425,8 @@ final class UpdateItemCommand extends ItemCommand {
       humanMd == null &&
       machineJson == null &&
       itemType == null &&
-      inspirationMd == null;
+      inspirationMd == null &&
+      todoState == null;
 
   @override
   String get op => 'update';
@@ -580,11 +590,19 @@ final class OcrCommand extends ItemCommand {
 /// 手动图片分类（= UI「识别分类」/ MCP classify_item）：入队 task_action=classify_image。
 ///
 /// 与 [OcrCommand] 对称（2026-09-28 用户拍板：端侧重资源动作一律手动 / 显式触发，
-/// 摄入不自动跑模型）。产出写入 facets['分类']（AI 分类页消费）。
+/// 摄入不自动跑模型）。
+///
+/// [blockKey] 非空 = 图片**块**分类（`block_classify:<blockKey>`，图片块独立能力块级化
+/// 2026-10-05）：产出落 block_artifacts[classification]，不写 facets——顶级图片
+/// （blockKey='item'）与行内图片块（local://）同走块通道，统一处理口径；null = 条目级
+/// 分类（task_action=classify_image，写入 facets['分类']，保留给 MCP 旧契约）。
 final class ClassifyCommand extends ItemCommand {
-  const ClassifyCommand(this.id, {super.expectedVersion});
+  const ClassifyCommand(this.id, {this.blockKey, super.expectedVersion});
 
   final String id;
+
+  /// 图片块 key（'item' 或 'local://…'）；null = 条目级分类（现行行为）。
+  final String? blockKey;
 
   @override
   String get op => 'classify';
@@ -596,6 +614,7 @@ final class ClassifyCommand extends ItemCommand {
   Map<String, Object?> toJson() => {
         'op': op,
         'id': id,
+        if (blockKey != null) 'block_key': blockKey,
         if (expectedVersion != null) 'expected_version': expectedVersion,
       };
 }
@@ -603,11 +622,18 @@ final class ClassifyCommand extends ItemCommand {
 /// 手动扫描条码 / 二维码（= UI「识别条码」/ MCP scan_barcode_item）：入队 task_action=scan_barcode。
 ///
 /// 与 [ClassifyCommand] 对称（端侧重资源动作一律手动 / 显式触发，摄入不自动跑模型）。
-/// 产出写入 facets['条码']（结构化：[类型:值]）；识别只标注不动作（不抢链接打开 / Wi-Fi 连接）。
+/// 识别只标注不动作（不抢链接打开 / Wi-Fi 连接）。
+///
+/// [blockKey] 非空 = 图片**块**条码（`block_scan_barcode:<blockKey>`）：产出落
+/// block_artifacts[barcode]，不写 facets；null = 条目级（task_action=scan_barcode，
+/// 写入 facets['条码']，保留给 MCP 旧契约）。
 final class ScanBarcodeCommand extends ItemCommand {
-  const ScanBarcodeCommand(this.id, {super.expectedVersion});
+  const ScanBarcodeCommand(this.id, {this.blockKey, super.expectedVersion});
 
   final String id;
+
+  /// 图片块 key（'item' 或 'local://…'）；null = 条目级条码（现行行为）。
+  final String? blockKey;
 
   @override
   String get op => 'scan_barcode';
@@ -619,6 +645,7 @@ final class ScanBarcodeCommand extends ItemCommand {
   Map<String, Object?> toJson() => {
         'op': op,
         'id': id,
+        if (blockKey != null) 'block_key': blockKey,
         if (expectedVersion != null) 'expected_version': expectedVersion,
       };
 }
@@ -977,22 +1004,6 @@ final class SetAiEditableCommand extends ItemCommand {
   Map<String, Object?> toJson() => {'op': op, 'id': id, 'on': on};
 }
 
-/// 管线回写授权（ai-visibility 补丁）：端侧管线（OCR / 翻译 / 摘要 / 转写 / 切片）
-/// 把 AI 产出回写进条目前的开关。**仅 [CommandActor.ui]**：AI 翻不动此开关。
-/// 默认关闭——人类笔记默认不允许管线处理，须人类在详情页显式开启「允许 AI 处理」。
-/// 不入 [ItemCommand.fromJson]：MCP 无法构造，但 MCP 本就无权触发管线回写。
-final class SetAiProcessCommand extends ItemCommand {
-  const SetAiProcessCommand(this.id, this.on, {super.expectedVersion});
-  final String id;
-  final bool on;
-  @override
-  String get op => 'set_ai_process';
-  @override
-  String get targetId => id;
-  @override
-  Map<String, Object?> toJson() => {'op': op, 'id': id, 'on': on};
-}
-
 /// 引用附件迁移（content-pipeline §7 引用模式兜底）：ref → owned。
 ///
 /// 大文件复制属耗时 IO，**不在本命令内进行**（锁内禁重活）——调用方（迁移服务）
@@ -1068,12 +1079,17 @@ final class ClipCommand extends ItemCommand {
     this.id, {
     required this.startMs,
     required this.endMs,
+    this.blockKey,
     super.expectedVersion,
   });
 
   final String id;
   final int startMs;
   final int endMs;
+
+  /// 行内视频块 key（块级切片，2026-10-05）：块按块类型校验，不继承条目
+  /// itemType；null / 顶级 'item' = 条目级切片（条目本身即视频）。
+  final String? blockKey;
 
   @override
   String get op => 'clip';
@@ -1087,6 +1103,7 @@ final class ClipCommand extends ItemCommand {
         'id': id,
         'start_ms': startMs,
         'end_ms': endMs,
+        if (blockKey != null) 'block_key': blockKey,
         if (expectedVersion != null) 'expected_version': expectedVersion,
       };
 }
@@ -1100,6 +1117,7 @@ final class ClipProcessCommand extends ItemCommand {
     required this.startMs,
     required this.endMs,
     this.steps = const [],
+    this.blockKey,
     super.expectedVersion,
   });
 
@@ -1107,6 +1125,9 @@ final class ClipProcessCommand extends ItemCommand {
   final int startMs;
   final int endMs;
   final List<String> steps;
+
+  /// 行内视频块 key（块级切片，2026-10-05）；null / 顶级 'item' = 条目级。
+  final String? blockKey;
 
   @override
   String get op => 'clip_process';
@@ -1121,6 +1142,7 @@ final class ClipProcessCommand extends ItemCommand {
         'start_ms': startMs,
         'end_ms': endMs,
         'steps': steps,
+        if (blockKey != null) 'block_key': blockKey,
         if (expectedVersion != null) 'expected_version': expectedVersion,
       };
 }

@@ -6,6 +6,7 @@ import '../doc/attach.dart';
 import '../models/item.dart';
 import '../service/attach_migration_service.dart';
 import '../ui/repo_auto_reload.dart';
+import '../ui/toast.dart';
 import '../ui/tokens.dart';
 
 /// 附件迁移清单页（content-pipeline §7 引用模式兜底）：
@@ -70,20 +71,32 @@ class _AttachMigrationPageState extends State<AttachMigrationPage>
       _failed.clear();
     });
     final items = List.of(_refs);
-    await _service.migrateAll(
+    final succeeded = await _service.migrateAll(
       items,
-      onProgress: (done, total, title, ok) {
+      // 逐条结果即时回填（2026-10-05 修）：批量失败与单条失败同口径进
+      // _failed——此前批量路径只清不填，失败条目悄悄回到「可迁移」组。
+      onProgress: (done, total, item, r) {
         if (!mounted) return;
-        setState(() => _done = done);
+        setState(() {
+          _done = done;
+          if (r.ok) {
+            _migrated.add(item.id!);
+            _failed.remove(item.id);
+          } else {
+            _failed[item.id!] = r.message;
+          }
+        });
       },
     );
-    // 逐条结果从执行侧回填：migrateOne 单条结果在 migrateAll 内消化，
-    // 此处统一重查 + 逐条探测可达性归类（避免两份状态源）
+    // 统一重查刷新清单（成功条目已转 owned 退出 ref 列表；失败留原组带原因）
     await _load();
     if (!mounted) return;
     setState(() => _migrating = false);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('迁移完成：$_done 条已处理')),
+    ToastManager.show(
+      succeeded == _total
+          ? '迁移完成：$succeeded 条全部成功'
+          : '迁移完成：成功 $succeeded / 失败 ${_total - succeeded}',
+      kind: succeeded == _total ? ToastKind.success : ToastKind.info,
     );
   }
 

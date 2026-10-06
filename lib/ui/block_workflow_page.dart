@@ -1,15 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../ai/video_clips.dart' show ClipSegment, kClipStatusDone, kClipStatusFailed, kClipStatusMarked, kClipStatusProcessing;
 import '../ai/capability.dart';
 import '../ai/workflow.dart';
+import '../data/block_artifacts.dart' show BlockArtifactKind;
 import '../doc/rich_text.dart' show MediaSuffix, classifyMediaUrl;
 import 'audio_playback_service.dart';
 import 'block_capability_host.dart';
 import 'block_capability_page.dart' show kPreviewMaxHeight;
 import 'media_blocks.dart' show MediaAudioBar;
-import 'tokens.dart';
+import 'toast.dart';
 import 'workflow_track.dart';
+import 'tokens.dart';
 
 /// 块工作流页（2026-10-05 v21，SSOT：docs/design/block-artifact-workflow.md §4）：
 /// 行内媒体块长按的三级页**工作流形态**——结构保留只换芯（拍板 9）：骨架
@@ -29,11 +32,12 @@ class BlockWorkflowPage extends StatefulWidget {
     this.onPreviewActivate,
     required this.loadArtifacts,
     required this.onRunStep,
-    required this.onApplyArtifact,
     required this.onReset,
     required this.onRunStandalone,
+    this.loadClips,
     this.onCueSeek,
     this.onEditArtifact,
+    this.loadAnnotationCount,
   });
 
   final BlockKind kind;
@@ -47,9 +51,16 @@ class BlockWorkflowPage extends StatefulWidget {
 
   final Future<BlockArtifactsView> Function(String blockKey) loadArtifacts;
   final Future<bool> Function(WorkflowStep step, String blockKey, String? sourceKind) onRunStep;
-  final Future<void> Function(String blockKey, String kind, String text) onApplyArtifact;
   final Future<void> Function(String blockKey) onReset;
-  final Future<void> Function(String capabilityId) onRunStandalone;
+  final Future<void> Function(String capabilityId, String blockKey) onRunStandalone;
+
+  /// 块切片区间回调（2026-10-06 补展示面）：返回该视频块已登记的关键区间。
+  /// 此前块级切片只存在 clips_json，详情页正文无展示面——保存后用户停留的
+  /// 三级页就地可见（反馈：点击切片保存之后界面不显示刚保存的卡片）。
+  final Future<List<ClipSegment>> Function(String blockKey)? loadClips;
+
+  /// 块标注计数回调（按 blockKey 查 AnnotationStore），用于「已识别结果」展示；null 不展示。
+  final Future<int> Function(String blockKey)? loadAnnotationCount;
 
   /// §3.5 跳帧联动：字幕 cue 点句 → 宿主打开播放器定位播放（详情页实现）。
   final void Function(String blockKey, int cueIndex)? onCueSeek;
@@ -64,6 +75,7 @@ class BlockWorkflowPage extends StatefulWidget {
 
 class _BlockWorkflowPageState extends State<BlockWorkflowPage> {
   BlockArtifactsView _artifacts = BlockArtifactsView.empty;
+  List<ClipSegment> _clips = const [];
   String? _sourceKind;
   bool _loading = true;
 
@@ -100,9 +112,14 @@ class _BlockWorkflowPageState extends State<BlockWorkflowPage> {
 
   Future<void> _reload() async {
     final view = await widget.loadArtifacts(widget.blockKey);
+    // 块切片区间（2026-10-06 补展示面）：回调缺席（非视频块）→ 空列表
+    final clips = widget.loadClips == null
+        ? const <ClipSegment>[]
+        : await widget.loadClips!(widget.blockKey);
     if (!mounted) return;
     setState(() {
       _artifacts = view;
+      _clips = clips;
       _loading = false;
     });
   }
@@ -111,9 +128,8 @@ class _BlockWorkflowPageState extends State<BlockWorkflowPage> {
     final ok = await widget.onRunStep(step, widget.blockKey, sourceKind);
     await _reload(); // 成败都重载（失败无新产物；note 由队列页/状态线承载）
     if (!ok && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('任务未产出结果，可重试或到任务队列查看原因')),
-      );
+      ToastManager.show('任务未产出结果，可重试或到任务队列查看原因',
+          kind: ToastKind.error);
     }
     return ok;
   }
@@ -148,21 +164,24 @@ class _BlockWorkflowPageState extends State<BlockWorkflowPage> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
+    // 独立能力（标注/分类/识别条码）统一块级化（2026-10-05）：顶级 'item' 与行内
+    // local:// 同走 onRunStandalone(id, blockKey)，作用到具体图片块，不再区分；
+    // 结果（分类/条码/标注）统一在下方「已识别结果」展示。
     final standalone = standaloneFor(widget.kind);
     return Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false, // 出口=系统手势/返回键（ui-spec §3）
-        title: const Text('区块能力'),
+        // 标题栏=块类型名（2026-10-05 拍板：不写「区块能力」通称；锚点切到
+        // 提取的音频时工作台实为音频链，标题随锚点走）
+        title: Text(blockKindLabel(_anchorAudio ? BlockKind.audio : widget.kind)),
       ),
       body: SafeArea(
         // 页面级播放服务作用域（§4 音频内联播放条）：本页不在详情页作用域内，
         // 自建 controller 包一层——MediaAudioBar 经 context 取用，退出即回收
         child: AudioPlaybackService(
           controller: _audioCtl,
-          // 产物「应用」作用域（workflow_track 的 Apply chip 经此路由到页面回调，
-          // §3.4 动词体系：应用 = 回注，由详情页落库）
-          child: WorkflowApplyScope(
-          apply: (kind, text) => widget.onApplyArtifact(widget.blockKey, kind, text),
+          // 2026-10-06 拍板：产物「应用」通道退役——workflow_track 不再出
+          // 应用 chip，WorkflowApplyScope 已撤；回注由用户在正文编辑器自主粘贴。
           child: _loading
               ? const Center(child: CircularProgressIndicator())
               : SingleChildScrollView(
@@ -178,7 +197,19 @@ class _BlockWorkflowPageState extends State<BlockWorkflowPage> {
                             constraints: const BoxConstraints(
                               maxHeight: kPreviewMaxHeight,
                             ),
-                            child: ClipRect(child: widget.preview),
+                            // 限高 + 居中裁切（2026-10-05 修）：限高只约束**裁切框**
+                            //（此处 ConstrainedBox 决定窗口高 280），子级经
+                            // OverflowBox 得「有界宽 + 无界高」排版——避免超高
+                            // 预览（竖屏视频播放器 ≈660，Column 内含进度条/标记
+                            // chips）被压进 280 后内部 RenderFlex 溢出、控制条与
+                            // 居中播放箭头被挤出可视区；居中裁切保证主体可见。
+                            child: ClipRect(
+                              child: OverflowBox(
+                                alignment: Alignment.center,
+                                maxHeight: double.infinity,
+                                child: widget.preview,
+                              ),
+                            ),
                           ),
                         ),
                       ),
@@ -219,8 +250,11 @@ class _BlockWorkflowPageState extends State<BlockWorkflowPage> {
                       sourceKind: _sourceKind,
                       onSourceKindChanged: (k) => setState(() => _sourceKind = k),
                       onRunStep: _runStep,
-                      // §3.6「以此继续处理」：仅视频 spec 提供切到音频锚点
-                      onAnchorSwitch: widget.kind == BlockKind.video
+                      // §3.6「以此继续处理」：只在**确实存在 audio_file 产物**
+                      // 时给入口（audio_file 由「提取音频」步骤产出；切锚点后
+                      // 转写改用音轨文件省一次解码）。
+                      onAnchorSwitch: widget.kind == BlockKind.video &&
+                              _artifacts.kinds.contains(BlockArtifactKind.audioFile)
                           ? (_) => setState(() => _anchorAudio = true)
                           : null,
                       // §3.5 跳帧联动：cue 点句 → 宿主开播放器定位
@@ -250,12 +284,7 @@ class _BlockWorkflowPageState extends State<BlockWorkflowPage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              '独立能力',
-                              style: theme.textTheme.labelSmall?.copyWith(
-                                color: scheme.onSurfaceVariant,
-                              ),
-                            ),
+                            sectionHeader(theme, scheme, '独立能力'),
                             const SizedBox(height: Insets.sm),
                             Wrap(
                               spacing: Insets.sm,
@@ -265,19 +294,169 @@ class _BlockWorkflowPageState extends State<BlockWorkflowPage> {
                                   ActionChip(
                                     avatar: Icon(c.icon, size: 16),
                                     label: Text(c.label),
-                                    onPressed: () => widget.onRunStandalone(c.id),
+                                    // 落定后回刷本页（2026-10-05 修）：独立能力
+                                    // 由宿主等任务落定才返回，_reload 重读
+                                    // block_artifacts + 标注计数，「已识别结果」
+                                    // 不再是空的要退出重进。
+                                    onPressed: () async {
+                                      await widget.onRunStandalone(
+                                        c.id,
+                                        widget.blockKey,
+                                      );
+                                      if (mounted) await _reload();
+                                    },
                                   ),
                               ],
                             ),
                           ],
                         ),
                       ),
+                      // 切片区间展示面（2026-10-06 补）：块级切片此前只落
+                      // clips_json 无展示位——保存标记后三级页就地可见
+                      //（区间/状态/note 与切片编辑器同口径，R1 同一份状态）。
+                      if (_clips.isNotEmpty) ...[
+                        sectionHeader(theme, scheme, '切片区间'),
+                        const SizedBox(height: Insets.sm),
+                        for (final seg in _clips)
+                          Container(
+                            margin: const EdgeInsets.only(bottom: Insets.sm),
+                            padding: const EdgeInsets.all(Insets.sm),
+                            decoration: BoxDecoration(
+                              color: scheme.surfaceContainerHighest,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(children: [
+                                  const Icon(Icons.bookmark_outlined, size: 16),
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                    child: Text(
+                                      '${_fmtMs(seg.startMs)} → ${_fmtMs(seg.endMs)}'
+                                      ' · ${switch (seg.status) {
+                                        kClipStatusMarked => '已标记',
+                                        kClipStatusProcessing => '处理中…',
+                                        kClipStatusDone => '已完成',
+                                        kClipStatusFailed => '失败',
+                                        _ => seg.status,
+                                      }}',
+                                      style: theme.textTheme.labelMedium,
+                                    ),
+                                  ),
+                                ]),
+                                if (seg.note != null)
+                                  Text(seg.note!,
+                                      style: theme.textTheme.bodySmall?.copyWith(
+                                        color: seg.status == kClipStatusFailed
+                                            ? scheme.error
+                                            : scheme.onSurfaceVariant,
+                                      )),
+                                if (seg.summary != null && seg.summary!.trim().isNotEmpty) ...[
+                                  const SizedBox(height: 4),
+                                  Text(seg.summary!,
+                                      maxLines: 3,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: theme.textTheme.bodySmall),
+                                ],
+                              ],
+                            ),
+                          ),
+                        Text(
+                          '处理进度与产出在 AI 任务队列查看；区间编辑在正文中长按视频块 → 视频切片。',
+                          style: theme.textTheme.bodySmall
+                              ?.copyWith(color: scheme.onSurfaceVariant),
+                        ),
+                        const SizedBox(height: Insets.md),
+                      ],
+                      ..._standaloneResults(),
                   ],
                 ),
               ),
             ),
           ),
-        ),
     );
   }
+
+  /// 毫秒 → m:ss（切片区间展示；与 clip_editor_sheet 的 _fmt 同口径）。
+  String _fmtMs(int ms) {
+    final s = (ms / 1000).round();
+    return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
+  }
+
+  /// 独立能力「已识别结果」展示面（块级化 2026-10-05）：分类/条码来自 block_artifacts，
+  /// 标注数来自 AnnotationStore（按 blockKey）；顶级 'item' 与行内 local:// 一致。
+  List<Widget> _standaloneResults() {
+    final scheme = Theme.of(context).colorScheme;
+    final out = <Widget>[];
+    final cls = _artifacts.text[BlockArtifactKind.classification];
+    if (cls != null && cls.trim().isNotEmpty) {
+      out.add(_resultCard(
+        scheme,
+        Icons.sell_outlined,
+        '分类',
+        cls.split('\n').where((l) => l.trim().isNotEmpty).toList(),
+      ));
+    }
+    final bc = _artifacts.text[BlockArtifactKind.barcode];
+    if (bc != null && bc.trim().isNotEmpty) {
+      out.add(_resultCard(
+        scheme,
+        Icons.qr_code_2_outlined,
+        '条码 / 二维码',
+        bc.split('\n').where((l) => l.trim().isNotEmpty).toList(),
+      ));
+    }
+    if (widget.loadAnnotationCount != null) {
+      out.add(FutureBuilder<int>(
+        future: widget.loadAnnotationCount!(widget.blockKey),
+        builder: (ctx, snap) => _resultCard(
+          scheme,
+          Icons.edit_note_outlined,
+          '标注',
+          ['${snap.data ?? 0} 处'],
+        ),
+      ));
+    }
+    return out;
+  }
+
+  Widget _resultCard(
+    ColorScheme scheme,
+    IconData icon,
+    String title,
+    List<String> lines,
+  ) =>
+      Padding(
+        padding: const EdgeInsets.fromLTRB(Insets.lg, Insets.md, Insets.lg, 0),
+        child: Card(
+          color: scheme.surfaceContainerLow,
+          child: Padding(
+            padding: const EdgeInsets.all(Insets.md),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(icon, size: 16, color: scheme.onSurfaceVariant),
+                    const SizedBox(width: 6),
+                    Text(
+                      title,
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: Insets.sm),
+                for (final l in lines)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 2),
+                    child: Text(l, style: Theme.of(context).textTheme.bodyMedium),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      );
 }

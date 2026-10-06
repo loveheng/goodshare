@@ -8,6 +8,7 @@ import '../models/item.dart';
 import '../ui/confirm_dialog.dart';
 import '../ui/feedback_views.dart';
 import '../ui/repo_auto_reload.dart';
+import '../ui/toast.dart';
 
 /// 最近删除：保留期内可恢复或手动彻底删除；30 天后启动时自动物理清理。
 class RecentDeletedPage extends StatefulWidget {
@@ -56,6 +57,21 @@ class _RecentDeletedPageState extends State<RecentDeletedPage> with RepoAutoRelo
     });
   }
 
+  /// 写动作统一薄出口（R1：失败必须被感知）：SnackBar 弹原因，成功按需提示。
+  Future<void> _run(Future<Object?> Function() action, String doneText) async {
+    try {
+      await action();
+      if (mounted) {
+        ToastManager.show(doneText, kind: ToastKind.success);
+      }
+    } on ActionException catch (e) {
+      if (mounted) {
+        ToastManager.show(e.message, kind: ToastKind.error);
+      }
+    }
+    await _reload();
+  }
+
   Future<void> _confirmClearAll() async {
     if (_items.isEmpty) return;
     final ok = await confirmDialog(
@@ -66,8 +82,7 @@ class _RecentDeletedPageState extends State<RecentDeletedPage> with RepoAutoRelo
       danger: true,
     );
     if (ok == true) {
-      await widget.handler.purgeAllDeleted();
-      await _reload();
+      await _run(() => widget.handler.purgeAllDeleted(), '已清空');
     }
   }
 
@@ -80,8 +95,7 @@ class _RecentDeletedPageState extends State<RecentDeletedPage> with RepoAutoRelo
       danger: true,
     );
     if (ok == true) {
-      await widget.handler.execute(DeleteForeverCommand(it.id!));
-      await _reload();
+      await _run(() => widget.handler.execute(DeleteForeverCommand(it.id!)), '已彻底删除');
     }
   }
 
@@ -90,7 +104,12 @@ class _RecentDeletedPageState extends State<RecentDeletedPage> with RepoAutoRelo
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
       appBar: AppBar(
-        automaticallyImplyLeading: false,
+        automaticallyImplyLeading: false, // 出口=显式 ×（去箭头拍板的完整形态）
+        leading: IconButton(
+          tooltip: '关闭',
+          icon: const Icon(Icons.close),
+          onPressed: () => Navigator.pop(context),
+        ),
         title: const Text('最近删除'),
       ),
       // 清空收底（2026-10-05 拍板）：破坏性动作离开顶栏高频区，落右下拇指区
@@ -123,10 +142,8 @@ class _RecentDeletedPageState extends State<RecentDeletedPage> with RepoAutoRelo
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             TextButton(
-                              onPressed: () async {
-                                await widget.handler.execute(RestoreCommand(it.id!));
-                                await _reload();
-                              },
+                              onPressed: () =>
+                                  _run(() => widget.handler.execute(RestoreCommand(it.id!)), '已恢复'),
                               child: const Text('恢复'),
                             ),
                             IconButton(

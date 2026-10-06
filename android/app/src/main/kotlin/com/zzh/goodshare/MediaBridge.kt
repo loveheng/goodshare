@@ -287,7 +287,15 @@ object MediaBridge {
     ): Map<String, Any>? {
         val extractor = MediaExtractor()
         try {
-            extractor.setDataSource(path)
+            // content:// 引用模式条目（不复制原件）：File 路径不存在，须走
+            // ContentResolver 数据源；appContext 缺失（测试环境）按无音轨降级。
+            if (path.startsWith("content://")) {
+                val ctx = appContext
+                    ?: return null
+                extractor.setDataSource(ctx, Uri.parse(path), null)
+            } else {
+                extractor.setDataSource(path)
+            }
             val (trackIndex, trackFormat) = firstAudioTrack(extractor) ?: return null
             extractor.selectTrack(trackIndex)
             val mime = trackFormat.getString(MediaFormat.KEY_MIME)!!
@@ -335,7 +343,14 @@ object MediaBridge {
                             val f = codec.outputFormat
                             srcRate = f.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                             channels = f.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                            pcmEncoding = f.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                            // KEY_PCM_ENCODING 是可选键：16-bit 输出时部分解码器不写该键，
+                            // 裸 getInteger 抛 NPE → runSafe 吞成 null →「解码失败」。
+                            // 缺省即 ENCODING_PCM_16BIT（与 transcodeAudio.writePcm 同款防御）。
+                            pcmEncoding = try {
+                                f.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                            } catch (_: Exception) {
+                                AudioFormat.ENCODING_PCM_16BIT
+                            }
                         }
                         outIdx >= 0 -> {
                             if (info.size > 0) {

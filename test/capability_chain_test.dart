@@ -69,11 +69,13 @@ void main() {
   test('独立能力按类型分发（二级页内容能力 chips 拆入三级页）', () {
     expect(standaloneFor(BlockKind.image).map((c) => c.id).toList(),
         ['annotate', 'classify', 'scan_barcode']);
-    expect(standaloneFor(BlockKind.video).map((c) => c.id).toList(),
-        ['clip', 'extract_audio', 'export_subtitle']);
-    expect(standaloneFor(BlockKind.text).map((c) => c.id).toList(),
-        ['analyze_text']);
-    expect(standaloneFor(BlockKind.audio).map((c) => c.id).toList(),
-        ['extract_audio', 'export_subtitle']);
+    // 2026-10-05：视频独立能力 = 切片一项——提取音轨升为「提取音频」首步骤，
+    // 字幕导出由字幕产物卡「导出」承载，不再双入口。
+    expect(standaloneFor(BlockKind.video).map((c) => c.id).toList(), ['clip']);
+    // 分析文本无人类 chip（2026-10-05 拍板）：facets 为机器维度（MCP/V2 聚类），
+    // 与标签展示重复——文本块无独立能力，「独立能力」区整段不渲染。
+    expect(standaloneFor(BlockKind.text).map((c) => c.id).toList(), isEmpty);
+    // 音频（2026-10-05 扩展）：切片共享——转写即出字幕产物卡（含导出）。
+    expect(standaloneFor(BlockKind.audio).map((c) => c.id).toList(), ['clip']);
   });
 }

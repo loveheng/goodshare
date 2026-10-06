@@ -126,10 +126,27 @@ void main() {
   });
 
   group('WorkflowSpec 纯函数（§3.3 可用性判定）', () {
-    test('视频 spec：四步、锚点顺序正确', () {
+    test('视频 spec：四步（提取音频升回首步骤，2026-10-05 草图）', () {
       final s = workflowFor(BlockKind.video);
+      // 提取音频恢复为显式用户步骤，排在转写之前
       expect(s.steps.map((e) => e.id).toList(),
           ['extract_audio', 'transcribe', 'translate', 'summarize']);
+      // 提取音频产 audio_file；转写仍一步双产物：转写文本 + 字幕
+      expect(s.steps.first.produces, {BlockArtifactKind.audioFile});
+      expect(s.steps[1].produces,
+          {BlockArtifactKind.transcript, BlockArtifactKind.subtitle});
+    });
+
+    test('视频转写不再顺带产音轨（audio_file 由提取音频步骤独占）', () {
+      final s = workflowFor(BlockKind.video);
+      final transcribe = s.steps[1];
+      // 转写 extraKinds 已摘除 audio_file：不再孤儿产物、锚点不误判
+      expect(transcribe.extraKinds, isEmpty);
+      expect(transcribe.produces,
+          {BlockArtifactKind.transcript, BlockArtifactKind.subtitle});
+      // 音频块无提取音频步骤（本即音频）
+      expect(workflowFor(BlockKind.audio).steps.map((e) => e.id),
+          isNot(contains('extract_audio')));
     });
 
     test('availabilityOf：空产物 → 链首 ready、翻译 locked', () {

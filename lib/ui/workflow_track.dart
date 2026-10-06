@@ -6,6 +6,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../ai/workflow.dart';
 import '../data/block_artifacts.dart' show BlockArtifactKind;
+import 'toast.dart';
 import 'tokens.dart';
 
 /// 工作流轨（2026-10-05 v21，SSOT：docs/design/block-artifact-workflow.md §4）：
@@ -97,14 +98,7 @@ class WorkflowTrack extends StatelessWidget {
         children: [
           Row(
             children: [
-              Expanded(
-                child: Text(
-                  '工作流',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
+              Expanded(child: sectionHeader(theme, scheme, '工作流')),
               if (onReset != null)
                 IconButton(
                   tooltip: '清除本块全部产物',
@@ -114,7 +108,7 @@ class WorkflowTrack extends StatelessWidget {
             ],
           ),
           const SizedBox(height: Insets.xs),
-          for (var i = 0; i < spec.steps.length; i++)
+          for (var i = 0; i < spec.steps.length; i++) ...[
             _StepRow(
               step: spec.steps[i],
               existingKinds: existingKinds,
@@ -129,13 +123,34 @@ class WorkflowTrack extends StatelessWidget {
               onCueSeek: onCueSeek,
               onEditArtifact: onEditArtifact,
               audioPreviewBuilder: audioPreviewBuilder,
-              isLast: i == spec.steps.length - 1,
             ),
+            if (i != spec.steps.length - 1)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: Insets.sm),
+                child: Divider(height: 1),
+              ),
+          ],
         ],
       ),
     );
   }
 }
+
+/// 分区签名式小标题（2026-10-05 骨架重做，ui-spec §2.2）：短前置规则 + 宽字距标签，
+/// 与详情页分区标题同视觉语言；强调色只留给动作，此处取中性 onSurfaceVariant。
+Widget sectionHeader(ThemeData theme, ColorScheme scheme, String label) => Row(
+      children: [
+        Container(width: 16, height: 2, color: scheme.outlineVariant),
+        const SizedBox(width: Insets.sm),
+        Text(
+          label,
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: scheme.onSurfaceVariant,
+            letterSpacing: 2,
+          ),
+        ),
+      ],
+    );
 
 class _StepRow extends StatefulWidget {
   const _StepRow({
@@ -152,7 +167,6 @@ class _StepRow extends StatefulWidget {
     this.onCueSeek,
     this.onEditArtifact,
     this.audioPreviewBuilder,
-    required this.isLast,
   });
 
   final WorkflowStep step;
@@ -176,8 +190,6 @@ class _StepRow extends StatefulWidget {
 
   /// audio_file 卡内联播放条构建器（透传 WorkflowTrack；null = 摘要行退化）。
   final Widget Function(String filePath)? audioPreviewBuilder;
-
-  final bool isLast;
 
   @override
   State<_StepRow> createState() => _StepRowState();
@@ -226,7 +238,9 @@ class _StepRowState extends State<_StepRow> {
     final hasArtifact = step.produces.isNotEmpty &&
         step.produces.every(widget.existingKinds.contains);
 
-    // 节点状态：执行中呼吸（进度圈）/ 完成（实心）/ 失败（红）/ 待执行 / 锁定（空心）
+    // 节点状态：执行中呼吸（进度圈）/ 完成（实心）/ 失败（红）/ 待执行 / 锁定（空心）。
+    // 完成态用**中性色**（onSurfaceVariant）——完成是状态不是动作，「橘红纪律」
+    // 回收：强调色只留给「开始/重试」等动作与 segmented 选中态（2026-10-05 骨架重做）。
     final node = _running
         ? const SizedBox(
             width: 20,
@@ -237,15 +251,17 @@ class _StepRowState extends State<_StepRow> {
             hasArtifact ? Icons.check_circle : Icons.radio_button_unchecked,
             size: 20,
             color: hasArtifact
-                ? scheme.primary
+                ? scheme.onSurfaceVariant
                 : locked
                     ? scheme.outlineVariant
                     : scheme.outline,
           );
 
     final children = <Widget>[
-      // 节点 + 步骤名（锁定态紧凑单行：灰显 + 缺源标记）
+      // 步骤头：状态图标**内联**到行首（2026-10-05 骨架重做——拆掉左侧进度竖线，
+      // 不再有独立 rail 列，步骤间以分隔线区隔，结构更扁、首屏更省纵向空间）。
       Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           node,
           const SizedBox(width: Insets.sm),
@@ -275,7 +291,7 @@ class _StepRowState extends State<_StepRow> {
             Text(
               '已存',
               style: theme.textTheme.labelSmall?.copyWith(
-                color: scheme.primary,
+                color: scheme.onSurfaceVariant,
               ),
             )
           else
@@ -317,8 +333,11 @@ class _StepRowState extends State<_StepRow> {
 
     // 产物卡（完成态，折叠摘要行；点开全文/操作区）
     if (hasArtifact) {
+      // 出卡 = produces ∪ extraKinds（extraKinds 如视频转写顺带的 audio_file，
+      // 随生但不计入 done 判定；存在即出卡）。
+      final renderKinds = <String>{...step.produces, ...step.extraKinds};
       final kindsWithArtifact =
-          step.produces.where(widget.existingKinds.contains).toList();
+          renderKinds.where(widget.existingKinds.contains).toList();
       for (final k in kindsWithArtifact) {
         final text = widget.artifactText[k] ?? '';
         final meta = widget.artifactMeta[k];
@@ -341,19 +360,12 @@ class _StepRowState extends State<_StepRow> {
               audioPreview: audioPreview,
               expanded: _expanded,
               onToggle: () => setState(() => _expanded = !_expanded),
-              // 空产物不给「应用」（§3.4）：audio_file 等文件类产物无文本，
-              // 应用=插入空引用块是脏写入；文件类走「导出」，文本空则仅剩复制/导出
-              onApply: _running || text.trim().isEmpty
-                  ? null
-                  : () => _apply(context, k, text),
-              onCopy: text.isEmpty
+              onCopy: k == BlockArtifactKind.subtitle || text.isEmpty
                   ? null
                   : () async {
                       await Clipboard.setData(ClipboardData(text: text));
                       if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('已复制')),
-                        );
+                        ToastManager.show('已复制', kind: ToastKind.success);
                       }
                     },
               // 文件类产物（字幕/音轨）：导出 = 系统分享（§3.4 动词体系）
@@ -393,48 +405,15 @@ class _StepRowState extends State<_StepRow> {
         );
     }
 
-    return IntrinsicHeight(
-      child: Row(
+    // 2026-10-05 骨架重做：拆掉左侧进度竖线，步骤头状态图标已内联（见上）。
+    // 步骤间区隔交由父级 WorkflowTrack 插分隔线，本行只负责单步内容 + 底部留白。
+    return Padding(
+      padding: const EdgeInsets.only(bottom: Insets.md),
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // 左细进度线（§4）：节点居中，线下延至下一步
-          SizedBox(
-            width: 20,
-            child: Column(
-              children: [
-                node,
-                if (!widget.isLast)
-                  Expanded(
-                    child: Center(
-                      child: SizedBox(
-                        width: 2,
-                        child: ColoredBox(
-                          color: hasArtifact ? scheme.primary : scheme.outlineVariant,
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          const SizedBox(width: Insets.sm),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.only(bottom: Insets.md),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: children,
-              ),
-            ),
-          ),
-        ],
+        children: children,
       ),
     );
-  }
-
-  Future<void> _apply(BuildContext context, String kind, String text) async {
-    HapticFeedback.lightImpact();
-    await _runStepApply(context, widget.step, kind, text, _effectiveSource);
   }
 }
 
@@ -448,7 +427,6 @@ class _ArtifactCard extends StatelessWidget {
     this.elapsedMs,
     required this.expanded,
     required this.onToggle,
-    this.onApply,
     this.onCopy,
     this.onExport,
     this.onAnchorSwitch,
@@ -469,7 +447,6 @@ class _ArtifactCard extends StatelessWidget {
 
   final bool expanded;
   final VoidCallback onToggle;
-  final VoidCallback? onApply;
   final VoidCallback? onCopy;
   final VoidCallback? onExport;
 
@@ -505,7 +482,9 @@ class _ArtifactCard extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.all(Insets.sm),
         decoration: BoxDecoration(
-          color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+          // 实色令牌（2026-10-05 骨架重做）：弃用半透明叠层（脏感来源），走规范
+          // surfaceContainer，与详情页附录卡同材质。
+          color: scheme.surfaceContainer,
           borderRadius: BorderRadius.circular(Radii.md),
         ),
         child: Column(
@@ -540,22 +519,24 @@ class _ArtifactCard extends StatelessWidget {
                 ],
                 const Spacer(),
                 // 状态角标「已存」（§3.4：产物完成即落库，是默认态——
-                // 卡内不出现「保留」动词，避免误读「不点就丢」）
+                // 卡内不出现「保留」动词，避免误读「不点就丢」）。中性配色
+                // （2026-10-05 骨架重做，橘红纪律回收）：完成是状态不是动作，
+                // 强调色只留给「开始/重试」与选源选中态。
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
-                    color: scheme.primaryContainer,
+                    color: scheme.surfaceContainerHighest,
                     borderRadius: BorderRadius.circular(Radii.lg),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.check, size: 12, color: scheme.onPrimaryContainer),
+                      Icon(Icons.check, size: 12, color: scheme.onSurfaceVariant),
                       const SizedBox(width: 2),
                       Text(
                         '已存',
                         style: theme.textTheme.labelSmall?.copyWith(
-                          color: scheme.onPrimaryContainer,
+                          color: scheme.onSurfaceVariant,
                         ),
                       ),
                     ],
@@ -639,12 +620,6 @@ class _ArtifactCard extends StatelessWidget {
                       visualDensity: VisualDensity.compact,
                       label: const Text('编辑'),
                       onPressed: () => onEditArtifact!(kind, text),
-                    ),
-                  if (onApply != null)
-                    ActionChip(
-                      visualDensity: VisualDensity.compact,
-                      label: const Text('应用'),
-                      onPressed: onApply,
                     ),
                   if (onExport != null)
                     ActionChip(
@@ -734,34 +709,4 @@ Future<void> shareArtifactFile(String path) async {
     return;
   }
   await SharePlus.instance.share(ShareParams(files: [XFile(path)]));
-}
-
-/// 产物「应用」：由页面级回调承载（就近插入源媒体行正下方 / 灵感区目标选择）。
-/// 此处只做跳板：页面在 BlockCapabilityExecutor 注入 onApplyArtifact。
-Future<void> _runStepApply(
-  BuildContext context,
-  WorkflowStep step,
-  String kind,
-  String text,
-  String? sourceKind,
-) async {
-  final executor = WorkflowApplyScope.maybeOf(context);
-  if (executor == null) return;
-  await executor.apply(kind, text);
-}
-
-/// 产物应用作用域（页面级注入；与 BlockCapabilityExecutor 同模式，
-/// 工作流轨不依赖链式卡的回调形状）。
-typedef WorkflowApplyFn = Future<void> Function(String kind, String text);
-
-class WorkflowApplyScope extends InheritedWidget {
-  const WorkflowApplyScope({super.key, required this.apply, required super.child});
-
-  final WorkflowApplyFn apply;
-
-  static WorkflowApplyScope? maybeOf(BuildContext context) =>
-      context.dependOnInheritedWidgetOfExactType<WorkflowApplyScope>();
-
-  @override
-  bool updateShouldNotify(WorkflowApplyScope oldWidget) => false;
 }

@@ -106,9 +106,8 @@ class InboxItem {
   final bool aiVisible;
   /// 对 AI 写门禁 / 人类同意：false=AI 不可编辑该人类笔记；true=已授权可编辑。仅 UI 可改。
   final bool aiEditable;
-  /// 管线回写授权（ai-visibility 补丁）：false=端侧管线（OCR/翻译/摘要/转写/切片）
-  /// 不处理、不回写此人类笔记；true=已授权管线处理。默认关闭——收集即处理不再默认开启，
-  /// 须人类在详情页显式开启「允许 AI 处理」。仅 UI 可改（CommandActor.ui）。
+  /// 旧管线回写授权位（ai-visibility v20）：开关 UI 与全部门禁已于 2026-10-05
+  /// 移除（管线回写不再要独立授权）；字段与 DB 列保留仅供历史数据兼容。
   final bool aiProcess;
   final int isProcessed; // 0 待处理 / 1 完成 / -1 失败
   final String collectMode;
@@ -150,20 +149,27 @@ class InboxItem {
 
   /// 列表/搜索预览：优先标题，其次 TL;DR，最后原文首行。
   ///
-  /// 标题若来自一级标题行派生（`noteTitleOf`），可能携带行内标记（如 `<u>`）；
-  /// 预览与详情页标题栏都是纯文本展示，故对标题做行内剥壳，避免列表卡片、
-  /// 顶栏出现 `<u>` 残壳（下划线等行内格式只在详情页正文阅读态呈现）。
+  /// 纯文本剥壳口径（用户拍板：纯文本场景一律无 md 标记）：
+  /// - 标题来自一级标题行派生（`noteTitleOf` 保留原文）→ 经 [titleToPlain]
+  ///   剥行内标记 + 行首 `#` 前缀（存量数据兜底），卡片不出 `**`/`<u>`/`#` 残壳；
+  /// - 无标题/TLDR 时预览落回 rawContent（Markdown 子集）→ 经 [markdownToPlain]
+  ///   整篇剥壳（`# 标题`/`**粗体**`/`![图片](…)`→ `[图片]` 等），
+  ///   渲染出口（详情页 ContentBody）不受影响。
   String get preview {
     final String base;
     if (humanTitle?.isNotEmpty ?? false) {
-      // 标题含行内标记（如 `<u>`）→ 纯文本预览须剥壳
-      base = inlineToPlain(const MarkdownSubsetParser().parseInline(humanTitle!));
+      base = titleToPlain(humanTitle!);
     } else if (humanTldr?.isNotEmpty ?? false) {
       base = humanTldr!;
     } else {
-      base = rawContent ?? '';
+      base = markdownToPlain(rawContent ?? '');
     }
-    final oneLine = base.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final oneLine = base
+        // 媒体占位符不进预览文本（2026-10-06）：列表卡对行内媒体块渲染真图/封面，
+        // `[图片]`/`[视频: x]` 文字残留成噪音；音频仍占位（卡无音频渲染面）。
+        .replaceAll(RegExp(r'\[(?:图片|视频)(?::[^\]]*)?\]'), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
     return oneLine.length > 120 ? '${oneLine.substring(0, 120)}…' : oneLine;
   }
 
@@ -447,6 +453,25 @@ class TodoMark {
   final String hash;
   final bool done;
   final int? ts;
+
+  /// 勾选关联键（2026-10-05 定口径）：**待办行纯文本**（去 `- [ ]`/`- [x]`
+  /// 标记与行内标记后的内容，trim）的 FNV-1a 32 位 hex。
+  ///
+  /// 设计约束（待办勾选批次拍板）：
+  /// - **按内容寻址、不掺行号**——重排待办不丢勾选态（行号随编辑失效，
+  ///   「行号寻址禁止」拍板早已封死该路）；
+  /// - **改文即新条目**——被编辑的待办行算出新 hash 匹配不到旧记录，
+  ///   按「新待办、默认未勾」处理，旧记录由写侧 GC 丢弃；
+  /// - **禁用 `String.hashCode`**——Dart 对其按进程随机化，重启即变，
+  ///   无法跨会话持久关联。
+  static String hashOf(String text) {
+    var h = 0x811c9dc5;
+    for (final code in text.trim().codeUnits) {
+      h ^= code;
+      h = (h * 0x01000193) & 0xFFFFFFFF;
+    }
+    return h.toRadixString(16).padLeft(8, '0');
+  }
 
   Map<String, Object?> toJson() => {'hash': hash, 'done': done, if (ts != null) 'ts': ts};
 

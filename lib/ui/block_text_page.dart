@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../ai/capability.dart';
+import 'toast.dart';
 import 'tokens.dart';
 
 /// 文本块三级处理页（detail-two-zone.md §5.1 拍板：长按 → 能力菜单 →
@@ -66,9 +67,7 @@ class _BlockTextPageState extends State<_BlockTextPage> {
   Future<void> _run(ContentCapability cap) async {
     await widget.onCapability?.call(cap, _ctrl.text);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('已开始${cap.label}')),
-    );
+    ToastManager.show('已开始${cap.label}');
   }
 
   void _save() => Navigator.of(context).pop(_ctrl.text);

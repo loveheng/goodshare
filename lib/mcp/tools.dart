@@ -348,8 +348,6 @@ List<Map<String, Object?>> toolSchemas() => [
             '一步双产物（transcript 文本 + SRT/VTT 字幕文件）落块级产物表，**不改动条目正文 human_md**。'
             '异步入队执行：本调用立即返回 queued + task_id，稍后用 get_item 读 block_artifacts 字段取产出'
             '（task_id 可查 get_job_status）。'
-            '前置授权：该条目须已开启「允许 AI 处理」（手机端详情页开关，AI 不可自行开启），'
-            '否则入队前即被拒绝——块能力对 AI 主体**不豁免**门禁。'
             '同一块同一任务已在队列中时会拒绝重复入队（不必重试）；换参数请先取消原任务。'
             '其余块能力（识别文字 / 翻译 / 摘要 / 提取音轨）经 batch_items 发送同名字段（带 block_key）同样可达。',
         'inputSchema': {
@@ -383,7 +381,6 @@ List<Map<String, Object?>> toolSchemas() => [
             'block_key 取自正文媒体行的 `local://` 路径（逐字相等），产 ocr_text 落块级产物表，'
             '**不改动条目正文 human_md**。异步入队：返回 queued + task_id，'
             '稍后用 get_item 读 block_artifacts 字段取产出（task_id 可查 get_job_status）。'
-            '前置授权：该条目须已开启「允许 AI 处理」（AI 不可自行开启），否则入队前即被拒绝。'
             '同块同任务已在队列时拒绝重复入队，不必重试。',
         'inputSchema': {
           'type': 'object',
@@ -401,8 +398,7 @@ List<Map<String, Object?>> toolSchemas() => [
             '与三级能力页该块「翻译」同一入口。block_key 取自正文媒体行的 `local://` 路径；'
             '`source_kind` 必填（源产物不存在或为空会被拒绝，提示先转写/识别文字）；'
             '产 translation 落块级产物表，不改动条目正文。异步入队：返回 queued + task_id，'
-            '产出稍后由 get_item 的 block_artifacts 字段读取。'
-            '前置授权：条目须已开「允许 AI 处理」，否则入队前即被拒绝。',
+            '产出稍后由 get_item 的 block_artifacts 字段读取。',
         'inputSchema': {
           'type': 'object',
           'properties': {
@@ -428,8 +424,7 @@ List<Map<String, Object?>> toolSchemas() => [
             '与三级能力页该块「摘要」同一入口。block_key 取自正文媒体行的 `local://` 路径；'
             '块上没有可摘要的文本产物会被拒绝（提示先转写/识别文字）。'
             '产 summary 落块级产物表，不改动条目正文。异步入队：返回 queued + task_id，'
-            '产出稍后由 get_item 的 block_artifacts 字段读取。'
-            '前置授权：条目须已开「允许 AI 处理」，否则入队前即被拒绝。',
+            '产出稍后由 get_item 的 block_artifacts 字段读取。',
         'inputSchema': {
           'type': 'object',
           'properties': {
@@ -445,8 +440,7 @@ List<Map<String, Object?>> toolSchemas() => [
         'description': '从**条目正文中的行内视频块**提取音轨（产 audio_file 产物，播放/导出/「以此继续处理」皆可为），'
             '与三级能力页该块「提取音轨」同一入口。block_key 取自正文媒体行的 `local://` 路径；'
             '非视频块（音频/图片）会被拒绝。异步入队：返回 queued + task_id，'
-            '产出稍后由 get_item 的 block_artifacts 字段读取。'
-            '前置授权：条目须已开「允许 AI 处理」，否则入队前即被拒绝。',
+            '产出稍后由 get_item 的 block_artifacts 字段读取。',
         'inputSchema': {
           'type': 'object',
           'properties': {
@@ -636,7 +630,7 @@ int? _int(Object? v) => switch (v) {
 /// 调用即返 `queued + task_id + message`，产出落点一致（块级 `block_artifacts`）——
 /// 与 `transcribe_item` 的 job_id 模式同构，让模型「看到任务在跑」而自我抑制重复发起；
 /// 与动作层 §6.6 入队互斥（硬拒绝）互补：软引导治「以为没成功」，硬拒绝治「连发刷队」。
-/// 门禁（AI 须 aiProcess）与块类型校验一律由动作层发出，本层不复制。
+/// 门禁与块类型校验一律由动作层发出，本层不复制。
 List<Map<String, Object?>> _blockQueued(CommandResult r, String what) => [
       _text(jsonEncode({
         'status': 'queued',

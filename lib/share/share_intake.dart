@@ -79,10 +79,13 @@ class ShareIntake {
         final durationMs = (t == InboxItem.typeAudio || t == InboxItem.typeVideo)
             ? await probeMediaDuration(f.path, t)
             : null;
-        // PDF 拍板（2026-10-02，content-pipeline §6）：一律持有 owned 作事实来源，
-        // 抽取文本只是派生视图（可重跑 reprocess）——有损转换 × 释放不可逆 = 信任
-        // 击穿，故持有语义与引用模式开关无关，PDF 恒走复制。
-        if (referenceMode && !_isPdf(f)) {
+        // 分型直存（2026-10-06 拍板，content-pipeline §6）：图片/音频体积小
+        // （几 MB～几十 MB 级），分享进来直接复制 owned——不依赖 persist 授权、
+        // 不进迁移清单，备份白名单天然覆盖；视频维持引用 ref+迁移兜底
+        // （大视频复制双份代价压倒收益，2026-09-29 D3 拍板不动）。
+        // 引用模式仅视频走 ref；图片/音频/PDF 直接复制 owned（分型直存，
+        // 2026-10-06 拍板）；引用模式关闭时全部复制。
+        if (referenceMode && t == InboxItem.typeVideo && !_isPdf(f)) {
           // 引用模式：不复制，直接引用源 URI（content:// 或 file://），
           // 标记 ref——app 不占用户存储（content-pipeline §6）。
           // 摄入时即刻尝试持久化读权限（takePersistableUriPermission）：
@@ -102,7 +105,7 @@ class ShareIntake {
             mediaDurationMs: durationMs,
           ));
         } else {
-          // 复制路径：PDF（恒走）或引用模式关闭时的全部附件。
+          // 复制路径：图片/音频（分型直存恒走）+ PDF（恒走）+ 引用模式关闭时的全部附件。
           // 源文件失效（如临时 URI 已被回收）则丢弃该附件。
           final saved = await copyToAppDir(f.path);
           if (saved == null) continue;

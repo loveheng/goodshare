@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../service/mcp_controller.dart';
 import '../ui/confirm_dialog.dart';
+import '../ui/toast.dart';
 
 /// MCP 服务页：开关、端点、token、桌面接入指南。
 class McpPage extends StatefulWidget {
@@ -41,15 +42,13 @@ class _McpPageState extends State<McpPage> {
     setState(() => _busy = false);
     if (!mounted) return;
     if (error != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('MCP 服务启动失败：$error')),
-      );
+      ToastManager.show('MCP 服务启动失败：$error', kind: ToastKind.error);
     }
   }
 
   void _copy(String text, String label) {
     Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$label 已复制')));
+    ToastManager.show('$label 已复制', kind: ToastKind.success);
   }
 
   @override
@@ -57,7 +56,12 @@ class _McpPageState extends State<McpPage> {
     final c = widget.controller;
     return Scaffold(
       appBar: AppBar(
-        automaticallyImplyLeading: false,
+        automaticallyImplyLeading: false, // 出口=显式 ×（去箭头拍板的完整形态）
+        leading: IconButton(
+          tooltip: '关闭',
+          icon: const Icon(Icons.close),
+          onPressed: () => Navigator.pop(context),
+        ),
         title: const Text('MCP 服务'),
       ),
       body: ListView(

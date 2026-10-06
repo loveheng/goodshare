@@ -10,6 +10,7 @@ import 'package:goodshare/models/draft_store.dart';
 import 'package:goodshare/ui/format_dial.dart';
 import 'package:goodshare/share/text_collector.dart';
 import 'package:goodshare/ui/quick_note_bar.dart';
+import 'package:goodshare/ui/toast.dart';
 import 'package:goodshare/ui/video_cover.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -31,12 +32,17 @@ void main() {
             (call) async => null);
   });
 
+  // Toast 单例是 static 跨用例状态：error 驻留档会吞掉后续用例的轻档提示
+  tearDown(() => ToastManager.resetForTest());
+
   Future<Repository> pumpShell(WidgetTester tester) async {
     SharedPreferences.setMockInitialValues({});
     final repo = Repository();
     final handler = ItemActionHandler(repo);
     final collector = TextCollector(handler);
     await tester.pumpWidget(MaterialApp(
+      // Toast 挂根 overlay（SnackBar 退役）：测试环境同样绑全局 navigatorKey
+      navigatorKey: ToastManager.navigatorKey,
       home: Scaffold(
         body: Stack(
           children: [
@@ -284,6 +290,9 @@ void main() {
     });
     expect(find.byType(TextField), findsOneWidget,
         reason: '保存后内容区清空但面板保持张开（单空文本段 + 提示语）');
+    // Toast 的退场 Timer/动画存活到用例结束会触发 flutter_test 不变量检查
+    //（pending Timer / active Ticker，检查先于 tearDown 执行）——用例内硬停复位
+    await ToastManager.resetForTest();
   });
 
   testWidgets('保存按钮内容感知：空态禁用，输入后点亮（禁用=实色无半透明罩）', (tester) async {
@@ -361,6 +370,8 @@ void main() {
     final leftovers =
         shares.existsSync() ? shares.listSync().whereType<File>().toList() : <File>[];
     expect(leftovers, isEmpty, reason: '拦截后不留孤儿副本');
+    // Toast 退场 Timer/动画触发 flutter_test 不变量检查（先于 tearDown）——用例内硬停
+    await ToastManager.resetForTest();
   });
 
   testWidgets('视频门槛：相册 mp4 校验通过即插入视频卡（真机回归：通过后未插入）',
@@ -407,5 +418,7 @@ void main() {
     // 视频卡=原生提帧封面组件（测试环境无平台实现→null 回落占位，组件仍在）
     expect(find.byType(VideoCoverImage), findsOneWidget,
         reason: '校验通过的视频必须插入视频卡');
+    // Toast 退场 Timer/动画触发 flutter_test 不变量检查（先于 tearDown）——用例内硬停
+    await ToastManager.resetForTest();
   });
 }

@@ -1,7 +1,7 @@
 name: goodshare
 description: "A new Flutter project."
 publish_to: 'none'
-version: 1.2.1+8043 # 整包 versionCode=pub 原值；真机已装 8031（旧拆分包 6031+2000），整包须 ≥8033 才能覆盖。arm64-v8a 拆分包 versionCode=pub+2000
+version: 1.2.1+8051 # 整包 versionCode=pub 原值；真机已装 8031（旧拆分包 6031+2000），整包须 ≥8033 才能覆盖。arm64-v8a 拆分包 versionCode=pub+2000
 
 environment:
   sdk: ^3.13.4

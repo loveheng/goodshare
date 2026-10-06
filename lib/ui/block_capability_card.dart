@@ -196,7 +196,8 @@ class _BlockCapabilityCardState extends State<BlockCapabilityCard> {  @override
     final output = chain.outputsView[index];
 
     final icon = switch (state) {
-      StepState.done => Icon(Icons.check_circle, size: 20, color: scheme.primary),
+      // 完成态中性色（2026-10-05 骨架重做，橘红纪律回收）：强调色只留给动作/选中
+      StepState.done => Icon(Icons.check_circle, size: 20, color: scheme.onSurfaceVariant),
       StepState.running => const SizedBox(
           width: 20,
           height: 20,

@@ -43,8 +43,10 @@ class RichTextView extends StatefulWidget {
 
   /// 待办勾选回调（待办行文本 + 目标状态）。
   ///
-  /// **为 null 时待办不可点击**——本轮默认如此：勾选是写操作，须走动作层命令
-  /// 并按 `todo_state_json` 的 hash 口径持久化（V2 接线）。接口先留，口径到时定。
+  /// 为 null 时待办不可点击（无宿主上下文的直用场景）。详情页正文经
+  /// `TodoInteractionScope` 回落接线（2026-10-05）：勾选是写操作，走
+  /// `UpdateItemCommand(todoState:)` 按 `todo_state_json` 的行内容 hash
+  /// 平行挂账、不改正文。
   final void Function(String text, bool done)? onTodoToggle;
 
   /// 判断某待办行是否已勾选（文本 → 状态）。为 null 时只按 Markdown 里的 `[x]` 显示。
@@ -430,11 +432,12 @@ Widget _buildListItem(
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 待办复选框：一期只读（M3 Checkbox 紧凑形态，onChanged: null 点击不响应；
-            // 勾选状态随文本渲染，打勾反向更新原文二期再做）。
+            // 待办复选框（2026-10-05 接线）：勾选态由宿主按行内容 hash 从
+            // todo_state_json 平行挂账（不改正文）；回调 null 仍为只读
+            //（无宿主上下文的 RichTextView 直用场景，如摘要卡）。
             Checkbox(
               value: done,
-              onChanged: null,
+              onChanged: canToggle ? (_) => onTodoToggle(text, !done) : null,
               materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
               visualDensity: VisualDensity.compact,
             ),

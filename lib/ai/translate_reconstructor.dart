@@ -51,7 +51,7 @@ class TranslationReconstructor implements AiReconstructor {
         debugPrint('[Translation] no block translation produced (item=${input.itemId})');
         // 明说为什么没有译文：源语等于目标语 / 无可用引擎，处置方式不同（R1）
         final reason = detectSourceLanguage(base) == target
-            ? '源文本已是${languageLabel(target)}，无需翻译'
+            ? '源文本已是${languageLabel(target)}，无须翻译'
             : '无可用翻译引擎（语言包未就绪时保留原文，设置 → 翻译 可下载）';
         return ReconstructResult(
           humanMd: input.rawContent ?? '',
@@ -86,7 +86,7 @@ class TranslationReconstructor implements AiReconstructor {
       final reason = base.trim().isEmpty
           ? '条目没有可翻译的正文'
           : (detectSourceLanguage(base) == target
-              ? '正文已是${languageLabel(target)}，无需翻译'
+              ? '正文已是${languageLabel(target)}，无须翻译'
               : '无可用翻译引擎（语言包未就绪时保留原文，设置 → 翻译 可下载）');
       return ReconstructResult(humanMd: base, note: reason);
     }

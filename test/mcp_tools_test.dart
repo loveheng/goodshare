@@ -603,15 +603,14 @@ void main() {
     }
     expect((await repo.pendingTasks()), hasLength(1), reason: '互斥拒绝不入队，队列无重复');
 
-    // §2.6 门禁：AI 主体不豁免「允许 AI 处理」——未授权条目入队前即拒（零空耗）
+    // §2.6 门禁已移除（2026-10-05 拍板）：未授权条目（ai_process=false）的块任务照常入队
     final locked = await repo.add(blockNote(md: '前言\n\n[录音]($key)', aiProcess: false));
-    try {
-      await callTool('block_transcribe_item', {'id': locked.id, 'block_key': key}, repo);
-      fail('应抛 McpRpcError');
-    } on McpRpcError catch (e) {
-      expect((e.data as Map<String, Object?>)['code'], ActionErrorCode.forbidden);
-    }
-    expect((await repo.pendingTasks()), hasLength(1), reason: '未授权任务根本不进队列');
+    final unlockedTask = jsonDecode(textOf(await callTool('block_transcribe_item', {
+      'id': locked.id,
+      'block_key': key,
+    }, repo))) as Map<String, Object?>;
+    expect(unlockedTask['status'], 'queued', reason: '门禁已移除，直接入队');
+    expect((await repo.pendingTasks()), hasLength(2));
 
     // 块类型校验仍在动作层：图片块走转写被拒（AI 换个入口也绕不过）
     final img = await repo.add(blockNote(md: '![封面](local://shares/a.jpg)'));

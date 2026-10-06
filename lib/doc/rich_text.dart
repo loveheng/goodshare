@@ -350,6 +350,33 @@ String inlineToPlain(List<InlineNode> nodes) => nodes.map((n) => switch (n) {
       InlineHighlight(:final children) => inlineToPlain(children),
     }).join();
 
+/// 扫描 markdown 中的**待办行纯文本**（2026-10-05 待办勾选批次）。
+///
+/// 与渲染同源：ListBlock 中 `done != null` 的项（含列表式与裸 `[ ]` 行——
+/// 解析层把裸待办归入单项列表）。返回 [inlineToPlain] 同款纯文本并 trim，
+/// 即 `TodoMark.hashOf` 的输入口径——渲染侧与写侧 GC 共用本函数，保证
+/// 「所见文本 = 所算 hash」。引用块内待办一并扫出（渲染层引用块递归同构）。
+List<String> scanTodoTexts(String markdown) {
+  void walk(List<RichBlock> bs, List<String> out) {
+    for (final b in bs) {
+      switch (b) {
+        case ListBlock(:final items):
+          for (final it in items) {
+            if (it.done != null) out.add(inlineToPlain(it.inline).trim());
+          }
+        case QuoteBlock(:final children):
+          walk(children, out);
+        default:
+          break;
+      }
+    }
+  }
+
+  final out = <String>[];
+  walk(const MarkdownSubsetParser().parse(markdown), out);
+  return out;
+}
+
 /// 块 → 纯文本（预览 / 检索用）。
 String blockToPlain(RichBlock block) => switch (block) {
       HeadingBlock(:final inline) => inlineToPlain(inline),
@@ -365,6 +392,29 @@ String blockToPlain(RichBlock block) => switch (block) {
       TableBlock(:final header, :final rows) =>
         [...header, for (final r in rows) ...r].join(' '),
     };
+
+/// Markdown 子集 → 纯文本（整篇剥壳，blockToPlain 的字符串出口）。
+///
+/// 列表卡片/工作区封面等「无富文本渲染能力」的预览位统一走此函数，
+/// 保证 `# 标题`、`**粗体**`、`![图片](…)` 等标记不出现在纯文本场景
+/// （渲染出口在 ContentBody/RichTextView，不受影响）。
+String markdownToPlain(String markdown) =>
+    MarkdownSubsetParser().parse(markdown).map(blockToPlain).join('\n\n');
+
+/// 行内文本 → 纯文本（标题剥壳出口）：剥 `**`/`*`/`<u>`/`==` 等行内标记，
+/// 但**不**剥行首 `#` 级联（见 [titleToPlain] 的分级口径）。
+String inlineToPlainText(String source) =>
+    inlineToPlain(const MarkdownSubsetParser().parseInline(source));
+
+/// 标题文本 → 纯文本（顶栏标题 / 列表预览标题专用）：在行内剥壳之上**额外**
+/// 剥一层行首 `#` 前缀——速记一级标题行既会渲染成正文 Heading（ContentBody），
+/// 也会被 noteTitleOf 派生成条目标题；标题位是纯文本场景，任何口径都不得
+/// 出现 `#` 残壳（用户拍板：纯文本一律无 md 标记）。
+String titleToPlain(String source) {
+  final plain = inlineToPlainText(source);
+  final m = RegExp(r'^#{1,6}\s+').firstMatch(plain);
+  return m == null ? plain : plain.substring(m.end);
+}
 
 // ---------- 行内样式 run（block-format-input.md §4 样式化编辑层地基） ----------
 

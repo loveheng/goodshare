@@ -144,13 +144,29 @@ class AnnotationStore {
     return d;
   }
 
-  static Future<File> _file(String itemId) async =>
-      File(p.join((await _dir()).path, '$itemId.json'));
+  /// 顶级条目哨兵（与 block_artifacts 同口径）：顶级图片块 = 'item'，复用旧文件名
+  /// `$itemId.json` 保证历史标注数据零迁移；行内块用 base64url 编码 key 作文件名。
+  static const _topLevelKey = 'item';
+
+  /// 只读消费方的公开别名（annotation_overlay_view 等）：哨兵值语义同上。
+  static String get topLevelKey => _topLevelKey;
+
+  static Future<File> _file(String itemId, [String blockKey = _topLevelKey]) async {
+    final dir = await _dir();
+    final name = blockKey == _topLevelKey
+        ? '$itemId.json'
+        : '$itemId.${_encode(blockKey)}.json';
+    return File(p.join(dir.path, name));
+  }
+
+  /// 行内块 key（local://…）含非法文件名字符，base64url 编码作稳定文件名。
+  static String _encode(String key) =>
+      base64Url.encode(utf8.encode(key)).replaceAll('=', '');
 
   /// 加载某 item 全部标注（无文件返回空列表）。失败兜底空，不阻断。
-  static Future<List<Annotation>> load(String itemId) async {
+  static Future<List<Annotation>> load(String itemId, [String blockKey = _topLevelKey]) async {
     try {
-      final f = await _file(itemId);
+      final f = await _file(itemId, blockKey);
       // 必须可变空列表：add()/removeWhere() 直接在此返回值上变更，
       // const [] 会让首条标注崩「Cannot add to an unmodifiable list」。
       if (!await f.exists()) return <Annotation>[];
@@ -167,9 +183,9 @@ class AnnotationStore {
   }
 
   /// 列表角标判定：文件存在即视为「有标注」（零重绘）。
-  static Future<bool> hasAnnotations(String itemId) async {
+  static Future<bool> hasAnnotations(String itemId, [String blockKey = _topLevelKey]) async {
     try {
-      final f = await _file(itemId);
+      final f = await _file(itemId, blockKey);
       return await f.exists();
     } catch (_) {
       return false;
@@ -177,28 +193,28 @@ class AnnotationStore {
   }
 
   /// 整体写回（本期平铺列表，整体读写足够；按 z 排序）。
-  static Future<void> saveAll(String itemId, List<Annotation> list) async {
-    final f = await _file(itemId);
+  static Future<void> saveAll(String itemId, List<Annotation> list, [String blockKey = _topLevelKey]) async {
+    final f = await _file(itemId, blockKey);
     final sorted = [...list]..sort((a, b) => a.z.compareTo(b.z));
     await f.writeAsString(
       const JsonEncoder.withIndent('  ').convert([for (final a in sorted) a.toJson()]),
     );
   }
 
-  static Future<void> add(String itemId, Annotation a) async {
-    final list = await load(itemId);
+  static Future<void> add(String itemId, Annotation a, [String blockKey = _topLevelKey]) async {
+    final list = await load(itemId, blockKey);
     list.add(a);
-    await saveAll(itemId, list);
+    await saveAll(itemId, list, blockKey);
   }
 
-  static Future<void> remove(String itemId, String id) async {
-    final list = await load(itemId);
+  static Future<void> remove(String itemId, String id, [String blockKey = _topLevelKey]) async {
+    final list = await load(itemId, blockKey);
     list.removeWhere((a) => a.id == id);
-    await saveAll(itemId, list);
+    await saveAll(itemId, list, blockKey);
   }
 
-  static Future<void> clear(String itemId) async {
-    final f = await _file(itemId);
+  static Future<void> clear(String itemId, [String blockKey = _topLevelKey]) async {
+    final f = await _file(itemId, blockKey);
     if (await f.exists()) await f.delete();
   }
 }

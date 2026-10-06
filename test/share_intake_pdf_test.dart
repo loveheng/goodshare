@@ -86,13 +86,19 @@ void main() {
     expect(items.single.attachState, InboxItem.attachOwned);
   });
 
-  test('非 PDF 附件不受影响：引用模式照旧 ref + 原路径保留', () async {
+  test('图片分型直存（2026-10-06）：引用模式下仍复制 → owned 且副本在 shares/', () async {
+    final src = File('${Directory.systemTemp.path}/share_img_${DateTime.now().millisecondsSinceEpoch}.jpg');
+    src.writeAsBytesSync([0xFF, 0xD8, 0xFF]); // JPEG 头
+    addTearDown(() => src.deleteSync());
     await intake.handleForTest([
-      SharedMediaFile(path: '/tmp/not_real.jpg', type: SharedMediaType.image, mimeType: 'image/jpeg'),
+      SharedMediaFile(path: src.path, type: SharedMediaType.image, mimeType: 'image/jpeg'),
     ]);
     final items = await repo.list();
     expect(items, hasLength(1));
-    expect(items.single.attachState, InboxItem.attachRef);
-    expect(items.single.rawFilePath, '/tmp/not_real.jpg');
+    expect(items.single.itemType, InboxItem.typeImage);
+    expect(items.single.attachState, InboxItem.attachOwned,
+        reason: '图片体积小，分型直存恒复制 owned');
+    expect(items.single.rawFilePath, startsWith(docs.path));
+    expect(File(items.single.rawFilePath!).existsSync(), isTrue);
   });
 }

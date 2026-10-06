@@ -239,15 +239,15 @@ flowchart LR
 | `author`（human / ai / pipeline） | human（现有收集默认） | ai（经 AI 专用建条入口 `add_item` 标记） | 创建时定型 |
 | `ai_visible`（AI 读门禁） | 0 不可见 | 1 可见 | 仅 UI（`CommandActor.ui`） |
 | `ai_editable`（AI 写门禁 / 人类同意） | 0 不可编辑 | 1 可编辑 | 仅 UI（`CommandActor.ui`） |
-| `ai_process`（管线回写授权） | 0 不处理 | 1 可处理 | 仅 UI（`CommandActor.ui`） |
+| `ai_process`（已废弃） | — | — | 2026-10-05 拍板移除：管线回写不再要独立授权；DB 列与模型字段保留仅供历史数据兼容 |
 
 **读门禁**：MCP 工具 `list_items` / `get_item` / `query_machine_data` / `get_timeline_context` 在 `is_vault=0 AND is_deleted=0` 之上**叠加 `ai_visible=1`**；故人类笔记默认对 AI 不可见，仅经 UI 开启后才可读。UI 侧阅读不受此字段限制。
 
-**写门禁（人类同意模型）**：外部 MCP（`CommandActor.ai`）改写 `author=human` 的笔记，动作层（`ItemActionHandler._update` / `_append`）要求 `ai_editable=1`，否则抛 `ActionException(code=forbidden, hint=在手机端开启「允许 AI 编辑」)`。端侧管线回写（`CommandActor.pipeline`，OCR / 翻译 / 摘要 / 转写 / 切片）同样受人类授权约束：要求 `ai_process=1`（**默认关闭**，即"授权才处理"而非"收集即同意"），否则动作层 `ItemActionHandler._applyAiResult` 抛 `ActionException(code=forbidden, hint=在手机端开启「允许 AI 处理」)`；队列消费侧亦在跑重建前 `skip` 该任务，避免误标失败与空耗算力。
+**写门禁（人类同意模型）**：外部 MCP（`CommandActor.ai`）改写 `author=human` 的笔记，动作层（`ItemActionHandler._update` / `_append`）要求 `ai_editable=1`，否则抛 `ActionException(code=forbidden, hint=在手机端开启「允许 AI 编辑」)`。端侧管线回写（`CommandActor.pipeline`，OCR / 翻译 / 摘要 / 转写 / 切片）不再需要独立授权——原 `ai_process` 门禁（`_applyAiResult` 拒写 / 队列 skip / 块任务入队拒）已于 2026-10-05 整体移除（与 `ai_editable` 双开关冗余）。
 
-**开关命令（仅 UI 可改，不对 MCP 开放）**：`SetAiVisibleCommand` / `SetAiEditableCommand` / `SetAiProcessCommand` 三个命令**均不入 `ItemCommand.fromJson`**——MCP 无法从大模型 JSON 反序列化构造，且处理器强制 `actor==ui`，AI 既读不到未授权条目、也翻不动开关本身。UI 详情页溢出面板对「人类笔记」提供「对 AI 可见」「允许 AI 编辑」「允许 AI 处理」三个紧邻开关，均调 `CommandActor.ui` 执行。
+**开关命令（仅 UI 可改，不对 MCP 开放）**：`SetAiVisibleCommand` / `SetAiEditableCommand` 两个命令**均不入 `ItemCommand.fromJson`**——MCP 无法从大模型 JSON 反序列化构造，且处理器强制 `actor==ui`，AI 既读不到未授权条目、也翻不动开关本身。UI 详情页溢出面板对「人类笔记」提供「对 AI 可见」「允许 AI 编辑」两个紧邻开关，均调 `CommandActor.ui` 执行（原「允许 AI 处理」开关与 `SetAiProcessCommand` 已随 ai_process 门禁一并移除）。
 
-**对应产品要求**：① 人类编写的笔记默认对 AI 不可见；② AI 编写的笔记默认对 AI 可见；③ AI 操作人类编写的笔记需人类同意才可编辑（开启「允许 AI 编辑」即静态同意）；④ 端侧管线（OCR / 翻译 / 摘要 / 转写 / 切片）回写人类笔记需人类显式授权（开启「允许 AI 处理」），默认关闭、不再"收集即处理"。
+**对应产品要求**：① 人类编写的笔记默认对 AI 不可见；② AI 编写的笔记默认对 AI 可见；③ AI 操作人类编写的笔记需人类同意才可编辑（开启「允许 AI 编辑」即静态同意）；④ 端侧管线（OCR / 翻译 / 摘要 / 转写 / 切片）回写人类笔记不再需要独立授权开关（原「允许 AI 处理」2026-10-05 移除，授权统一收口到「允许 AI 编辑」）。
 
 ## 8. 端到端流程
 

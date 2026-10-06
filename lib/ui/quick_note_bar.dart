@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../action/commands.dart';
 import '../action/item_action_handler.dart';
 import '../app/lifecycle_manager.dart';
+import 'toast.dart';
 import '../models/draft_store.dart';
 import '../models/item.dart';
 import '../share/note_composer.dart';
@@ -235,12 +236,10 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
     if (models == null) return;
     final body = serializeNoteMd(models, todoMode: _todoMode);
     if (body.isEmpty) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('先写点什么吧')));
+      ToastManager.show('先写点什么吧', kind: ToastKind.error);
       return;
     }
     setState(() => _sending = true);
-    final messenger = ScaffoldMessenger.of(context);
     try {
       final tags = _pendingTags.isEmpty ? null : _pendingTags;
       if (noteHasMedia(models)) {
@@ -266,10 +265,10 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
       _draftSegsPersisted = const [];
       _draftDebounce?.cancel();
       unawaited(_draftStore.delete(_draftId)); // 保存成功即清持久草稿
-      messenger.showSnackBar(const SnackBar(content: Text('已记下')));
+      ToastManager.show('已记下', kind: ToastKind.success);
     } catch (e) {
       // 失败原因原样告知（R1：错误要被用户感知，不自行编造兜底文案）
-      if (mounted) messenger.showSnackBar(SnackBar(content: Text('保存失败：$e')));
+      if (mounted) ToastManager.show('保存失败：$e', kind: ToastKind.error);
     } finally {
       if (mounted) setState(() => _sending = false);
     }

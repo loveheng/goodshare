@@ -42,10 +42,13 @@ void main() {
 
     final viewH = tester.view.physicalSize.height /
         tester.view.devicePixelRatio;
+    // 量**裁切窗口**而不是内部内容：子级经 OverflowBox 得有界宽+无界高排版，
+    // 内容几何高可能 > 280（竖图/竖屏视频），但被 280 窗口裁切——首屏同现
+    // 取决于窗口高度，不取决于内容高度（2026-10-05 预览硬裁修复配套）。
     final previewH = tester
-        .getRect(find.byType(AspectRatio).first)
+        .getRect(find.byKey(const Key('previewWindow')))
         .height;
-    // 预览被钳到限高内（padding 上沿 12 + 限高 280）
+    // 预览窗口被钳到限高内
     expect(previewH, lessThanOrEqualTo(kPreviewMaxHeight));
 
     // 操作区不滚动即可见：链首步骤 + 独立能力区标题都在首屏视口内

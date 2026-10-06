@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:video_player/video_player.dart';
 
+import 'toast.dart';
+
 import '../ai/audio_extract.dart';
 import '../ai/capability.dart';
 import '../ai/video_clips.dart';
@@ -16,6 +18,7 @@ import '../data/block_artifacts.dart' show BlockArtifactKind;
 import '../models/item.dart';
 import 'block_capability_host.dart';
 import 'content_body.dart';
+import 'annotated_image.dart';
 import 'image_viewer.dart';
 import 'media_blocks.dart';
 import 'section_legend.dart';
@@ -108,45 +111,11 @@ class ItemViewTemplate extends StatelessWidget {
     } else {
       out.addAll(ItemViewRegistry.resolve(item.itemType)(context, item));
     }
-    // ④ 标签展示区（mymind MIND TAGS 形态，ui-spec §4.3）：AI 提取标签
-    // 圆角标签流只读展示（骑框 legend 复用 SectionLegendCard）；无标签不渲染
-    // （不做假数据）。点击筛选跳主列表为 V2。
-    if (!machineMode && item.tags.isNotEmpty) {
-      out.add(
-        SliverToBoxAdapter(
-          child: SectionLegendCard(
-            legend: '标签',
-            child: Wrap(
-              spacing: Insets.sm,
-              runSpacing: Insets.sm,
-              children: [for (final t in item.tags) _tagBadge(context, t)],
-            ),
-          ),
-        ),
-      );
-    }
+    // ④ 标签展示区已撤（2026-10-05 修重复渲染）：标签只读区是两区改版前的
+    // 遗留（当时操作归「标签」底栏项，该底栏项已随 detail-two-zone.md §3
+    // 移入灵感区）——详情页标签统一由 `item_detail_page._aiOutputSection`
+    // 的可编辑「标签」卡承载（刷新/手动增删），此处再渲染即出现两条标签栏。
     return out;
-  }
-
-  /// 只读标签（mymind 深色无边框；选中态不存在，操作归「标签」底栏项）。
-  /// 2026-10-01 全系统去胶囊：Stadium → md12 大圆角矩形。
-  static Widget _tagBadge(BuildContext context, String text) {
-    final theme = Theme.of(context);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: ShapeDecoration(
-        color: theme.colorScheme.surfaceContainerHigh,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(Radii.md),
-        ),
-      ),
-      child: Text(
-        text,
-        style: theme.textTheme.labelSmall?.copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
-      ),
-    );
   }
 
   Widget _machineView(BuildContext context, InboxItem item) {
@@ -294,7 +263,6 @@ class _ImageView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -305,33 +273,24 @@ class _ImageView extends StatelessWidget {
           // 在二级详情页的兑现——此前只接了作曲器编辑器）。
           wrapWithCapabilityHost(
             GestureDetector(
-              onTap: () =>
-                  showImageFullScreen(context, file: File(item.rawFilePath!)),
+              onTap: () => showImageFullScreen(
+                context,
+                file: File(item.rawFilePath!),
+                itemId: item.id!,
+                blockKey: BlockArtifactKind.topLevelKey,
+              ),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(Radii.md),
-                // 尺寸前置（§6.1 V1）+ 主色调占位（V3）：提前摆好版面且以图片
-                // 主色铺底，解码完成无白闪、无布局跳动
-                child: item.aspectRatio != null
-                    ? Container(
-                        color:
-                            colorFromMachineJson(item.machineJson) ??
-                            scheme.surfaceContainerHighest,
-                        child: AspectRatio(
-                          aspectRatio: item.aspectRatio!,
-                          child: Image.file(
-                            File(item.rawFilePath!),
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, _, _) =>
-                                const _EmptyView(text: '图片文件已不存在'),
-                          ),
-                        ),
-                      )
-                    : Image.file(
-                        File(item.rawFilePath!),
-                        fit: BoxFit.contain,
-                        errorBuilder: (_, _, _) =>
-                            const _EmptyView(text: '图片文件已不存在'),
-                      ),
+                // 常态标注叠加（2026-10-06）：二级详情页图片即显示标注，无需
+                // 点进编辑页。AnnotatedImage 自持等比容器 + 叠加层，无标注零渲染；
+                // 主色调占位（V3）消灭白闪，无宽高比时首帧探测定版。
+                child: AnnotatedImage(
+                  itemId: item.id!,
+                  file: File(item.rawFilePath!),
+                  fit: BoxFit.cover,
+                  placeholderColor: colorFromMachineJson(item.machineJson),
+                  aspectRatio: item.aspectRatio,
+                ),
               ),
             ),
             kind: BlockKind.image,
@@ -524,8 +483,7 @@ Future<void> exportSubtitles(BuildContext context, String itemId) async {
   final files = await SubtitleStore.listFiles(itemId);
   if (!context.mounted) return;
   if (files.isEmpty) {
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text('暂无字幕产物')));
+    ToastManager.show('暂无字幕产物');
     return;
   }
   final picked = await showModalBottomSheet<SubtitleFile>(
@@ -583,14 +541,10 @@ Future<void> extractAudioTrack(BuildContext context, InboxItem item) async {
     ),
   );
   if (fmt == null || !context.mounted) return;
-  final messenger = ScaffoldMessenger.of(context);
-  messenger.showSnackBar(const SnackBar(content: Text('正在提取音轨…')));
+  ToastManager.show('正在提取音轨…');
   final res = await AudioExtractor.extract(path, format: fmt, itemId: item.id);
-  messenger.hideCurrentSnackBar();
   if (!res.ok) {
-    messenger.showSnackBar(
-      SnackBar(content: Text('提取失败：${res.error ?? '未知原因'}')),
-    );
+    ToastManager.show('提取失败：${res.error ?? '未知原因'}', kind: ToastKind.error);
     return;
   }
   await SharePlus.instance.share(ShareParams(files: [XFile(res.path!)]));

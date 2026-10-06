@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'toast.dart';
 import 'tokens.dart';
 
 /// AI 历史面板（ai-writeback-revert §7 / §9 拍板 1 的 MVP 极简口径）。
@@ -15,7 +16,6 @@ Future<void> showAiRevisionSheet(
   required String text,
   VoidCallback? onInsert,
 }) async {
-  final messenger = ScaffoldMessenger.of(context);
   await showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -81,9 +81,7 @@ Future<void> showAiRevisionSheet(
                         onPressed: () async {
                           await Clipboard.setData(ClipboardData(text: text));
                           if (ctx.mounted) Navigator.pop(ctx);
-                          messenger.showSnackBar(
-                            const SnackBar(content: Text('AI 版本已复制')),
-                          );
+                          ToastManager.show('AI 版本已复制', kind: ToastKind.success);
                         },
                         icon: const Icon(Icons.copy_all_outlined),
                         label: const Text('复制'),

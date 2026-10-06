@@ -8,6 +8,7 @@ import 'package:record/record.dart';
 import '../action/commands.dart';
 import '../action/item_action_handler.dart';
 import '../app/lifecycle_manager.dart';
+import '../ui/toast.dart';
 import '../models/draft_store.dart';
 import '../models/item.dart';
 import '../share/attachments.dart';
@@ -75,7 +76,7 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
 
   void _snack(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ToastManager.show(message);
   }
 
   Future<void> _closeSnack(String message) async {
@@ -89,6 +90,8 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
   }
 
   /// 媒体类添加：复制进私有目录 → 建条目 → 按类型入队。
+  /// R1：失败必须被用户感知（同 quick_note_bar 口径）——不 catch 则按钮
+  /// 「点了像没点」，面板停在原地无任何提示。
   Future<void> _saveAttachment(String itemType, String path) async {
     final saved = await copyToAppDir(path);
     if (saved == null) {
@@ -96,12 +99,16 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
       return;
     }
     final isAudio = itemType == InboxItem.typeAudio;
-    await widget.handler.execute(CollectCommand(
-      itemType: itemType,
-      sourceApp: _sourceApp,
-      rawFilePath: saved,
-      humanTitle: isAudio ? _titleFor('录音') : saved.split('/').last,
-    ));
+    try {
+      await widget.handler.execute(CollectCommand(
+        itemType: itemType,
+        sourceApp: _sourceApp,
+        rawFilePath: saved,
+        humanTitle: isAudio ? _titleFor('录音') : saved.split('/').last,
+      ));
+    } catch (e) {
+      _snack('收集失败：$e');
+    }
   }
 
   Future<void> _saveText() async {
@@ -111,13 +118,17 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
       _snack('先写点什么吧');
       return;
     }
-    final saved = await widget.collector.collectText(text, sourceApp: _sourceApp);
-    if (saved == null) {
-      _snack('保存失败');
-      return;
+    try {
+      final saved = await widget.collector.collectText(text, sourceApp: _sourceApp);
+      if (saved == null) {
+        _snack('保存失败');
+        return;
+      }
+      await _draft?.clear(); // 提交成功即清除草稿
+      await _closeSnack(_mode == InboxItem.typeUrl ? '链接已收集，后台抓取正文中' : '已收集');
+    } catch (e) {
+      _snack('保存失败：$e'); // 失败不清草稿，面板留在原处可重试
     }
-    await _draft?.clear(); // 提交成功即清除草稿
-    await _closeSnack(_mode == InboxItem.typeUrl ? '链接已收集，后台抓取正文中' : '已收集');
   }
 
   Future<void> _pickImage({required bool fromCamera, bool asChatlog = false}) async {
@@ -135,12 +146,17 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
         _snack('图片保存失败');
         return;
       }
-      await widget.handler.execute(CollectCommand(
-        itemType: InboxItem.typeImage,
-        sourceApp: _sourceApp,
-        rawFilePath: saved,
-        humanTitle: _titleFor(asChatlog ? '聊天截图' : '拍照'),
-      ));
+      try {
+        await widget.handler.execute(CollectCommand(
+          itemType: InboxItem.typeImage,
+          sourceApp: _sourceApp,
+          rawFilePath: saved,
+          humanTitle: _titleFor(asChatlog ? '聊天截图' : '拍照'),
+        ));
+      } catch (e) {
+        _snack('收集失败：$e');
+        return;
+      }
       await _closeSnack(asChatlog ? '截图已收集，待 AI 识别为聊天' : '图片已收集');
     } finally {
       _busy = false;
@@ -186,12 +202,17 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
       if (files.isEmpty) return;
       final path = files.single.path;
       if (path == null) return;
-      await widget.handler.execute(CollectCommand(
-        itemType: InboxItem.typeAudio,
-        sourceApp: _sourceApp,
-        rawFilePath: (await copyToAppDir(path)) ?? path,
-        humanTitle: path.split('/').last,
-      ));
+      try {
+        await widget.handler.execute(CollectCommand(
+          itemType: InboxItem.typeAudio,
+          sourceApp: _sourceApp,
+          rawFilePath: (await copyToAppDir(path)) ?? path,
+          humanTitle: path.split('/').last,
+        ));
+      } catch (e) {
+        _snack('收集失败：$e');
+        return;
+      }
       await _closeSnack('音频已收集');
     } finally {
       _busy = false;
@@ -210,12 +231,17 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
           return;
         }
         // 录音仅存音频，AI 消费者按占位行为处理
-        await widget.handler.execute(CollectCommand(
-          itemType: InboxItem.typeAudio,
-          sourceApp: _sourceApp,
-          rawFilePath: path,
-          humanTitle: _titleFor('录音'),
-        ));
+        try {
+          await widget.handler.execute(CollectCommand(
+            itemType: InboxItem.typeAudio,
+            sourceApp: _sourceApp,
+            rawFilePath: path,
+            humanTitle: _titleFor('录音'),
+          ));
+        } catch (e) {
+          _snack('收集失败：$e');
+          return;
+        }
         await _closeSnack('录音已收集');
       } finally {
         _busy = false;
@@ -241,20 +267,54 @@ class _QuickNoteSheetState extends State<QuickNoteSheet> {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.fromLTRB(16, 0, 16, 16 + MediaQuery.of(context).viewInsets.bottom),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          if (_mode != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Text('添加${_modeLabel(_mode!)}',
-                  style: Theme.of(context).textTheme.titleMedium),
-            ),
-          ..._buildBody(),
-        ],
+    // 录音退出防护（2026-10-05 修）：录音中关面板=静默丢录音。PopScope 拦
+    // 系统返回（drag-dismiss / barrier 点按同走 pop disposition），确认丢弃
+    // 才放行；确认取消=留在面板继续录。
+    return PopScope(
+      canPop: !_recording,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop || !_recording) return;
+        final discard = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('丢弃正在进行的录音？'),
+            content: const Text('关闭面板后这段录音不会被保存。'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('继续录音'),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: Theme.of(ctx).colorScheme.error,
+                ),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('丢弃'),
+              ),
+            ],
+          ),
+        );
+        if (discard != true || !mounted) return;
+        await _recorder.stop(); // 丢弃：停录即弃（不收集，临时文件不进库）
+        // this.context = State.context（build 参数 context 已被闭包捕获，
+        // 直接用会触发 use_build_context_synchronously 误报）
+        if (mounted) Navigator.pop(this.context);
+      },
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(16, 0, 16, 16 + MediaQuery.of(context).viewInsets.bottom),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (_mode != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text('添加${_modeLabel(_mode!)}',
+                    style: Theme.of(context).textTheme.titleMedium),
+              ),
+            ..._buildBody(),
+          ],
+        ),
       ),
     );
   }

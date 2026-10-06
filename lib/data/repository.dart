@@ -100,6 +100,9 @@ class Repository extends ChangeNotifier {
   // 文档扫描（ML Kit Document Scanner，2026-09-29）：前台相机流，不经队列，
   // 产出直接新建条目；仅作 handles 契约占位与 UI taskAction 对齐用
   static const taskScanDocument = 'scan_document';
+  // 文档归一化（content-pipeline §9，2026-10-06）：document 条目摄入即自动入队，
+  // 按扩展名分派 html/plain/pdf/md 归一化器，产出写 human_md + doc_meta_json。
+  static const taskNormalizeDocument = 'normalize_document';
   // 端侧 LLM 任务动作（2026-09-28，设计见 docs/design/on-device-llm.md §5）：
   // 摘要 / 关键词均由专门命令显式入队（手动触发，绝不自动入队）。
   static const taskLlmSummarize = 'llm_summarize';
@@ -111,15 +114,24 @@ class Repository extends ChangeNotifier {
 
   /// 视频切片任务动作：`clip:<startMs>-<endMs>:<steps>`（步骤字母 e/t/s，见
   /// video_clips.dart 的 normalizeClipSteps——E2 摘要自动带动转写前置）。
-  static String clipTaskAction(int startMs, int endMs, List<String> steps) {
-    final letters = [for (final s in normalizeClipSteps(steps)) switch (s) {
-      'extract' => 'e',
-      'transcribe' => 't',
-      'summary' => 's',
-      _ => '',
-    }];
-    return '$taskClipPrefix$startMs-$endMs:${letters.join()}';
-  }
+  static String clipTaskAction(int startMs, int endMs, List<String> steps) =>
+      '$taskClipPrefix$startMs-$endMs:${_clipStepLetters(steps)}';
+
+  /// block_clip 任务动作（行内视频块切片，块级化 2026-10-05）：
+  /// `block_clip:<blockKey>|<startMs>-<endMs>|<steps>`，步骤字母同条目级。
+  static String blockClipTaskAction(
+          String blockKey, int startMs, int endMs, List<String> steps) =>
+      _blockAction('block_clip', blockKey, ['$startMs-$endMs', _clipStepLetters(steps)]);
+
+  static String _clipStepLetters(List<String> steps) => [
+        for (final s in normalizeClipSteps(steps))
+          switch (s) {
+            'extract' => 'e',
+            'transcribe' => 't',
+            'summary' => 's',
+            _ => '',
+          },
+      ].join();
 
   /// 解析 clip 任务动作；非 clip 前缀 / 格式坏 / 步骤为空 → null。
   static (int, int, List<String>)? parseClipTaskAction(String? action) {
@@ -132,6 +144,22 @@ class Repository extends ChangeNotifier {
     ];
     if (steps.isEmpty) return null;
     return (int.parse(m.group(1)!), int.parse(m.group(2)!), steps);
+  }
+
+  /// 解析 block_clip 动作串；非 block_clip / 格式坏 / 步骤为空 → null。
+  static (String blockKey, int startMs, int endMs, List<String> steps)?
+      parseBlockClipAction(String? action) {
+    final b = parseBlockAction(action);
+    if (b == null || b.$1 != 'block_clip' || b.$3.length < 2) return null;
+    final range = RegExp(r'^(\d+)-(\d+)$').firstMatch(b.$3[0]);
+    final letters = RegExp(r'^[ets]{1,3}$').firstMatch(b.$3[1]);
+    if (range == null || letters == null) return null;
+    final steps = <String>[
+      for (final ch in letters.group(0)!.split(''))
+        if (ch == 'e') kClipStepExtract else if (ch == 't') kClipStepTranscribe else if (ch == 's') kClipStepSummary,
+    ];
+    if (steps.isEmpty) return null;
+    return (b.$2, int.parse(range.group(1)!), int.parse(range.group(2)!), steps);
   }
 
   /// translate 任务动作串：可带目标语言后缀（`translate` / `translate:ja`）。
@@ -201,6 +229,9 @@ class Repository extends ChangeNotifier {
     'block_translate',
     'block_summarize',
     'block_extract_audio',
+    'block_classify',
+    'block_scan_barcode',
+    'block_clip',
   ];
 
   /// block 动作串解析：`(动作头, blockKey, 参数段)`；非 block 串 / 格式非法 → null
@@ -214,7 +245,15 @@ class Repository extends ChangeNotifier {
     if (!blockActionHeads.contains(head)) return null;
     final parts = action.substring(ci + 1).split('|');
     final key = parts.first.trim();
-    if (!key.startsWith('local://') || key.length <= 'local://'.length) return null;
+    // 顶级条目统一（block-artifact-workflow.md §2.7）：block_key='item' 是顶级
+    // 媒体区的固定哨兵，与行内 `local://` 媒体行同走块通道；其余 key 须是正文
+    // 媒体行的 local:// 路径（防伪造 key 下滑到文件路径拼接）。
+    if (key != BlockArtifactKind.topLevelKey &&
+        (!key.startsWith('local://') ||
+            key.length <= 'local://'.length ||
+            key.contains('|'))) {
+      return null;
+    }
     return (head, key, parts.skip(1).map((s) => s.trim()).toList());
   }
 
@@ -249,6 +288,16 @@ class Repository extends ChangeNotifier {
 
   static String blockExtractAudioTaskAction(String blockKey) =>
       _blockAction('block_extract_audio', blockKey, const []);
+
+  /// block_classify 动作串（图片块分类，§2.4 同构于 block_ocr）：产出落
+  /// block_artifacts[classification]，不写 facets。
+  static String blockClassifyTaskAction(String blockKey) =>
+      _blockAction('block_classify', blockKey, const []);
+
+  /// block_scan_barcode 动作串（图片块条码，§2.4 同构于 block_ocr）：产出落
+  /// block_artifacts[barcode]，不写 facets。
+  static String blockScanBarcodeTaskAction(String blockKey) =>
+      _blockAction('block_scan_barcode', blockKey, const []);
 
   /// block_translate 的源产物 kind（payload 末段，构造端必带）；非块翻译串 → null。
   static String? blockTranslateSourceKindOf(String? action) {
@@ -314,7 +363,7 @@ class Repository extends ChangeNotifier {
     return [for (final r in rows) if (isBlockAction(r['task_action'] as String?)) r];
   }
 
-  /// item_type → 默认队列动作；note/document 无专属动作返回 null（消费者按类型通用重构）。
+  /// item_type → 默认队列动作；note 无专属动作返回 null（消费者按类型通用重构）。
   static String? taskActionFor(String itemType) => switch (itemType) {
         InboxItem.typeUrl => taskSummarizeUrl,
         InboxItem.typeChatlog => taskParseChatlog,
@@ -322,6 +371,9 @@ class Repository extends ChangeNotifier {
         // （2026-09-28 拍板只存文件）——录音转写由 TranscribeCommand 入队
         // taskTranscribeAudio，图片 OCR 由 OcrCommand 入队 taskOcrAndExtract。
         InboxItem.typeImage => taskExtractPalette,
+        // 文档摄入自动归一化：html/plain/pdf/md 经 DocumentNormalizers 转 Markdown
+        // 子集，落 human_md + doc_meta_json（content-pipeline §9，2026-10-06 接线）。
+        InboxItem.typeDocument => taskNormalizeDocument,
         _ => null,
       };
 

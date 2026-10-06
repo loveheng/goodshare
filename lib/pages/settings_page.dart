@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../action/item_action_handler.dart';
 import '../data/repository.dart';
 import '../ui/slogans.dart';
+import '../ui/toast.dart';
 import '../ai/ai_queue_service.dart';
 import '../ai/asr_model.dart';
 import '../ai/capabilities.dart';
@@ -96,33 +97,26 @@ class _SettingsPageState extends State<SettingsPage> {
   Future<void> _onDownloadLanguagePack() async {
     final ok = await widget.caps.downloadLanguagePack();
     if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(ok ? '语言包已下载' : '下载失败（国内网络通常不可用）')));
+    ToastManager.show(
+      ok ? '语言包已下载' : '下载失败（国内网络通常不可用）',
+      kind: ok ? ToastKind.success : ToastKind.error,
+    );
   }
 
   /// 端侧大模型下载（1-2GB 级单文件）：失败原因必须明说，不让用户对着无反应的按钮猜。
   Future<void> _onLlmDownload(LlmModel m) async {
-    final messenger = ScaffoldMessenger.of(context);
-    messenger.showSnackBar(
-      SnackBar(content: Text('开始下载 ${m.name}（${_humanSize(m.sizeBytes)}）…')),
-    );
+    ToastManager.show('开始下载 ${m.name}（${_humanSize(m.sizeBytes)}）…');
     try {
       await widget.llmModels.download(m);
-      messenger.hideCurrentSnackBar();
       // 基于真实就绪态反馈：取消/未完成时不误报「已就绪」，可重试续传
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(
-            widget.llmModels.isReady(m)
-                ? '${m.name} 已就绪'
-                : '${m.name} 下载已取消/未完成，可重试续传',
-          ),
-        ),
+      ToastManager.show(
+        widget.llmModels.isReady(m)
+            ? '${m.name} 已就绪'
+            : '${m.name} 下载已取消/未完成，可重试续传',
+        kind: widget.llmModels.isReady(m) ? ToastKind.success : ToastKind.info,
       );
     } catch (e) {
-      messenger.hideCurrentSnackBar();
-      messenger.showSnackBar(SnackBar(content: Text('下载失败：$e（可重试或换网络环境）')));
+      ToastManager.show('下载失败：$e（可重试或换网络环境）', kind: ToastKind.error);
     }
   }
 
@@ -872,13 +866,10 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
   }
 
   Future<void> _saveConfig() async {
-    final messenger = ScaffoldMessenger.of(context);
     final endpoint = _endpointCtrl.text.trim();
     final bucket = _bucketCtrl.text.trim();
     if (endpoint.isEmpty || bucket.isEmpty) {
-      messenger.showSnackBar(
-        const SnackBar(content: Text('请填写 endpoint 与 bucket')),
-      );
+      ToastManager.show('请填写 endpoint 与 bucket', kind: ToastKind.error);
       return;
     }
     try {
@@ -889,22 +880,19 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
         accessKey: _akCtrl.text.trim(),
         secretKey: _skCtrl.text,
       );
-      messenger.showSnackBar(const SnackBar(content: Text('已保存，可点「测试连接」验证')));
+      ToastManager.show('已保存，可点「测试连接」验证', kind: ToastKind.success);
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('保存失败：$e')));
+      ToastManager.show('保存失败：$e', kind: ToastKind.error);
     }
   }
 
   Future<void> _test() async {
-    final messenger = ScaffoldMessenger.of(context);
     // 测试连接测的是「屏幕上的当前值」而非旧存档：先保存再测，
     // 避免用户改了输入框没点保存 → 测的还是旧配置 → 「我明明填了 https」的困惑
     final endpoint = _endpointCtrl.text.trim();
     final bucket = _bucketCtrl.text.trim();
     if (endpoint.isEmpty || bucket.isEmpty) {
-      messenger.showSnackBar(
-        const SnackBar(content: Text('请填写 endpoint 与 bucket')),
-      );
+      ToastManager.show('请填写 endpoint 与 bucket', kind: ToastKind.error);
       return;
     }
     try {
@@ -916,26 +904,25 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
         secretKey: _skCtrl.text,
       );
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('保存失败：$e')));
+      ToastManager.show('保存失败：$e', kind: ToastKind.error);
       return;
     }
-    messenger.showSnackBar(const SnackBar(content: Text('正在测试连接…')));
+    ToastManager.show('正在测试连接…');
     try {
       final msg = await widget.backup.testConnection();
-      messenger.showSnackBar(SnackBar(content: Text(msg)));
+      ToastManager.show(msg);
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text(e.toString())));
+      ToastManager.show(e.toString(), kind: ToastKind.error);
     }
   }
 
   Future<void> _backupNow() async {
-    final messenger = ScaffoldMessenger.of(context);
     try {
       final r = await widget.backup.runBackup();
-      messenger.showSnackBar(SnackBar(content: Text(r.message)));
+      ToastManager.show(r.message);
       setState(() => _lastResult = r.message);
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('备份启动失败：$e')));
+      ToastManager.show('备份启动失败：$e', kind: ToastKind.error);
     } finally {
       // 备份后附件集合可能变化（如新收进的视频），估算随之刷新
       await _loadEstimate();
@@ -943,7 +930,6 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
   }
 
   Future<void> _restore() async {
-    final messenger = ScaffoldMessenger.of(context);
     final confirmed = await confirmDialog(
       context,
       title: '从 S3 恢复？',
@@ -955,10 +941,10 @@ class _S3BackupSectionState extends State<_S3BackupSection> {
     if (confirmed != true) return;
     try {
       final r = await widget.backup.runRestore();
-      messenger.showSnackBar(SnackBar(content: Text(r.message)));
+      ToastManager.show(r.message);
       setState(() => _lastResult = r.message);
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('恢复启动失败：$e')));
+      ToastManager.show('恢复启动失败：$e', kind: ToastKind.error);
     }
   }
 

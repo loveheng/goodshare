@@ -15,7 +15,9 @@ import '../ui/confirm_dialog.dart';
 import '../ui/content_card.dart';
 import '../ui/feedback_views.dart';
 import '../ui/goodshare_image.dart';
+import '../ui/repo_auto_reload.dart';
 import '../ui/selection/selection_scope.dart';
+import '../ui/toast.dart';
 import '../ui/tokens.dart';
 import 'item_detail_page.dart';
 import 'workspace_create_page.dart';
@@ -43,13 +45,13 @@ class WorkspacePage extends StatefulWidget {
   State<WorkspacePage> createState() => _WorkspacePageState();
 }
 
-class _WorkspacePageState extends State<WorkspacePage> {
+class _WorkspacePageState extends State<WorkspacePage> with RepoAutoReload {
   late Future<List<_WsEntry>> _workspaces;
   Workspace? _selected;
   late Future<List<InboxItem>> _items;
 
-  /// 批量选择模式（card-batch-selection §3.2 配置：工作区内=全量四动作；
-  /// 「移出本工作区」为预留候选）。选择仅存在于工作区内条目层。
+  /// 批量选择模式（card-batch-selection §3.2 配置：工作区内=四动作 + 移出本
+  /// 工作区（§3.3 转正，2026-10-05））。选择仅存在于工作区内条目层。
   final SelectionController _selection = SelectionController();
 
   /// 最近一次加载的条目（批量动作的条目源；FutureBuilder 数据落一份到字段）。
@@ -70,6 +72,8 @@ class _WorkspacePageState extends State<WorkspacePage> {
       items: _selItems,
       actionId: actionId,
       vaultView: false,
+      // 移出本工作区（§3.3）的目标容器：仅工作区内页非空
+      workspaceId: _selected?.id,
     );
     // 批量改动后重拉工作区条目（本页无 RepoAutoReload 订阅）。
     if (_selected != null && mounted) setState(() => _items = widget.repo.listWorkspaceItems(_selected!.id));
@@ -103,14 +107,25 @@ class _WorkspacePageState extends State<WorkspacePage> {
       );
 
   @override
+  Repository get repo => widget.repo;
+
+  @override
   void initState() {
     super.initState();
     _reload();
   }
 
+  /// RepoAutoReload 仓库变更回调与 RefreshIndicator 共用；返回 Future 供
+  /// 下拉刷新等 spinner 收起。
+  @override
+  Future<void> reload() async => _reload();
+
   void _reload() {
     setState(() {
       _workspaces = _loadAll();
+      // 工作区内条目一并重拉（mixin 通知可能来自条目写入：删除/移出/AI 处理）。
+      final sel = _selected;
+      if (sel != null) _items = widget.repo.listWorkspaceItems(sel.id);
     });
   }
 
@@ -186,13 +201,12 @@ class _WorkspacePageState extends State<WorkspacePage> {
     try {
       final result = await widget.handler.execute(RenameWorkspaceCommand(ws.id, name));
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(result.note ?? '已重命名')));
+        ToastManager.show(result.note ?? '已重命名', kind: ToastKind.success);
       }
       _reload();
     } on ActionException catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+        ToastManager.show(e.message, kind: ToastKind.error);
       }
     }
   }
@@ -217,14 +231,12 @@ class _WorkspacePageState extends State<WorkspacePage> {
         DeleteWorkspaceCommand(e.ws.id, ackNonEmpty: count > 0),
       );
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(result.note ?? '已删除')));
+        ToastManager.show(result.note ?? '已删除', kind: ToastKind.success);
       }
       _reload();
     } on ActionException catch (err) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(err.message)));
+        ToastManager.show(err.message, kind: ToastKind.error);
       }
     }
   }
@@ -237,8 +249,18 @@ class _WorkspacePageState extends State<WorkspacePage> {
       MaterialPageRoute(builder: (_) => const WorkspaceCreatePage()),
     );
     if (name == null || name.isEmpty) return;
-    await widget.handler.execute(CreateWorkspaceCommand(name));
-    _reload();
+    // 与 _rename/_delete 同口径：失败要被感知（重名等 ActionException 不裸抛）
+    try {
+      final result = await widget.handler.execute(CreateWorkspaceCommand(name));
+      if (mounted) {
+        ToastManager.show(result.note ?? '已创建', kind: ToastKind.success);
+      }
+      _reload();
+    } on ActionException catch (e) {
+      if (mounted) {
+        ToastManager.show(e.message, kind: ToastKind.error);
+      }
+    }
   }
 
   @override
@@ -260,7 +282,10 @@ class _WorkspacePageState extends State<WorkspacePage> {
         bottomNavigationBar: _selection.active
             ? SelectionActionBar(
                 controller: _selection,
-                actions: ItemActions.selectionBar(inVaultView: false),
+                actions: ItemActions.selectionBar(
+                  inVaultView: false,
+                  inWorkspaceView: _selected != null,
+                ),
                 onExit: _selection.exit,
                 onAction: _onBatchAction,
               )
@@ -308,9 +333,21 @@ class _WorkspacePageState extends State<WorkspacePage> {
       }
       final entries = snap.data!;
       if (entries.isEmpty) {
-        return const Center(child: EmptyStateView(text: '还没有工作区\n点右下角 + 新建'));
+        // 空区也包 AlwaysScrollable，保证下拉刷新可用（task_queue_page 同款）。
+        return RefreshIndicator(
+          onRefresh: reload,
+          child: ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            children: const [
+              SizedBox(height: 240),
+              EmptyStateView(text: '还没有工作区\n点右下角 + 新建'),
+            ],
+          ),
+        );
       }
-      return GridView.count(
+      return RefreshIndicator(
+        onRefresh: reload,
+        child: GridView.count(
         crossAxisCount: 2,
         mainAxisSpacing: Insets.sm,
         crossAxisSpacing: Insets.sm,
@@ -318,6 +355,7 @@ class _WorkspacePageState extends State<WorkspacePage> {
         // 底部 96 让出右下角 FAB（与列表层 FAB bottom:96 同一让位语言）
         padding: const EdgeInsets.fromLTRB(Insets.sm, Insets.sm, Insets.sm, 96),
         children: [for (final e in entries) _workspaceCard(e)],
+        ),
       );
     },
   );
@@ -434,10 +472,21 @@ class _WorkspacePageState extends State<WorkspacePage> {
       final items = snap.data!;
       _selItems = items;
       if (items.isEmpty) {
-        return const Center(child: EmptyStateView(text: '这个工作区还没有条目'));
+        return RefreshIndicator(
+          onRefresh: reload,
+          child: ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            children: const [
+              SizedBox(height: 240),
+              EmptyStateView(text: '这个工作区还没有条目'),
+            ],
+          ),
+        );
       }
-      return MasonryGridView.count(
-        // 选择模式中禁下拉刷新语义（拍板）——本页无下拉刷新，保持物理一致。
+      return RefreshIndicator(
+        onRefresh: reload,
+        child: MasonryGridView.count(
+        // 选择模式中禁下拉刷新语义（拍板）——选择中不触发刷新，与列表物理一致。
         physics: _selection.active
             ? const ClampingScrollPhysics()
             : const AlwaysScrollableScrollPhysics(),
@@ -452,6 +501,7 @@ class _WorkspacePageState extends State<WorkspacePage> {
         ),
         itemCount: items.length,
         itemBuilder: (context, i) => _gridCard(items[i]),
+        ),
       );
     },
   );

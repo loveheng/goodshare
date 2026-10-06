@@ -28,7 +28,7 @@ updated: 2026-10-05
 现行三级页 = 预览 + 线性链式卡 + 独立能力 chips。缺陷：
 
 - **产物没有形态**：链式卡只展示「当前步按钮 + 累计文本」，字幕不是字幕的样子（不能导出）、音频不是能播的样子、文本不能单独预览保存；
-- **链是线性的**：音频「提取文本」「提取字幕」会被摆成两步 → 两次 ASR 长任务（实际一次运行双产出）；视频「提取音频」后无法继承音频能力；
+- **链是线性的**：音频「提取文本」「提取字幕」会被摆成两步 → 两次 ASR 长任务（实际一次运行双产出）；视频「提取音频」**已并入转写步骤**（抽音轨降为内部实现，拍板 16）——不再单列用户步骤；
 - **中断续跑是隐式机制**：页面上看不出哪些步骤已有产出。
 
 ## 2. 核心模型：块产物（Block Artifact）+ 工作流（Workflow）
@@ -117,13 +117,9 @@ block_extract_audio:<blockKey>              行内视频块提取音轨（产 au
 - 翻译/摘要消费块产物：动作串携带 srcKind，重建器从 block_artifacts 读源文本（无源产物 → 任务 failed + note 明说，不静默）；
 - 失败/超时/占位口径不变：note 落 `ai_task_queue.last_note`，R1 同源。
 
-### 2.6 门禁：手动即授权，MCP 不豁免（拍板 2026-10-05，评审修订）
+### 2.6 门禁：已随「允许 AI 处理」开关整体移除（2026-10-05 二次拍板）
 
-`aiProcess` 门禁对 `block_*` 动作**按来源区分**：
-
-- **UI 手动触发（actor=ui）豁免**：用户在块上手动点转写/OCR 本身就是显式授权（与顶级音频条目点「转写」按钮同一心智）；产出落块附件不触碰 human_md，无「冲刷人类笔记」风险（该门禁的存在理由）；
-- **MCP / AI 管线发起（actor=ai / pipeline）不豁免**：大模型自主调用块能力必须满足 `aiProcess=true`，否则动作层**入队前直接拒绝**（ActionException，不走「任务 skip」路径——未授权任务根本不进队列，无「处理一半发现没授权」的空耗）。落点在动作层命令校验（actor 由传输层指定、命令载荷无法伪造，见 queue_consumer 既有红线），QueueConsumer 不区分来源，门禁零下沉；
-- 拒绝 note 明说：「AI 未获「允许 AI 处理」授权，块能力调用被拒绝」。
+原「手动即授权、MCP 不豁免」的 `aiProcess` 门禁（UI 豁免 / MCP·管线入队前拒绝 / 拒绝 note）**已删除**：管线回写授权不再要独立开关（与 `ai_editable` 双开关冗余），块任务产物落 block_artifacts 不触碰条目 human_md，授权统一收口到「允许 AI 编辑」。块类型校验与 §6.6 入队互斥不变。
 
 ### 2.7 顶级条目与行内块的统一
 
@@ -197,14 +193,15 @@ WorkflowSpec workflowFor(BlockKind kind) => …;
 字幕产物：导出 SRT/VTT + 播放器挂载（§3.5）
 ```
 
-**视频块**（`video`）：
+**视频块**（`video`，拍板 16 合并后）：
 
 ```
-提取音频(extract_audio) ──→ audio_file
-转写(transcribe: 源=块本体或 audio_file) ──→ transcript + subtitle
-翻译/摘要 —— 继承音频（源可再选字幕）
-audio_file 产物卡：内联播放 + 导出 + 「以此继续处理」
+转写(transcribe: 内部自动抽音轨 → 对块本体 ASR) ──→ transcript + subtitle
+翻译/摘要 —— 源 transcript 或 subtitle
 ```
+
+- 抽音轨**不再单列步骤**（原 `extract_audio`），降为转写内部实现（§2.5 对块文件走既有 `_toWav16k`）；用户点一次「转写」即取 transcript + subtitle 两个文字产物，**并顺带把音轨落为 `audio_file` 产物**（拍板 16 补齐方案Ⅰ，恢复「导出音轨」UI 出口——复用 audio_file 产物卡的内联播放/导出/锚点切换，零新增步骤/能力）。`audio_file` 计入步骤 `extraKinds`（随生但不计入 `done` 判定：抽取失败仅记 note，不卡文字产物已完成）；音频块本即音频，不重复产出。
+- 锚点切换（§3.6「以此继续处理」）在 `audio_file` 产物存在时出现——视频转写后即天然具备（也可由 MCP `block_extract_audio_item` 单独产出）。
 
 **文本块**（`text`）：**维持条目级链式卡，不迁工作流轨**（拍板 15）——划词文本是选区不是持久块，没有可挂载 `block_artifacts` 的 `block_key`（UNIQUE 三元组缺主键），且它的「应用」语义本就是回注条目字段而非插入引用块。强行迁轨要造合成 key（行号 / 文本 hash），既违反 §3.1「行号寻址禁止」，又随编辑失效让 GC 失准，收益为零。spec 中 text 类步骤 consumes=∅ produces=∅（纯视图态，命令出口仍是条目级 `TranslateCommand`/`SummarizeCommand`），`workflowFor(kind).steps` 对文本块只作**能力清单与顺序**的声明，不产物化。
 
@@ -264,7 +261,7 @@ audio_file 产物卡：内联播放 + 导出 + 「以此继续处理」
 └──────────────────────────┘
 ```
 
-- **工作流轨**：左细进度线 + 节点圆点（完成实心 / 执行中呼吸动效 / 待解锁空心），替代现行线性链式卡的单按钮推进——每步结果就地展示为产物卡；
+- **工作流轨（2026-10-05 骨架重做）**：步骤头状态图标**内联**行首、步骤间以细分隔线区隔，**拆掉原左侧进度竖线**（更扁、首屏更省纵向空间；状态一眼可分：完成=中性实心、执行中=呼吸圈、待解锁=空心、锁定=灰）；分区标题（工作流 / 独立能力）走**签名式**（短前置规则 + 宽字距小写标签，ui-spec §2.2）；产物卡走**实色 `surfaceContainer`**（弃半透明叠层脏感，与详情页附录卡同材质）；**橘红纪律回收**——强调色只留给「开始 / 重试」动作与选源 segmented 选中态，完成态节点与卡内「已存」角标改中性 `onSurfaceVariant`；
 - **步骤展示策略（拍板 2026-10-05 三轮：全显+折叠）**：全部步骤常显于工作流轨，**未解锁步骤折叠为紧凑单行**（灰显 + 缺源标记，点开看依赖什么）；完成步骤的产物卡默认折叠摘要行。信息密度可控且能力全景可见——不采用「初始只显示第一步、瀑布流出」的渐进隐藏（与 2026-10-01「页内呈现该块全部适用能力」拍板冲突，可发现性优先）；
 - **产物卡三段式（拍板 2026-10-05 三轮）**：**卡头**（类型胶囊 + 耗时 + 状态角标「已存」）/ **中部预览**（按 kind 分化：文本=全文预览可编辑、字幕=段数+时长摘要、音频=波形播放条）/ **底部操作区**（应用/导出/复制 chips，按 `actionsFor(kind)` 视图层静态派生 affordance——数据层不携带操作声明，与 capabilitiesFor 同口径）；产物生成时卡片平滑展开、chips 浮现；执行中骨架屏扫光或呼吸灯（执行中恒展开）；
   - **卡头耗时口径（拍板 15 细化）**：耗时 = **执行侧实测**（`Stopwatch` 包 `reconstruct`，合入产物 `meta_json.elapsed_ms`，不取 `updated_at - created_at`——重算只刷 updated_at，差值会掺入闲置时间）；**步骤名由轨节点行承载**（同一步的多产物共用，卡内不重复），卡头只补「耗时 + 已存」；**未记录（旧产物 / 非块通道写入）整段缺席，不编造「0s」**；耗时**不放中部摘要行**（避免与卡头重复，摘要行只留 kind 自身语义：段数 / 文件名）。
@@ -343,3 +340,5 @@ flowchart TD
 14a. Step 8 落码口径（2026-10-05）：①`block_tasks` **只列 active（pending/processing）**——任务态字段回答「还在跑吗」，已产出/失败态归 `block_artifacts` 与 `last_note` 两条通道，字段=`job_id/action/block_key/status/enqueued_at/note?`（带 `job_id` 便于 AI 轮询/取消，`enqueued_at` 取 `updated_at`）；②**块能力工具面铺开为五种**（2026-10-05 用户拍板）：`block_transcribe_item`（+ subtitle_mode/target_lang 覆盖）、`block_ocr_item`、`block_translate_item`（`source_kind` 必填：transcript/ocr_text/subtitle 选源）、`block_summarize_item`、`block_extract_audio_item`——与三级页五步骤一一对应，模型无需再背 `batch_items` 的载荷格式（`batch_items` 通道**保留可用**，不废弃）；工具总数 34；③五工具共用同一返回契约（抽 `tools.dart::_blockQueued`）：融合既有 `CommandResult` 与 §7 queued 语义 `{status:"queued", task_id, message, ok, op, item…}`（`transcribe_item` 的 job_id 模式同构），`message` 统一指明产出落点与「重复调用会被拒绝」；④门禁与互斥**零新增逻辑**——MCP 层只做参数序列化，AI 未授权的拒绝码 `forbidden`、重复入队 `invalid_request` 全部由动作层 §2.6/§6.6 发出（Human-AI 对称：换入口绕不过）。
 14. 六轮评审（AI 批量调用防线）：**入队互斥键=动作头**（非 kind——双产物须展开 produces，动作头等价零成本；参数差异同样拒绝，换参数由取消/Reset 承载）；互斥定位=防**重复入队**非执行并发（FIFO 串行架构上已无并发，不同块/条目批量无需互斥）；**get_item 增 block_tasks 兄弟字段**（任务态不混产物数组，硬锁+软引导双保险）；**EXCLUSIVE 事务锁不采纳**（sqflite 单连接+单事务原子落库+UNIQUE 已三重覆盖，过度指定）。
 15. 七轮核对收尾（2026-10-05，AI 诚实核对后补）：①**产物卡卡头耗时**（§4）——执行侧实测 `elapsed_ms` 上卡头，未记录则整段缺席；耗时从摘要行撤下防重复；卡头增「已存」角标（步骤名仍在轨节点行，卡内不重复）。②**Reset 触觉**（§3.3）补齐：二次确认后 `HapticFeedback.mediumImpact`，与「开始」的 lightImpact 分档。③**文本块不迁工作流轨**（§3.2）——选区非持久块，无 block_key 可挂 `block_artifacts`；合成 key（行号/hash）违反「行号寻址禁止」且随编辑失效。**双轨定性为终态而非过渡债**：`BlockCapabilityExecutor` 的 `onReset/loadPersistedOutputs` 空实现只服务链式卡（文本块/未注入块通道的顶级媒体区），链式卡的 Reset 语义就是「归零卡内状态、不碰条目数据」，与块通道 Reset（清表行+删盘）是两条不同链路，不必强行合一。④**动效（产物展开/chips 浮现/骨架屏）**列为打磨项，不在本批——`pumpAndSettle` 与无限动画的组合已在本仓踩过挂死坑（workflow skill「测试超时」），引入前需配有限时长的 `AnimatedSize`/`FadeTransition` 并单独验 widget 测试收敛。
+16. **视频三级页 IA 合并（2026-10-05 收尾批，设计评估驱动）**：①视频 spec 四步 → 三步，**`extract_audio` 步骤撤销**，抽音轨降为转写内部实现（§2.5 `_toWav16k`，零新机制）；用户点一次「转写」即取 transcript + subtitle 两个文字产物（一步双产物）。②**独立能力收拢**：视频独立能力 = **切片**一项（`extract_audio`/`export_subtitle` 移出）；音频独立能力 = 空（音频「从音频提取音轨」本即死项，`export_subtitle` 与字幕产物卡「导出」重复）。`ExtractAudioCommand`/`extractAudioTrack`/`exportSubtitles` 命令与函数**保留**（`onRunStandalone` 分发表不删 case）供 MCP 与后续挂载点，非死代码。③**两处渲染缺陷修复**：`_StepRow` 节点圆点曾在左栏与内容行各插一枚（同一步两个圆点/两个转圈）→ 改为只左栏承载；预览 `ClipRect` 把限高约束透传到子级，竖屏视频播放器（≈660）被压进 280 后内部 RenderFlex 溢出、控制条与播放箭头被挤出 → 改为「`ConstrainedBox(maxHeight)` 限裁切框 + `OverflowBox` 给子级有界宽/无界高排版 + `ClipRect` 居中裁切」，子级不溢出、主体可见。④代价**：视频「导出音轨」的 UI 入口随之消失**（此前由独立能力「提取音轨」承载）；转写不落 `audio_file` 产物。**「导出音轨」UI 出口已恢复（拍板 16 收尾，选方案Ⅰ）**：视频转写顺带把音轨落为 `audio_file` 产物（`AsrReconstructor` 对视频源调 `AudioExtractor.extract`，并入同一原子 `blockArtifacts`；音频块本即音频不重复产），复用该产物卡内联播放/导出/锚点切换——零新增步骤/能力，`ExtractAudioCommand`/`extractAudioTrack`/`exportSubtitles` 仍保留供 MCP 与后续挂载点。验证：analyze 0 / 全量 630 绿 / 新增+改 `block_artifacts_test`(视频三步+双产物、转写 extraKinds 含 audio_file、audio 无 extraKinds)、`capability_chain_test`(video=[clip]/audio=[]) 用例 / `block_capability_preview_test` 量裁切窗口而非内部内容。
+17. **三级页视觉骨架重做（2026-10-05 收尾批，美学/人机评估驱动）**：①**拆左侧进度竖线**——`_StepRow` 由「左 rail 列（节点+竖线）+ 内容列」改为「状态图标内联行首 + 步骤间 Divider 区隔」，首屏更省纵向空间、结构更扁（§4 同步）；②**分区签名式**——「工作流」「独立能力」区头改 `sectionHeader`（短前置规则 + 宽字距小写标签，与详情页分区标题同语言）；③**卡片实色令牌**——产物卡弃 `surfaceContainerHighest.withValues(alpha:0.5)` 半透明叠层，改实色 `surfaceContainer`；④**橘红纪律回收**——完成态节点与卡内「已存」角标由 `primary/primaryContainer` 改中性 `onSurfaceVariant`/`surfaceContainerHighest`，强调色只留给「开始/重试」与选源选中态（旧链式卡 `block_capability_card` 完成态图标同步改中性）；⑤**长任务后台反馈**与**高频出口常驻**列为后续（前者需队列→通知集成、后者与 ui-spec §3「出口=手势」拍板冲突，本次不破）。验证：analyze 0 / 全量 631 绿 / docs-lint OK。

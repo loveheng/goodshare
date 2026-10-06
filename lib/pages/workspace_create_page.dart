@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../ui/knot_illustration.dart';
+import '../ui/toast.dart';
 import '../ui/tokens.dart' show Insets, Radii;
 
 /// 新建工作区整页（2026-10-01 拍板，mymind「Create new space」布局参照）：
@@ -45,8 +46,7 @@ class _WorkspaceCreatePageState extends State<WorkspaceCreatePage> {
   void _create() {
     final name = _name.text.trim();
     if (name.isEmpty) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('先给工作区起个名字')));
+      ToastManager.show('先给工作区起个名字', kind: ToastKind.error);
       return;
     }
     Navigator.pop(context, name);

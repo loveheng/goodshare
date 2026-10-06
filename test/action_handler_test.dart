@@ -5,6 +5,7 @@ import 'package:goodshare/action/commands.dart';
 import 'package:goodshare/action/item_action_handler.dart';
 import 'package:goodshare/ai/reconstructor.dart';
 import 'package:goodshare/data/db.dart';
+import 'package:goodshare/data/block_artifacts.dart' show BlockArtifactKind;
 import 'package:goodshare/data/repository.dart';
 import 'package:goodshare/models/item.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -112,28 +113,48 @@ void main() {
     expect(after.item!.machineJson, ok);
   });
 
-  test('重分类白名单：仅 source_type=image 可 image→document（聊天场景已取消）', () async {
+  test('重分类白名单（2026-10-05 方向二）：AI 维持 image→document，人工全放开', () async {
     final shot = await repo.add(newItem(type: InboxItem.typeImage, sourceType: InboxItem.typeImage));
     final moved = await handler.execute(ReclassifyCommand(shot.id!, InboxItem.typeDocument));
     expect(moved.item!.itemType, InboxItem.typeDocument);
 
-    final note = await repo.add(newItem());
+    // AI（MCP）：白名单维持——非 image 来源 / 非白名单目标均拒
+    final note = await repo.add(newItem(aiEditable: true));
     expect(
-      () => handler.execute(ReclassifyCommand(note.id!, InboxItem.typeDocument)),
+      () => handler.execute(
+        ReclassifyCommand(note.id!, InboxItem.typeDocument),
+        actor: CommandActor.ai,
+      ),
+      throwsA(isA<ActionException>()),
+    );
+    final img2 = await repo.add(newItem(type: InboxItem.typeImage, sourceType: InboxItem.typeImage));
+    expect(
+      () => handler.execute(
+        ReclassifyCommand(img2.id!, InboxItem.typeUrl),
+        actor: CommandActor.ai,
+      ),
+      throwsA(isA<ActionException>()),
+    );
+    // 聊天场景取消（2026-10-02 拍板）：chatlog 不再是 AI 可改判目标
+    expect(
+      () => handler.execute(
+        ReclassifyCommand(img2.id!, InboxItem.typeChatlog),
+        actor: CommandActor.ai,
+      ),
       throwsA(isA<ActionException>()),
     );
 
-    final img2 = await repo.add(newItem(type: InboxItem.typeImage, sourceType: InboxItem.typeImage));
+    // 人工（ui，默认 actor）：同一些转移全放开（方向二拍板）
+    final note2 = await repo.add(newItem());
     expect(
-      () => handler.execute(ReclassifyCommand(img2.id!, InboxItem.typeUrl)),
-      throwsA(isA<ActionException>()),
+      () => handler.execute(ReclassifyCommand(note2.id!, InboxItem.typeDocument)),
+      returnsNormally,
     );
-    // 聊天场景取消：chatlog 不再是合法改判目标（2026-10-02 拍板）
     expect(
       () => handler.execute(ReclassifyCommand(img2.id!, InboxItem.typeChatlog)),
-      throwsA(isA<ActionException>()),
+      returnsNormally,
     );
-    // update 的 item_type 路径走同一校验
+    // update 的 item_type 路径走同一校验（ui 主体同口径放开）
     expect(
       () => handler.execute(UpdateItemCommand(id: img2.id!, itemType: InboxItem.typeDocument)),
       returnsNormally,
@@ -547,7 +568,7 @@ void main() {
         reason: '回填原文不算 AI 动笔，不该挂出「还原后毫无变化」的空会话（§3.1）');
   });
 
-  test('管线回写门禁（ai_process）：人类笔记未授权 → 拒绝；授权后通过', () async {
+  test('管线回写不再要「允许 AI 处理」授权（2026-10-05 拍板）：未授权直接落库', () async {
     final it = await repo.add(InboxItem(
       itemType: InboxItem.typeNote,
       sourceType: InboxItem.typeNote,
@@ -555,28 +576,13 @@ void main() {
       humanMd: '原文',
       createdAt: 1,
     )); // 默认 ai_process=false
-    // 未授权 → 管线（CommandActor.pipeline）回写被拒
-    expect(
-      () => handler.execute(
-        ApplyAiResultCommand(it.id!, const ReconstructResult(humanMd: 'AI 版')),
-        actor: CommandActor.pipeline,
-      ),
-      throwsA(isA<ActionException>()),
-    );
-    // 人类在详情页开启「允许 AI 处理」（仅 UI 可改）后通过
-    await handler.execute(SetAiProcessCommand(it.id!, true), actor: CommandActor.ui);
+    // 门禁已移除：管线（CommandActor.pipeline）回写直接落库
     await handler.execute(
       ApplyAiResultCommand(it.id!, const ReconstructResult(humanMd: 'AI 版')),
       actor: CommandActor.pipeline,
     );
     final after = await repo.byId(it.id!);
-    expect(after!.humanMd, 'AI 版', reason: '授权后管线回写落库');
-    expect(after.aiProcess, isTrue);
-    // AI 不得翻转管线处理授权开关
-    expect(
-      () => handler.execute(SetAiProcessCommand(it.id!, false), actor: CommandActor.ai),
-      throwsA(isA<ActionException>()),
-    );
+    expect(after!.humanMd, 'AI 版', reason: '管线回写无需独立授权');
   });
 
   // ───────── 引用附件迁移（content-pipeline §7 兜底）─────────
@@ -650,4 +656,147 @@ void main() {
     await handler.execute(MigrateAttachCommand(id: it.id!, ownedPath: f.path));
     expect((await repo.listRefs()).map((e) => e.id), isNot(contains(it.id)));
   });
+
+  // ───────── 顶级条目块通道（§2.7）：blockKey='item' 与行内块同口径 ─────────
+
+  test('顶级图片条目同走块通道：OCR/分类/条码以 blockKey=item 入队（2026-10-05 修断链）', () async {
+    final it = await repo.add(newItem(type: InboxItem.typeImage));
+
+    final ocr = await handler.execute(
+      OcrCommand(it.id!, blockKey: BlockArtifactKind.topLevelKey),
+    );
+    expect(ocr.op, 'ocr');
+    final cls = await handler.execute(
+      ClassifyCommand(it.id!, blockKey: BlockArtifactKind.topLevelKey),
+    );
+    expect(cls.op, 'block_classify');
+    final bc = await handler.execute(
+      ScanBarcodeCommand(it.id!, blockKey: BlockArtifactKind.topLevelKey),
+    );
+    expect(bc.op, 'block_scan_barcode');
+
+    final actions =
+        (await repo.pendingTasks()).map((t) => t['task_action']).toList();
+    expect(actions, contains('block_ocr:item'));
+    expect(actions, contains('block_classify:item'));
+    expect(actions, contains('block_scan_barcode:item'));
+  });
+
+  test('顶级非媒体条目块任务仍被拒（text 类型无块媒体，防呆不下放）', () async {
+    final it = await repo.add(newItem()); // note
+    try {
+      await handler.execute(
+        OcrCommand(it.id!, blockKey: BlockArtifactKind.topLevelKey),
+      );
+      fail('应抛 ActionException');
+    } on ActionException catch (e) {
+      expect(e.code, ActionErrorCode.invalidRequest);
+    }
+    expect((await repo.pendingTasks()), isEmpty, reason: '拒绝不入队');
+  });
+  // ───────── 待办勾选（todo_state_json，2026-10-05 接线）─────────
+
+  test('update todoState：勾选状态平行落库、不碰正文；空表=清空', () async {
+    final it = await repo.add(newItem());
+    final body = '- [ ] 买牛奶\n- [ ] 缴房租';
+    await handler.execute(UpdateItemCommand(id: it.id!, humanMd: body));
+
+    final h1 = TodoMark.hashOf('买牛奶');
+    final r = await handler.execute(UpdateItemCommand(id: it.id!, todoState: [
+      TodoMark(hash: h1, done: true, ts: 1),
+      TodoMark(hash: TodoMark.hashOf('缴房租'), done: false),
+    ]));
+    expect(r.item!.todoState.map((m) => m.done), [true, false]);
+    expect(r.item!.bodyText, body, reason: '勾选不改正文');
+
+    final fresh = (await repo.byId(it.id!))!;
+    expect(fresh.todoState, hasLength(2));
+    expect(fresh.todoState.first.done, isTrue);
+
+    // 空表 = 清空（null = 不动由另一用例覆盖）
+    await handler.execute(UpdateItemCommand(id: it.id!, todoState: const []));
+    expect((await repo.byId(it.id!))!.todoState, isEmpty);
+  });
+
+  test('update todoState：乐观锁生效；AI fromJson 不解析 todo_state（UI 专属）', () async {
+    final it = await repo.add(newItem(aiEditable: true)); // AI 改标题用例需授权
+    // 先制造一次落库（version 0→1），stale=0 即成过期版本
+    await handler.execute(UpdateItemCommand(id: it.id!, title: '先改一次'));
+    const stale = 0;
+
+    // 过期版本被拒（勾选窗口虽小，CAS 口径不豁免）
+    try {
+      await handler.execute(UpdateItemCommand(
+        id: it.id!,
+        todoState: [TodoMark(hash: TodoMark.hashOf('x'), done: true)],
+        expectedVersion: stale,
+      ));
+      fail('应抛 version_conflict');
+    } on ActionException catch (e) {
+      expect(e.code, ActionErrorCode.versionConflict);
+    }
+
+    // AI 侧 JSON 组装不带 todo_state → 落库不触碰勾选本
+    final full = await handler.execute(UpdateItemCommand(id: it.id!, todoState: [
+      TodoMark(hash: TodoMark.hashOf('x'), done: true),
+    ]));
+    final viaAi = await handler.execute(
+      ItemCommand.fromJson({'op': 'update', 'id': it.id!, 'title': 'AI 改标题'}),
+      actor: CommandActor.ai,
+    );
+    expect(viaAi.item!.humanTitle, 'AI 改标题');
+    expect(viaAi.item!.todoState.map((m) => m.hash),
+        full.item!.todoState.map((m) => m.hash), reason: 'AI update 不动勾选本');
+  });
+
+  // ───────── 重分类白名单放宽（2026-10-05 拍板「方向二」）─────────
+
+  test('重分类方向二：人工（ui）跨类型全放开，含媒体→文本', () async {
+    final chat = await repo.add(newItem(type: InboxItem.typeChatlog));
+    // AI 误判 chatlog，人工改回 note——此前被白名单锁死的核心场景
+    final r = await handler.execute(
+      ReclassifyCommand(chat.id!, InboxItem.typeNote),
+    );
+    expect(r.item!.itemType, InboxItem.typeNote);
+
+    // 媒体→文本也放行（渲染后果由 UI 确认弹窗承担，动作层不禁死）
+    final img = await repo.add(newItem(type: InboxItem.typeImage));
+    final r2 = await handler.execute(
+      ReclassifyCommand(img.id!, InboxItem.typeNote),
+    );
+    expect(r2.item!.itemType, InboxItem.typeNote);
+
+    // update 命令的 item_type 分支同口径（ui 主体不再受限）
+    final note = await repo.add(newItem());
+    final r3 = await handler.execute(
+      UpdateItemCommand(id: note.id!, itemType: InboxItem.typeDocument),
+    );
+    expect(r3.item!.itemType, InboxItem.typeDocument);
+  });
+
+  test('重分类方向二：AI（MCP）白名单不放宽——非 image 来源仍拒', () async {
+    final note = await repo.add(newItem(aiEditable: true));
+    try {
+      await handler.execute(
+        ReclassifyCommand(note.id!, InboxItem.typeNote),
+        actor: CommandActor.ai,
+      );
+      fail('应抛 reclassify_denied');
+    } on ActionException catch (e) {
+      expect(e.code, ActionErrorCode.reclassifyDenied);
+      expect(e.hint, contains('可选目标：document'));
+    }
+
+    // 白名单内（image 来源 image 类型 → document）AI 仍可通过
+    final img = await repo.add(newItem(
+      type: InboxItem.typeImage,
+      sourceType: InboxItem.typeImage,
+    ));
+    final r = await handler.execute(
+      ReclassifyCommand(img.id!, InboxItem.typeDocument),
+      actor: CommandActor.ai,
+    );
+    expect(r.item!.itemType, InboxItem.typeDocument);
+  });
+
 }

@@ -257,7 +257,7 @@ void main() {
     expect((await repo.byId(it.id!))!.isProcessed, isNot(-1), reason: '非失败：未置死信');
     });
 
-    test('管线回写门禁：ai_process=false → 任务 skipped、不写库、不标失败', () async {
+    test('管线回写不再要「允许 AI 处理」授权（2026-10-05 拍板）：ai_process=false 也直接跑', () async {
     final it = await repo.add(InboxItem(
     itemType: InboxItem.typeNote,
     rawContent: '未授权内容',
@@ -267,11 +267,9 @@ void main() {
     await QueueConsumer(repo, ReconstructorRegistry.defaultRegistry(), handler).pollOnce();
 
     final after = await repo.byId(it.id!);
-    expect(after!.humanMd, isNull, reason: '未授权 → 管线不写回');
-    expect(after.isProcessed, isNot(-1), reason: '未授权 ≠ 失败');
+    expect(after!.isProcessed, isNot(-1), reason: '照常处理，不标失败');
     final task = await repo.lastTaskOf(it.id!);
-    expect(task?['status'], 'skipped', reason: '队列侧 skip 该任务');
-    expect(task?['last_note'], contains('未授权 AI 处理'));
+    expect(task?['status'], isNot('skipped'), reason: '门禁已移除，任务不再被 skip');
     });
     }
 

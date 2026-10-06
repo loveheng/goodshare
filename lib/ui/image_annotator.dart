@@ -12,6 +12,7 @@ import '../models/item.dart';
 import '../render/annotation_export.dart';
 import 'annotation_canvas.dart';
 import 'annotation_list.dart';
+import 'toast.dart';
 import 'tokens.dart' show Insets, Radii;
 
 /// 标注编辑宿主（image-markup.md §2 终态 2026-10-04：画布全屏 + 悬浮件）。
@@ -22,8 +23,20 @@ import 'tokens.dart' show Insets, Radii;
 /// 列表↔画布受控选中（§6 双向联动）由本组件持 `_selectedId` 透传两侧；
 /// 显隐视图态（`_hiddenIds`，不落盘）与悬浮件瞬隐（`_interacting`）同属本层交互态。
 class ImageAnnotator extends StatefulWidget {
-  const ImageAnnotator({super.key, required this.item});
+  const ImageAnnotator({
+    super.key,
+    required this.item,
+    this.blockKey,
+    this.imagePath,
+  });
   final InboxItem item;
+
+  /// 图片块 key（顶级 'item' / 行内 local://）；null 视为顶级，复用旧存储文件。
+  /// 标注按 (item, blockKey) 落盘（独立能力块级化 2026-10-05）。
+  final String? blockKey;
+
+  /// 块图片绝对路径；null 回退 item.rawFilePath（顶级图片）。
+  final String? imagePath;
 
   /// 画布回写合并：画布持有可见子集，按 id 并回全表——隐藏项数据原样保留。
   /// 纯函数（单测钉住：合并不丢隐藏项，§6 显隐②）。
@@ -48,6 +61,9 @@ class _ImageAnnotatorState extends State<ImageAnnotator> {
   String? _selectedId; // 受控选中（列表↔画布双向联动，§6）
   bool _createFilled = false; // 生成态实心（§3 隐私遮挡=rect 实心态）
   bool _exporting = false; // 导出合成进行中（重 IO，按钮防重入）
+
+  /// 块 key 解析（顶级 'item' / 行内 local://）：标注按 (item, _bk) 落盘。
+  String get _bk => widget.blockKey ?? 'item';
 
   // ── 全屏悬浮形态（2026-10-04 二次拍板：画布全屏 + 悬浮件）──
   bool _interacting = false; // 手指在画布上 → 悬浮件瞬隐（§2 纪律）
@@ -77,10 +93,11 @@ class _ImageAnnotatorState extends State<ImageAnnotator> {
   }
 
   Future<void> _init() async {
-    final list = await AnnotationStore.load(widget.item.id!);
+    final list = await AnnotationStore.load(widget.item.id!, _bk);
     ui.Image? img;
     try {
-      final bytes = await File(widget.item.rawFilePath!).readAsBytes();
+      final bytes =
+          await File(widget.imagePath ?? widget.item.rawFilePath!).readAsBytes();
       img = await decodeImageFromList(bytes);
     } catch (e) {
       debugPrint('[ImageAnnotator] decode failed: $e');
@@ -103,7 +120,7 @@ class _ImageAnnotatorState extends State<ImageAnnotator> {
       toAdd = a.copyWith(text: text);
     }
     final withColor = toAdd.copyWith(color: _color, z: _list.length);
-    await AnnotationStore.add(widget.item.id!, withColor);
+    await AnnotationStore.add(widget.item.id!, withColor, _bk);
     if (!mounted) return;
     setState(() {
       _list = [..._list, withColor];
@@ -179,14 +196,14 @@ class _ImageAnnotatorState extends State<ImageAnnotator> {
   /// 并回全表再落盘，隐藏项数据不丢）。
   Future<void> _onChanged(List<Annotation> list) async {
     final merged = ImageAnnotator.mergeById(_list, list);
-    await AnnotationStore.saveAll(widget.item.id!, merged);
+    await AnnotationStore.saveAll(widget.item.id!, merged, _bk);
     if (!mounted) return;
     setState(() => _list = merged);
   }
 
   /// 删除（§6 列表）：移除对象；删的是当前选中则一并清选中，隐藏态同步清理。
   Future<void> _remove(String id) async {
-    await AnnotationStore.remove(widget.item.id!, id);
+    await AnnotationStore.remove(widget.item.id!, id, _bk);
     if (!mounted) return;
     setState(() {
       _list = _list.where((a) => a.id != id).toList();
@@ -223,7 +240,7 @@ class _ImageAnnotatorState extends State<ImageAnnotator> {
     final next =
         _palette[(_palette.indexOf(_list[idx].color) + 1) % _palette.length];
     final updated = _list[idx].copyWith(color: next);
-    await AnnotationStore.saveAll(widget.item.id!, [..._list]..[idx] = updated);
+    await AnnotationStore.saveAll(widget.item.id!, [..._list]..[idx] = updated, _bk);
     if (!mounted) return;
     setState(() => _list = [..._list]..[idx] = updated);
   }
@@ -244,6 +261,7 @@ class _ImageAnnotatorState extends State<ImageAnnotator> {
       await AnnotationStore.saveAll(
         widget.item.id!,
         [..._list]..[idx] = updated,
+        _bk,
       );
       if (!mounted) return;
       setState(() => _list = [..._list]..[idx] = updated);
@@ -257,20 +275,18 @@ class _ImageAnnotatorState extends State<ImageAnnotator> {
   /// 隐藏的不进合成图。失败 SnackBar 原样告知不静默。
   Future<void> _exportAndShare() async {
     if (_visibleList.isEmpty) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('还没有标注，先在图上添加')));
+      ToastManager.show('还没有标注，先在图上添加', kind: ToastKind.error);
       return;
     }
-    final messenger = ScaffoldMessenger.of(context);
     setState(() => _exporting = true);
     try {
       final path = await exportCompositedImage(
-        imagePath: widget.item.rawFilePath!,
+        imagePath: widget.imagePath ?? widget.item.rawFilePath!,
         annotations: _visibleList,
       );
       await SharePlus.instance.share(ShareParams(files: [XFile(path)]));
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('导出失败：$e')));
+      ToastManager.show('导出失败：$e', kind: ToastKind.error);
     } finally {
       if (mounted) setState(() => _exporting = false);
     }
@@ -319,7 +335,7 @@ class _ImageAnnotatorState extends State<ImageAnnotator> {
                 selectedId: _selectedId,
                 onSelectedChanged: _onSelect,
                 background: Image.file(
-                  File(widget.item.rawFilePath!),
+                  File(widget.imagePath ?? widget.item.rawFilePath!),
                   fit: BoxFit.fill,
                 ), // 画布底图 + loupe 镜中原图（§5.1 复渲染法）
                 onInteractionChanged: (v) => setState(() => _interacting = v),

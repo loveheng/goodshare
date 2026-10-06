@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../data/repository.dart';
 import '../ui/confirm_dialog.dart';
 import '../ui/feedback_views.dart';
+import '../ui/toast.dart';
 
 /// AI 任务队列：查看端侧 AI 处理任务（OCR / 转写 / 链接抓取）的状态**并管理**。
 ///
@@ -53,7 +54,7 @@ class _TaskQueuePageState extends State<TaskQueuePage> {
 
   void _snack(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ToastManager.show(message);
   }
 
   /// 暂停：仅对「等待」中的任务生效（已在 processing 的不打断）。
@@ -88,7 +89,12 @@ class _TaskQueuePageState extends State<TaskQueuePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        automaticallyImplyLeading: false,
+        automaticallyImplyLeading: false, // 出口=显式 ×（去箭头拍板的完整形态）
+        leading: IconButton(
+          tooltip: '关闭',
+          icon: const Icon(Icons.close),
+          onPressed: () => Navigator.pop(context),
+        ),
         title: const Text('AI 任务队列'),
       ),
       body: _loading

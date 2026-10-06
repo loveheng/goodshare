@@ -4,6 +4,7 @@ import '../ai/capability.dart';
 import '../ai/capability_chain.dart';
 import 'block_capability_card.dart';
 import 'tokens.dart';
+import 'workflow_track.dart' show sectionHeader;
 
 /// 能力页预览最大高度（逻辑像素）：首屏必须同现「查看区（预览）+ 操作区
 /// （链式卡/独立能力）」（2026-10-04 真机取证修复）。
@@ -68,7 +69,8 @@ class BlockCapabilityPage extends StatelessWidget {
       appBar: AppBar(
         // 无返回箭头（ui-spec §3）：出口=系统手势/返回键
         automaticallyImplyLeading: false,
-        title: const Text('区块能力'),
+        // 标题栏=块类型名（2026-10-05 拍板：不写「区块能力」通称）
+        title: Text(blockKindLabel(kind)),
       ),
       body: SafeArea(
         child: SingleChildScrollView(
@@ -84,12 +86,22 @@ class BlockCapabilityPage extends StatelessWidget {
                     0,
                   ),
                   child: GestureDetector(
+                    key: const Key('previewWindow'),
                     onTap: onPreviewActivate,
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(
                         maxHeight: kPreviewMaxHeight,
                       ),
-                      child: ClipRect(child: preview),
+                      // 限高 + 居中裁切（2026-10-05 修，同 block_workflow_page）：
+                      // 限高只约束裁切框，子级经 OverflowBox 得有界宽+无界高排版，
+                      // 避免超高预览被压扁后内部 RenderFlex 溢出；居中裁切保留主体。
+                      child: ClipRect(
+                        child: OverflowBox(
+                          alignment: Alignment.center,
+                          maxHeight: double.infinity,
+                          child: preview,
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -116,11 +128,10 @@ class BlockCapabilityPage extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
+                      sectionHeader(
+                        Theme.of(context),
+                        Theme.of(context).colorScheme,
                         '独立能力',
-                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
                       ),
                       const SizedBox(height: Insets.sm),
                       Wrap(

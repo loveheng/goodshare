@@ -26,6 +26,7 @@ class WorkflowStep {
     required this.label,
     required this.consumes,
     required this.produces,
+    this.extraKinds = const {},
     required this.command,
   });
 
@@ -42,6 +43,11 @@ class WorkflowStep {
   /// 产出的产物 kind 集合（转写 = transcript + subtitle 双产物）。
   /// 空 = 无块产物（textSpec 的条目级回注步骤，产物走条目级字段）。
   final Set<String> produces;
+
+  /// 随生但不计入 `done` 判定的产物（拍板 16 补齐方案Ⅰ）：视频转写顺带落
+  /// `audio_file` 音轨，但它不是「转写完成」的硬指标——音轨抽取失败
+  /// 不应把已完成的文字产物卡成未完成。渲染时与 [produces] 一并出卡。
+  final Set<String> extraKinds;
 
   /// 命令化出口（R2）：组装既有 ItemCommand 入队。[sourceKind] 仅翻译类步骤
   /// 需要（块产物翻译必须显式选源，动作层校验）；其余步骤忽略。
@@ -103,6 +109,7 @@ ItemCommand _translateCommand(String itemId, String blockKey, {String? sourceKin
 ItemCommand _summarizeCommand(String itemId, String blockKey, {String? sourceKind}) =>
     SummarizeCommand(itemId, blockKey: blockKey);
 
+/// 块提取音频（视频块）：源为块视频文件，产 `audio_file` 产物（内联播放/导出/锚点切换）。
 ItemCommand _extractAudioCommand(String itemId, String blockKey, {String? sourceKind}) =>
     ExtractAudioCommand(itemId, blockKey: blockKey);
 
@@ -133,7 +140,9 @@ const WorkflowSpec _imageSpec = WorkflowSpec(kind: BlockKind.image, steps: [
   WorkflowStep(
     id: 'summarize',
     label: '摘要',
-    consumes: {BlockArtifactKind.ocrText, BlockArtifactKind.translation},
+    // 摘要源=识别文字（2026-10-06 拍板：识别文字最准，译文不作源）——
+    // 消费源收窄后执行侧遍历（queue_consumer 先 transcript 后 ocr_text）不变。
+    consumes: {BlockArtifactKind.ocrText},
     produces: {BlockArtifactKind.summary},
     command: _summarizeCommand,
   ),
@@ -163,9 +172,11 @@ const WorkflowSpec _audioSpec = WorkflowSpec(kind: BlockKind.audio, steps: [
   ),
 ]);
 
-/// 视频 = 提取音频 + 继承音频（组合不继承，§3.6 锚点切换）。转写不锁在
-/// 提取音频之后（可直接转写视频，消费侧自动优先已有 audio_file 为源——
-/// 同一音轨内容，省一次抽取；无 audio_file 回落块本体，§2.5 零新机制）。
+/// 视频 = **提取音频（独立步骤）→ 转写（transcript + subtitle）→ 翻译 → 摘要**
+/// （2026-10-05 按用户草图重排）：抽音轨**升回为轨内独立首步骤**「提取音频」
+/// （拍板 16 曾降为转写内部实现，现恢复为显式用户动词——产 `audio_file` 产物，
+/// 卡即「音轨」，承载内联播放/导出/锚点切换）。audio_file 由该步骤独占产出，
+/// 转写不再顺带抽音轨；转写可经 `blockAudioFileOf` 复用已提取音轨省一次解码（§3.6）。
 const WorkflowSpec _videoSpec = WorkflowSpec(kind: BlockKind.video, steps: [
   WorkflowStep(
     id: 'extract_audio',

@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:goodshare/doc/rich_text.dart';
+import 'package:goodshare/models/item.dart' show TodoMark;
 
 void main() {
   const parser = MarkdownSubsetParser();
@@ -653,6 +654,42 @@ void main() {
       expect(r.notes, isNot(contains(startsWith('检测到未支持的 GFM 语法'))));
     });
   });
+  // ───────── 待办勾选批次（2026-10-05）：scanTodoTexts 与 hash 口径 ─────────
+
+  test('scanTodoTexts：列表式 / 裸待办 / 行内标记剥壳 / 引用块递归', () {
+    final md = [
+      '- [ ] 买牛奶',
+      '- [x] 缴房租',
+      '* [ ] 星号列表待办',
+      '1. [x] 有序列表待办',
+      '[ ] 裸待办行',
+      '普通列表项不算',
+      '正常段落',
+      '> - [ ] 引用块里的待办',
+      '- [ ] 带**行内标记**和`代码`的待办',
+    ].join('\n');
+    expect(scanTodoTexts(md), [
+      '买牛奶',
+      '缴房租',
+      '星号列表待办',
+      '有序列表待办',
+      '裸待办行',
+      '引用块里的待办',
+      '带行内标记和代码的待办',
+    ]);
+  });
+
+  test('TodoMark.hashOf：内容寻址口径——重排不变、改文即新键、trim 稳定', () {
+    // 与位置无关：同一文本任意顺序 hash 恒定
+    expect(TodoMark.hashOf('买牛奶'), TodoMark.hashOf('买牛奶'));
+    // trim：前后空白不改变身份
+    expect(TodoMark.hashOf('买牛奶'), TodoMark.hashOf(' 买牛奶 '));
+    // 改文即新键
+    expect(TodoMark.hashOf('买牛奶'), isNot(TodoMark.hashOf('买牛奶 去掉')));
+    // 不用 String.hashCode（按进程随机化）——同值跨实例稳定
+    expect(TodoMark.hashOf('买牛奶'), TodoMark.hashOf('买牛奶'));
+  });
+
 }
 
 /// 块 → 纯文本（测试辅助）。

@@ -33,6 +33,10 @@ final class BlockArtifactKind {
   static const translation = 'translation';
   static const summary = 'summary';
   static const audioFile = 'audio_file';
+  // 图片块独立能力产物（标注/分类/识别条码块级化，2026-10-05）：与条目级
+  // facets 解耦，分类/条码按 (item, blockKey) 落块产物，标注按 (item, blockKey) 落文件。
+  static const classification = 'classification';
+  static const barcode = 'barcode';
 
   /// 有 file_path 的 kind（磁盘联动删除的作用域）。
   static const fileBacked = {subtitle, audioFile};

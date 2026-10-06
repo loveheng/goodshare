@@ -13,9 +13,9 @@ const String _kTagDraftId = 'tag_editor';
 /// 不动数据。原详情页 `_TagEditorSheet`（detail-two-zone.md §3 拍板 2026-10-01）抽为
 /// 共享组件，便签作曲器同一动作共用同一形态。
 ///
-/// 草稿语义（用户拍板 2026-10-05）：输入框里未提交的半截文字**不当作已存标签**，
-/// 但也不丢——作为一份持久化草稿留着，下次打开预填；只有显式回车/`+` 成 chip 再保存
-/// 才落库。避免「打字后直接点保存就被当成标签误存」或「直接点保存就丢字」。
+/// 草稿语义（2026-10-05 修订）：**保存时输入框里未提交的文字直接收为标签**——
+/// 「打字 → 保存」必须产出标签，否则表现为「无法手动添加」（用户报障根因）。
+/// 半截输入只在**取消**时留作持久化草稿（下次打开预填），不丢字。
 Future<List<String>?> showTagEditor(
   BuildContext context, {
   required List<String> initial,
@@ -165,8 +165,13 @@ class _TagEditorSheetState extends State<TagEditorSheet> {
               const SizedBox(width: Insets.sm),
               FilledButton(
                 onPressed: () {
-                  // 仅提交已显式成 chip 的标签；半截输入留作草稿，不误存。
-                  _persistDraft();
+                  // 未提交的输入直接收为标签（「打字 → 保存」必须产出标签，
+                  // 否则表现为「无法手动添加」）；去重去空口径与 _add 一致。
+                  final pending = _ctrl.text.trim();
+                  if (pending.isNotEmpty && !_tags.contains(pending)) {
+                    _tags.add(pending);
+                  }
+                  _persistDraft('');
                   Navigator.pop(context, _tags);
                 },
                 child: const Text('保存'),

@@ -20,7 +20,7 @@ format: v3
 - [ ] [2026-10-03] (功能)(层:L3)(重:中) 解析器 GFM 全量收编：`rich_text.dart` 加 `~~删除~~`/`==高亮==` 行内分组（strikethrough/highlight 枚举+三处同源）+ 表格块级分支（TableBlock + Table/DataTable 卡片渲染，窄屏适配）+ 自动链接 run 化 + 围栏代码块语言徽标；依附转盘 epic 动工时一并做，勿单独排期 (src: 用户拍板「GitHub md 全都要」, 知识收集场景修正)
 - [ ] [2026-10-02] (功能)(层:L4)(重:轻) 回收站（最近删除）页接入长按批量选择模式：动作集「恢复/彻底删除」，彻底删除需强二次确认；长按批量选择模式 epic 样板验收后另排 (src: 用户拍板)
 - [ ] [2026-10-02] (风险)(层:L0)(重:中) VAD `bufferSizeInSeconds=100` 对长音源溢出：>100s 音频触发 circular buffer overflow 告警（sherpa 报「数据未丢失」，桌面复现确认），与 2026-09-28 长视频 WAV 临时文件/超时风险条目同属长视频待验族，落地时一并实测 (src: ai, 字幕管线深度评估)
-- [ ] [2026-10-02] (功能)(层:L3)(重:中) document 归一化接线：`taskActionFor(document)` 由 null 接上队列（html/plain/pdf 三 normalizer 已建，接口位已存在），文件类分享自动出可读正文；content-pipeline §9 既有 Phase，半天级 (src: ai, app-share 链路评估)
+- [x] [2026-10-06] (功能)(层:L3)(重:中) document 归一化接线：`taskActionFor(document)`→taskNormalizeDocument 接入队列（原 null）；新增 `DocumentNormalizeReconstructor` 按扩展名分派 html/plain/pdf/md 归一化器，落 human_md + doc_meta_json（ItemDocNormalizer，降级带覆盖率 note）；文件类分享摄入自动出可读正文。reprocess 同步拾起归一化（此前因 action=null 不渲染）。content-pipeline §9 Phase 落地 (src: 用户拍板 #2 先开始)
 - [ ] [2026-10-02] (功能)(层:L1)(重:中) 图文同分享文案修复：receive_sharing_intent 的 toJsonObject 只取 uri 丢文案（小红书/微博类图文帖源头发内容损失），需 fork 插件或自写 intent 解析补齐；自 misc 低优升级（app 分享为主的使用方式） (src: ai, app-share 链路评估)
 - [ ] [2026-10-01] (功能)(层:L4)(重:重) 轻剪辑独立页面（区间选择器）：超门槛拦截后一键进入，独立路由页 + 预留 AI 调用路径（AI 可对用户视频发起区间操作）；唯一动作「切」：双端 scrubber 拖动粗定位 + 按住慢放精调（静止按下 200-250ms 触发，回退 1-1.5s 含反应补偿，0.5x 起步，拖动中停顿 500ms 触发且不回退）+ 抬手定点即正速续播；包含式补偿（in 点自动前移 0.3-0.5s / out 点后延 0.3-0.5s），北极星一次剪对率 ≥85%；不做字幕/变速/拼接/逐帧按钮；产物=原件时间轴裁剪原样副本（转码只裁时间不压画质，原文件不动），重新过门槛校验后进收集链路 (src: ai, 交互评估对话)
 - [ ] [2026-09-28] (风险)(层:L3)(重:中) 视频字幕转写：长视频 16k 单声道 WAV 临时文件约 115MB/小时落 systemTemp，且既有 10 分钟超时策略未覆盖视频场景，落地时评估分段/清理与超时上限 (src: ai, design-docs-review)
@@ -34,6 +34,10 @@ format: v3
 - [ ] [2026-10-01] (功能)(层:L3)(重:中) 视频主体条目（新 item_type，与附件视频姊妹）：入口分叉「添加附件 vs 视频条目」，主体态设宽门槛非零（拟 ≤10min / ≤500MB，待定），超限拦截拒收；门槛内不干预大小（无提示），工程防线后移：封面/转写 Job 化后台、播放懒加载、大文件三态兜底；不做「有无配文」隐式推断主体 (src: ai, 交互评估对话)
 - [ ] [2026-09-30] (功能)(层:L3)(重:中) 行内媒体块 V2 插入链路：图片相册选取+压缩+OSS 上传（产出 https url 写 ImageBlock，「📷」按钮）；音频/视频本地行内插入（依赖多端资产同步机制）；视频封面提取（顶级+行内，引入 video_thumbnail 类依赖走 Job 化） (src: rich-text-media §5)
 
+
+- [x] [2026-10-05] (功能)(层:L4)(重:中) 「分析文本」产出无去处——拍板结案（2026-10-05）：facets（语言/实体）定性为机器维度（MCP get_item 消费、V2 AI 分类页聚类视角），人类展示与标签重复、不做分析卡；三级页「分析文本」chip 撤下（kStandaloneCapabilities 摘除），命令/管线/MCP 工具保留 (src: ai, 全页面闭环盘点；用户拍板)
+- [x] [2026-10-05] (功能)(层:L4)(重:中) 正文待办行半成品——结案（2026-10-05 待办勾选批次落地）：todo_state_json hash 平行挂账全链接通（详见 done.md），速记条待办模式入口另议 (src: ai, 全页面闭环盘点)
+- [ ] [2026-10-05] (功能)(层:L1)(重:轻) Clip 无 MCP 工具（待拍板）：本仓 Clip=视频切片（startMs/endMs+extract/transcribe/summary），非网页剪藏——外部 Agent 知识输入已有 collect/add_item 承载；如做须按「AI 提议视频区间→人类确认」独立设计（标记≠处理拍板）。Human-AI 对称其余三项已闭环（2026-10-05：Reprocess/Reclassify 转正回 ⋯ 面板、RemoveFromWorkspace 转正批处理条、supportedOps 摘 set_ai_*） (src: ai, 全页面闭环盘点)
 
 ## goodshare · 暂缓/候（已移出活跃区，状态结构化）
 

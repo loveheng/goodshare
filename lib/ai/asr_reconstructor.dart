@@ -107,14 +107,15 @@ class AsrReconstructor implements AiReconstructor {
     }
     final modelDir = (await models.dirFor(model)).path;
     // 统一走 cue 通道（VAD 分段）：human_md 文本由 cue 拼接，字幕双份落盘。
-    // 任一环节失败 → 占位，不置死信。
-    final raw = await AsrEngine.instance.transcribeToCues(path, model,
+    // 任一环节失败 → 占位不置死信；**错误原因透传进 note**（R1：笼统
+    // 「模型未产出结果」会掩盖模型文件缺失/解码失败等真实原因，用户无从处置）。
+    final (raw, asrError) = await AsrEngine.instance.transcribeToCues(path, model,
         modelDir: modelDir);
     if (raw == null) {
       debugPrint('[AsrReconstructor] transcribe failed, placeholder: $path');
       return ReconstructResult(
         humanMd: input.rawContent ?? '',
-        note: '转写失败：模型未产出结果',
+        note: '转写失败：$asrError',
         blockKey: blockKey,
         blockArtifacts: const [],
       );
@@ -184,24 +185,28 @@ class AsrReconstructor implements AiReconstructor {
         );
       }
       final text = cues.map((c) => c.text.trim()).join('\n');
+      final arts = <BlockArtifactInput>[
+        BlockArtifactInput(
+          BlockArtifactKind.transcript,
+          text: text,
+          metaJson: jsonEncode({'cues': cues.length}),
+        ),
+        if (subtitlePath != null) // ignore: unnecessary_null_comparison
+          BlockArtifactInput(
+            BlockArtifactKind.subtitle,
+            text: text,
+            filePath: subtitlePath,
+            metaJson: jsonEncode({'cues': cues.length, 'mode': mode.name}),
+          ),
+      ];
+      // audio_file 由「提取音频」步骤独占产出（block_extract_audio 任务 →
+      // BlockExtractAudioReconstructor），转写不再顺带抽音轨；转写经
+      // blockAudioFileOf 复用已提取音轨省一次解码（§3.6 锚点切换）。
       return ReconstructResult(
         // 块任务不触碰条目字段：humanMd=rawContent 走 rawEcho 保护保留现正文
         humanMd: input.rawContent ?? '',
         blockKey: blockKey,
-        blockArtifacts: [
-          BlockArtifactInput(
-            BlockArtifactKind.transcript,
-            text: text,
-            metaJson: jsonEncode({'cues': cues.length}),
-          ),
-          if (subtitlePath != null) // ignore: unnecessary_null_comparison
-            BlockArtifactInput(
-              BlockArtifactKind.subtitle,
-              text: text,
-              filePath: subtitlePath,
-              metaJson: jsonEncode({'cues': cues.length, 'mode': mode.name}),
-            ),
-        ],
+        blockArtifacts: arts,
         note: subNote,
       );
     }

@@ -52,17 +52,19 @@ class AttachMigrationService {
   }
 
   /// 批量迁移（一键全部）：逐条执行，单条失败不中断。
-  /// [onProgress] 回调 (done, total, 当前条目标题, 当前条结果)。
+  /// [onProgress] 回调 (done, total, 当前条目, 当前条结果)——结果含失败原因，
+  /// 调用方据此回填失败归类（批量与单条迁移的状态口径一致）。
   Future<int> migrateAll(
     List<InboxItem> items, {
-    void Function(int done, int total, String title, bool ok)? onProgress,
+    void Function(int done, int total, InboxItem item, ({bool ok, String message}) result)?
+        onProgress,
   }) async {
     var succeeded = 0;
     for (var i = 0; i < items.length; i++) {
       final it = items[i];
       final r = await migrateOne(it);
       if (r.ok) succeeded++;
-      onProgress?.call(i + 1, items.length, it.humanTitle ?? it.rawFilePath ?? it.id ?? '', r.ok);
+      onProgress?.call(i + 1, items.length, it, r);
     }
     return succeeded;
   }

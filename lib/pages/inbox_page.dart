@@ -15,6 +15,7 @@ import '../ui/content_card.dart';
 import '../ui/repo_auto_reload.dart';
 import '../ui/selection/selection_scope.dart';
 import '../ui/slogans.dart';
+import '../ui/toast.dart';
 import '../ui/tokens.dart';
 import 'add_sheet.dart';
 import 'item_detail_page.dart';
@@ -537,8 +538,7 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
     final ready = await cap.ensureReady();
     if (!ready.available) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(ready.reason ?? '文档扫描不可用')));
+        ToastManager.show(ready.reason ?? '文档扫描不可用', kind: ToastKind.error);
       }
       return;
     }
@@ -553,8 +553,7 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
       final raw = result.machineJson?['document_scan'];
       if (raw == null) {
         if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text(result.note ?? '未扫描到内容')));
+          ToastManager.show(result.note ?? '未扫描到内容');
         }
         return;
       }
@@ -588,18 +587,14 @@ class _InboxPageState extends State<InboxPage> with RepoAutoReload {
       }
       if (mounted) {
         reload();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              failed > 0 ? '已添加 $n 个扫描页，$failed 个保存失败' : '已添加 $n 个扫描页',
-            ),
-          ),
+        ToastManager.show(
+          failed > 0 ? '已添加 $n 个扫描页，$failed 个保存失败' : '已添加 $n 个扫描页',
+          kind: ToastKind.success,
         );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('文档入库中断：$e')));
+        ToastManager.show('文档入库中断：$e', kind: ToastKind.error);
       }
     }
   }

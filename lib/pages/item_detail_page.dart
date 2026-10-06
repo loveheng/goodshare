@@ -9,8 +9,10 @@ import 'package:share_plus/share_plus.dart';
 import '../action/commands.dart';
 import '../action/item_action_handler.dart';
 import '../app/lifecycle_manager.dart';
+import '../ai/video_clips.dart' show parseClipsJson;
 import '../ai/capabilities.dart';
 import '../ai/capability.dart';
+import '../ai/translation.dart' show detectSourceLanguage, languageLabel;
 import '../ai/subtitle.dart' show AsrCue, parseSrtVtt;
 import '../ai/workflow.dart' show WorkflowStep;
 
@@ -20,10 +22,14 @@ import '../data/repository.dart';
 import '../doc/attach.dart';
 import '../doc/rich_text.dart';
 import '../ui/confirm_dialog.dart';
+import '../ui/content_card.dart' show ContentCard;
+import '../ui/toast.dart';
 import '../ui/overflow_sheet.dart';
 import '../ui/tag_editor_sheet.dart';
 
 import '../models/item.dart';
+import '../media/block_media.dart';
+import '../models/annotation.dart';
 import '../service/settings_store.dart';
 import '../ui/actions/item_actions.dart';
 import '../ui/ai_diff.dart';
@@ -41,6 +47,7 @@ import '../ui/workflow_track.dart' show BlockArtifactsView;
 import '../ui/block_text_page.dart';
 
 import '../ui/item_view_template.dart';
+import '../ui/content_body.dart' show TodoInteractionScope;
 import '../ui/pdf_export.dart';
 import '../ui/repo_auto_reload.dart';
 import '../ui/section_legend.dart';
@@ -228,6 +235,12 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 分享截图渲染边界（detail-two-zone.md §6：复用页面既有 RepaintBoundary）。
   final _bodyBoundaryKey = GlobalKey();
 
+  /// 分享截图的范围裁剪（share_scope_sheet 勾选，2026-10-05 接通）：
+  /// RepaintBoundary 包住整页滚动视图，勾选过滤只能靠「渲染前改版式」——
+  /// 截图前置本字段 → build 按勾选收起不分享的分区 → 截完即还原（null）。
+  /// 非 null 仅存在于 _exportPdf 截图窗口内，常态交互不受影响。
+  ShareScope? _shareScope;
+
   /// 块锚点注册中心（detail-two-zone.md §5.1 二次改版）：文本块无常驻 ✨，
   /// 划词菜单按选区锚点反查命中块——本表是菜单与块之间唯一的几何桥梁。
   /// 生命周期=页面，宿主滑出视口即自行注销。
@@ -345,23 +358,78 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     _aiSession?.sync(_item);
   }
 
-  void _snack(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
+  void _snack(String message, {ToastKind kind = ToastKind.info, Widget? action}) {
+    ToastManager.show(message, kind: kind, action: action);
   }
 
-  Future<void> _run(Future<Object?> Function() action, String done) async {
+  Future<void> _run(Future<Object?> Function() action, String? done) async {
     try {
       final res = await action();
       // 成功落库触感（§6.0 触感映射：medium=成功落库）
       HapticFeedback.mediumImpact();
-      // 命令层可能回更具体的提示（如「已放入任务列表，前面还有 N 条」），优先展示
-      _snack(res is CommandResult ? (res.note ?? done) : done);
+      // 命令层可能回更具体的提示（如「已放入任务列表，前面还有 N 条」），优先展示；
+      // done=null = 静默成功（勾选等控件状态即反馈的场景，弹提示反成噪音）
+      if (done != null) {
+        _snack(res is CommandResult ? (res.note ?? done) : done);
+      }
       await _reload();
     } on ActionException catch (e) {
       _snack(e.message);
     }
+  }
+
+  /// 待办行是否已勾（渲染 lookup：todo_state_json 按行内容 hash 关联）。
+  bool _todoDone(String text) {
+    final h = TodoMark.hashOf(text);
+    for (final m in _item.todoState) {
+      if (m.hash == h) return m.done;
+    }
+    return false;
+  }
+
+  /// 待办勾选写路径（2026-10-05 接线，设计口径见 TodoMark.hashOf）：
+  /// 勾选**不改正文**——全量重算 todoState（GC 口径：只保留当前正文中
+  /// 存在的待办行，孤儿丢弃；被改文字的行自然落回「新待办、默认未勾」），
+  /// 走 UpdateItemCommand + expectedVersion（乐观锁防与 AI/编辑互踩，
+  /// 冲突弹动作层提示后重按即可——勾选是轻操作无长窗口）。
+  Future<void> _toggleTodo(String text, bool done) async {
+    final targetHash = TodoMark.hashOf(text);
+    final bodyTodos = scanTodoTexts(_item.bodyText);
+    final marks = <TodoMark>[];
+    final seen = <String>{};
+    var hit = false;
+    for (final t in bodyTodos) {
+      final h = TodoMark.hashOf(t);
+      if (!seen.add(h)) continue; // 同文多行共享一条状态（内容寻址边界）
+      if (h == targetHash) {
+        hit = true;
+        marks.add(TodoMark(
+          hash: h,
+          done: done,
+          ts: done ? DateTime.now().millisecondsSinceEpoch : null,
+        ));
+        continue;
+      }
+      for (final m in _item.todoState) {
+        if (m.hash == h) {
+          marks.add(m);
+          break;
+        }
+      }
+    }
+    // 极端时序防线：正文刚被改、目标行已不存在 → 不写（防造孤儿 + 防误勾他行）
+    if (!hit) return;
+    await _run(
+      () => widget.handler.execute(
+        UpdateItemCommand(
+          id: _item.id!,
+          todoState: marks,
+          expectedVersion: _item.version,
+        ),
+        vaultContext: widget.vaultContext,
+      ),
+      null,
+    );
   }
 
   Future<void> _confirmDelete() async {
@@ -466,10 +534,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
       _editing = false;
     });
     if (md == _item.bodyText) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('无改动')));
-      }
+      if (mounted) _snack('无改动');
       return;
     }
     await _run(
@@ -572,13 +637,14 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 历史面板，而不是拦住用户的写作流。
   void _onAiTakeover() {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: const Text('已切换手动编辑'),
-        duration: const Duration(seconds: 3),
-        action: SnackBarAction(label: '查看 AI 历史', onPressed: _showAiHistory),
+    _snack('已切换手动编辑', action: FilledButton.tonal(
+      style: FilledButton.styleFrom(
+        visualDensity: VisualDensity.compact,
+        textStyle: Theme.of(context).textTheme.labelMedium,
       ),
-    );
+      onPressed: _showAiHistory,
+      child: const Text('查看 AI 历史'),
+    ));
   }
 
   Future<void> _showAiHistory() async {
@@ -652,10 +718,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
         if (path == null) return;
         final saved = await copyToAppDir(path);
         if (saved == null) {
-          if (mounted) {
-            ScaffoldMessenger.of(context)
-                .showSnackBar(const SnackBar(content: Text('媒体文件保存失败')));
-          }
+          if (mounted) _snack('媒体文件保存失败', kind: ToastKind.error);
           return;
         }
         seg.url = await toLocalMediaUrl(saved);
@@ -735,6 +798,14 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
       if (!await caps.checkTranslationAvailable()) {
         final reason = await caps.translationUnavailableReason();
         _snack('无法翻译：${reason ?? '无可用翻译引擎'}（设置 → 翻译 可下载语言包）');
+        return null;
+      }
+      // 同文预检（2026-10-06 拍板扩展到音频/视频条目）：源语==目标语 → 提示
+      // 不入队不算失败；与块级 _runWorkflowStep 翻译预检同口径（双保险兜底
+      // 在引擎侧 completed+note，页侧 _waitForTask→状态线承载）。
+      final src = _item.bodyText.trim();
+      if (src.isNotEmpty && detectSourceLanguage(src) == caps.targetLang) {
+        _snack('源文本已是${languageLabel(caps.targetLang)}，无须翻译');
         return null;
       }
     }
@@ -820,28 +891,67 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 独立能力分发（detail-two-zone.md §5.2 改版：类型专属功能全部拆入
   /// 三级能力页，二级页不再有内容能力 chips）：标注/分类/条码/分析入队
   /// 或打开编辑工具流，切片/提取音轨/字幕导出为媒体工具流。
-  Future<void> _runStandaloneCapability(String capabilityId) async {
+  /// 独立能力分发。
+  ///
+  /// [blockKey] 非 null = 图片**块**能力（块级化 2026-10-05）：分类/条码落
+  /// block_artifacts、标注按 (item, blockKey) 落盘；顶级 'item' 与行内 local://
+  /// 同走此路径，统一处理口径（不再区分）。null = 条目级能力（旧路径，保留）。
+  Future<void> _runStandaloneCapability(
+    String capabilityId, {
+    String? blockKey,
+  }) async {
     final id = _item.id!;
     switch (capabilityId) {
       case 'annotate':
-        await showAnnotationEditorPage(context, item: _item);
+        // 图片块标注：按 (item, blockKey) 落盘；块图片取 blockFilePath
+        //（顶级 'item' 回退 item.rawFilePath）。
+        String? imagePath;
+        if (blockKey != null && blockKey != BlockArtifactKind.topLevelKey) {
+          imagePath = await resolveBlockMediaPath(blockKey);
+        }
+        if (!mounted) return;
+        await showAnnotationEditorPage(
+          context,
+          item: _item,
+          blockKey: blockKey,
+          imagePath: imagePath,
+        );
         await _reload();
       case 'classify':
         await _run(
           () => widget.handler.execute(
-            ClassifyCommand(id),
+            ClassifyCommand(id, blockKey: blockKey),
             vaultContext: widget.vaultContext,
           ),
           '已入队分类',
         );
+        if (blockKey != null) {
+          // 消费落定结果（2026-10-05 修失败盲区）：块任务 finishTask 不广播，
+          // 失败无人提示、产物落库后详情页也不会自动刷新——都在这里显式补。
+          final (ok, _) = await _waitForBlockTask(id, 'block_classify', blockKey);
+          if (!ok && mounted) {
+            _snack('分类未产出结果，可重试或到任务队列查看原因');
+          }
+          await _reload();
+        }
       case 'scan_barcode':
         await _run(
           () => widget.handler.execute(
-            ScanBarcodeCommand(id),
+            ScanBarcodeCommand(id, blockKey: blockKey),
             vaultContext: widget.vaultContext,
           ),
           '已入队条码扫描',
         );
+        if (blockKey != null) {
+          final (ok, _) = await _waitForBlockTask(id, 'block_scan_barcode', blockKey);
+          if (!ok && mounted) {
+            _snack('条码扫描未产出结果，可重试或到任务队列查看原因');
+          }
+          await _reload();
+        }
+      // **当前无 UI 入口**（2026-10-05 拍板：分析文本 facets 为机器维度——
+      // MCP get_item 消费、V2 聚类视角，人类展示与标签重复故撤 chip）——
+      // 命令保留供 MCP（analyze_text_item），分发分支挂载即生效。
       case 'analyze_text':
         await _run(
           () => widget.handler.execute(
@@ -855,9 +965,13 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
           context,
           handler: widget.handler,
           item: _item,
+          blockKey: blockKey,
           vaultContext: widget.vaultContext,
         );
         await _reload();
+      // 以下两项**当前无 UI 入口**（拍板 16：提取音轨并入转写、字幕导出由
+      // 字幕产物卡「导出」承载）——命令与执行函数保留，供 MCP 与后续挂载点；
+      // `_runStandaloneCapability` 分发表保持完整，挂载即生效。
       case 'extract_audio':
         await extractAudioTrack(context, _item);
       case 'export_subtitle':
@@ -919,6 +1033,16 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
         _snack('无法翻译：${reason ?? '无可用翻译引擎'}（设置 → 翻译 可下载语言包）');
         return false;
       }
+      // 同文预检（2026-10-06 拍板）：入队前判源产物语言，源语==目标语 → 提示
+      // 「无须翻译」，不入队也不算失败（成功路径的零工作分支）；引擎侧同判定
+      // （completed+note）作兜底双保险，见 _runWorkflowStep 落定分支。
+      final sourceText = sourceKind != null
+          ? await _blockArtifactText(blockKey, sourceKind)
+          : null;
+      if (sourceText != null && detectSourceLanguage(sourceText) == caps.targetLang) {
+        _snack('源文本已是${languageLabel(caps.targetLang)}，无须翻译');
+        return false;
+      }
     }
     final ItemCommand command;
     switch (step.id) {
@@ -941,16 +1065,32 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
       _snack(e.message);
       return false;
     }
-    return _waitForBlockTask(id, head, blockKey);
+    final (ok, note) = await _waitForBlockTask(id, head, blockKey);
+    // 同文兜底提示（引擎判定 completed 无产物，2026-10-06 拍板「这也算成功」）：
+    // 必须把原因转给用户，不能看起来像静默失败（R1 同一份状态）。
+    // 匹配「需翻译」同时覆盖无须/无需两种历史措辞（存量任务行）。
+    if (ok && mounted && step.id == 'translate' && (note?.contains('需翻译') ?? false)) {
+      _snack(note!);
+    }
+    return ok;
+  }
+
+  /// 读该块某产物的文本（同文预检的源；缺失/空返回 null）。
+  Future<String?> _blockArtifactText(String blockKey, String kind) async {
+    final a = await widget.repo.blockArtifacts.get(_item.id!, blockKey, kind);
+    final t = a?.text;
+    return (t != null && t.trim().isNotEmpty) ? t : null;
   }
 
   /// 等待该条目指定 block 任务的**最新**一次落定（同 [ _waitForTask] 口径，
   /// 匹配规则换为动作头 + blockKey——块串参数含 mode/lang，不能整串比对）。
-  Future<bool> _waitForBlockTask(String itemId, String head, String blockKey) async {
+  /// 返回 (是否成功, 任务 note)：note 供页侧转提示（如翻译「源文本已是中文，
+  /// 无须翻译」——completed 无产物时用户需要知道为什么，R1 同一份状态）。
+  Future<(bool, String?)> _waitForBlockTask(String itemId, String head, String blockKey) async {
     final deadline = DateTime.now().add(const Duration(minutes: 5));
     while (DateTime.now().isBefore(deadline)) {
       await Future<void>.delayed(const Duration(milliseconds: 500));
-      if (!mounted) return false;
+      if (!mounted) return (false, null);
       final tasks = await widget.repo.listTasks(limit: 50);
       for (final t in tasks) {
         if (t['item_id'] != itemId) continue;
@@ -958,47 +1098,10 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
         if (parsed == null || parsed.$1 != head || parsed.$2 != blockKey) continue;
         final status = t['status'] as String? ?? '';
         if (status == 'pending' || status == 'processing') break;
-        return status == 'completed';
+        return (status == 'completed', t['last_note'] as String?);
       }
     }
-    return false;
-  }
-
-  /// 产物应用（§3.4 拍板 4）：文本以引用块形态**就近插入源媒体行正下方**——
-  /// 「这条文本属于这个视频」的从属关系就地可见，不追加全文尾部打断图文混排；
-  /// 同一媒体行重复引用（拍板：合法共享）取首行。
-  /// 顶级条目（§2.7，blockKey='item'）无正文媒体行可寻址 → 回退追加正文末尾。
-  Future<void> _applyBlockArtifact(String blockKey, String kind, String text) async {
-    final id = _item.id!;
-    final lines = _item.bodyText.split('\n');
-    var insertAt = -1;
-    if (blockKey != BlockArtifactKind.topLevelKey) {
-      for (var i = 0; i < lines.length; i++) {
-        if (lines[i].contains(blockKey)) {
-          insertAt = i + 1;
-          break;
-        }
-      }
-      if (insertAt < 0) {
-        _snack('正文中已找不到该媒体行，无法就近插入');
-        return;
-      }
-    } else {
-      // 顶级条目：无媒体行可寻址，产物追加正文末尾（引用块形态不变）
-      insertAt = lines.length;
-    }
-    final quoted = text.trim().split('\n').map((l) => '> $l').join('\n');
-    lines.insert(insertAt, quoted);
-    try {
-      await widget.handler.execute(
-        UpdateItemCommand(id: id, humanMd: lines.join('\n')),
-        vaultContext: widget.vaultContext,
-      );
-      await _reload();
-      if (mounted) _snack('已应用（插入媒体行下方）');
-    } on ActionException catch (e) {
-      _snack(e.message);
-    }
+    return (false, null);
   }
 
   /// Reset 该块全部产物（表行 + 文件产物磁盘联动删除，§2.2 纪律 7）。
@@ -1030,9 +1133,19 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     final cues = await _loadBlockSubtitles(blockKey);
     if (cues == null || cueIndex < 0 || cueIndex >= cues.length) return;
     if (!mounted) return;
-    final url = blockKey.startsWith('local://')
-        ? blockKey.substring('local://'.length)
-        : blockKey;
+    // 顶级条目统一（§2.7）：blockKey='item' 没有可剥的 local:// 前缀，
+    // 直接用条目 rawFilePath 绝对路径（resolveLocalMediaSrc 对非 local://
+    // 原样透传）——此前 'item' 被当路径传进播放器，必然加载失败。
+    final String url;
+    if (blockKey == BlockArtifactKind.topLevelKey) {
+      final raw = _item.rawFilePath;
+      if (raw == null || raw.isEmpty) return;
+      url = raw;
+    } else {
+      url = blockKey.startsWith('local://')
+          ? blockKey.substring('local://'.length)
+          : blockKey;
+    }
     await showInlineVideoPlayer(
       context,
       url: url,
@@ -1093,7 +1206,10 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                 onApply: _applyCapabilityOutput,
                 onEditOutput: (raw) =>
                     showBlockTextPage(context, initialText: raw),
-                onRunStandalone: _runStandaloneCapability,
+                onRunStandalone: (id, bk) =>
+                    _runStandaloneCapability(id, blockKey: bk),
+                loadAnnotationCount: (bk) async =>
+                    (await AnnotationStore.load(_item.id!, bk)).length,
                 // 双轨口径（block-artifact-workflow.md §9 拍板 15：**终态非过渡**）：
                 // 链式卡轨服务「无持久块」的场景（文本块划词 / 未注入块通道的
                 // 顶级媒体区）——产出落条目级字段（正文/译文/摘要），Reset 语义
@@ -1107,7 +1223,9 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                 // 工作流页，产物读写走 block_artifacts（四回调齐备才启用）。
                 loadBlockArtifacts: _loadBlockArtifacts,
                 onRunWorkflowStep: _runWorkflowStep,
-                onApplyArtifact: _applyBlockArtifact,
+                loadBlockClips: (blockKey) async => parseClipsJson(_item.clipsJson)
+                    .where((c) => c.blockKey == blockKey)
+                    .toList(),
                 resetBlock: _resetBlockArtifacts,
                 onCueSeek: _onCueSeek,
                 onEditArtifact: _editBlockArtifact,
@@ -1136,7 +1254,14 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                           }
                           return false;
                         },
-                        child: CustomScrollView(
+                        // 待办交互作用域（2026-10-05 接线）：只有走
+                        // ContentBodySliver 的**正文**回落取用——摘要卡等
+                        // 直用 RichTextView 的位置不受影响（AI 摘要里的
+                        // `- [ ]` 样式行不是真待办，不可勾）。
+                        child: TodoInteractionScope(
+                          onToggle: _toggleTodo,
+                          done: _todoDone,
+                          child: CustomScrollView(
                           slivers: [
                             SliverAppBar(
                               automaticallyImplyLeading: false,
@@ -1160,12 +1285,15 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                               ),
                               sliver: SliverMainAxisGroup(
                                 slivers: [
-                                  ...(_editing && _editRows != null
-                                      ? _editBodySlivers()
-                                      : ItemViewTemplate(
-                                          item: _item,
-                                          machineMode: _machineMode,
-                                        ).bodySlivers(context)),
+                                  // 分享截图范围裁剪：不勾「正文」连 TLDR/类型
+                                  // 专属区一并收起（2026-10-05 接通，此前勾选零作用）
+                                  if (!(_shareScope?.includeBody == false))
+                                    ...(_editing && _editRows != null
+                                        ? _editBodySlivers()
+                                        : ItemViewTemplate(
+                                            item: _item,
+                                            machineMode: _machineMode,
+                                          ).bodySlivers(context)),
                                   if (!_editing) ...[
                                     SliverToBoxAdapter(
                                       child: _attachStatusLine(),
@@ -1203,7 +1331,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                               ),
                             ),
                           ],
-                        ),
+                        ), // CustomScrollView
+                        ), // TodoInteractionScope
                       ),
                     ),
                   ),
@@ -1258,7 +1387,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   ///   PDF，按内容分流），**唯一分享路径**（菜单里的纯文本直分享已移除）；
   /// - 删除红色 + 二次确认，已由 `⋯` 移回底栏常驻连接组（单一入口）；
   /// - 摘要与标签已移入灵感区（`_inspirationSection`），不占底栏；`⋯` 面板仅收
-  ///   权限开关（保险箱/对AI可见/允许AI编辑/允许AI处理/机器码）。
+  ///   权限开关（保险箱/对AI可见/允许AI编辑/机器码）。
   ///
   /// Wrap 而非 Row：本机逻辑屏宽仅 331dp（1272px / DPR 3.84），Row 溢出在
   /// 顶栏标题（长按原地编辑，2026-10-02 拍板）：编辑态为 TextField，否则为
@@ -1285,8 +1414,9 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     // 标题栏渲染纯文本（行内标记剥壳）：标题是笔记的简短指代，下划线等行内格式
     // 只在正文阅读态呈现（与列表/搜索预览口径一致），顶栏不承载下划线，
     // 也不出现 `<u>` 残壳。下方 body 的 ContentBody 仍按富文本渲染下划线。
-    final plainTitle =
-        inlineToPlain(const MarkdownSubsetParser().parseInline(title));
+    // titleToPlain 额外剥行首 `#`——速记一级标题派生的存量 humanTitle 原文
+    // 以 `# ` 开头，标题位不得出现 `#` 残壳（纯文本口径，2026-10-06）。
+    final plainTitle = titleToPlain(title);
     final titleStyle =
         Theme.of(context).textTheme.titleLarge ?? const TextStyle();
     return GestureDetector(
@@ -1312,7 +1442,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// **一个无分隔线的整体胶囊**（与全站底栏同款样式：surfaceContainerHigh 底 +
   /// Radii.lg 圆角），项间不再各自分立。编辑↔保存按态切换（label 即实际行为）；
   /// 分享为唯一导出入口；删除红色 + 二次确认；`⋯` 仅收权限开关（保险箱/对AI可见/
-  /// 允许AI编辑/允许AI处理/机器码），单一入口不重复。
+  /// 允许AI编辑/机器码），单一入口不重复。
   Widget _actionBar() {
     final scheme = Theme.of(context).colorScheme;
     return Material(
@@ -1405,6 +1535,52 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 只是不给普通用户按钮（2026-10-01 拍板）。
   void _toggleMachineMode() => setState(() => _machineMode = !_machineMode);
 
+  /// 重分类（方向二拍板 2026-10-05：人工全放开）——类型选择器 + 跨形态
+  /// 后果确认（媒体↔文本转移改变详情页渲染形态与 AI 管线路由，须明示）。
+  Future<void> _reclassify() async {
+    final chosen = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('重分类为'),
+        children: [
+          for (final t in InboxItem.allTypes)
+            if (t != _item.itemType)
+              SimpleDialogOption(
+                onPressed: () => Navigator.pop(ctx, t),
+                child: Text(ContentCard.labelOf(t)),
+              ),
+        ],
+      ),
+    );
+    if (chosen == null || !mounted) return;
+    const mediaTypes = {
+      InboxItem.typeImage,
+      InboxItem.typeVideo,
+      InboxItem.typeAudio,
+    };
+    final fromMedia = mediaTypes.contains(_item.itemType);
+    final toMedia = mediaTypes.contains(chosen);
+    if (fromMedia != toMedia) {
+      final ok = await confirmDialog(
+        context,
+        title: '改为「${ContentCard.labelOf(chosen)}」？',
+        content: fromMedia
+            ? '原${ContentCard.labelOf(_item.itemType)}附件将不再以播放器/图片形态显示，AI 处理也按新类型执行。'
+            : '新类型以媒体文件为主体（当前无附件文件时详情页将显示缺失占位），正文转为附属内容。',
+        confirmText: '重分类',
+      );
+      if (!ok) return;
+    }
+    if (!mounted) return;
+    await _run(
+      () => widget.handler.execute(
+        ReclassifyCommand(_item.id!, chosen),
+        vaultContext: widget.vaultContext,
+      ),
+      '已重分类为${ContentCard.labelOf(chosen)}',
+    );
+  }
+
   /// 从底部升起 mymind 风格功能面板（见 `_OverflowSheet`）。动作序列与条件收录
   /// 规则（分享/保险箱/删除/机器码）收口到 [ItemActions] 词汇表——本方法只剩
   /// 声明挑选 + 执行通道注入（单条 execute），视觉与动画不动（2026-10-02 拍板）。
@@ -1438,12 +1614,26 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
             .execute(SetAiEditableCommand(_item.id!, on), actor: CommandActor.ui),
         on ? '已允许 AI 编辑' : '已收回 AI 编辑授权',
       ),
-      onAiProcess: (on) => _run(
-        () => widget.handler
-            .execute(SetAiProcessCommand(_item.id!, on), actor: CommandActor.ui),
-        on ? '已允许 AI 处理' : '已收回 AI 处理授权',
-      ),
       onMachineToggle: _toggleMachineMode,
+      onReprocess: () async {
+        // 主动重做会覆盖现正文（动作层先重置为原文再入队），必确认
+        final ok = await confirmDialog(
+          context,
+          title: '重新处理这条？',
+          content: '将重置为原文并重新执行 AI 处理，当前的 AI 产出与正文修改会被覆盖。',
+          confirmText: '重新处理',
+          danger: true,
+        );
+        if (!ok || !mounted) return;
+        await _run(
+          () => widget.handler.execute(
+            ReprocessCommand(_item.id!),
+            vaultContext: widget.vaultContext,
+          ),
+          '已重新入队处理',
+        );
+      },
+      onReclassify: _reclassify,
     );
     final items = <OverflowItem>[
       for (final a in actions)
@@ -1470,20 +1660,44 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     final scope = await showShareScopeSheet(context);
     if (!mounted || scope == null) return;
     _snack('正在准备分享内容…');
+    // 「识别与转写文本」附录（勾选才装载）：顶级块通道的 OCR/转写产物，
+    // 详情页正文里没有对应分区，只在导出侧拼入（PDF）/截图无此项。
+    String? appendixText;
+    if (scope.includeBlockAppendix) {
+      final view = await _loadBlockArtifacts(BlockArtifactKind.topLevelKey);
+      final parts = [
+        view.text[BlockArtifactKind.ocrText],
+        view.text[BlockArtifactKind.transcript],
+      ].whereType<String>().map((t) => t.trim()).where((t) => t.isNotEmpty);
+      if (parts.isNotEmpty) appendixText = parts.join('\n\n');
+    }
     try {
       String? path;
       final hasMedia =
           _item.itemType == InboxItem.typeAudio ||
           _item.itemType == InboxItem.typeVideo;
       if (!hasMedia) {
+        // 截图路径按勾选真实裁剪：置 _shareScope → 等排版落定 → 截图 → 还原
+        //（2026-10-05 修：此前 scope 拿到即弃，勾选零作用、灵感区照进产物）。
+        setState(() => _shareScope = scope);
+        await WidgetsBinding.instance.endOfFrame;
+        await WidgetsBinding.instance.endOfFrame;
         try {
-          // 复用页面既有 RepaintBoundary（Theme 红线）；超长降级 PDF
-          path = await BodyScreenshotRenderer.renderToFile(_bodyBoundaryKey);
-        } on TooTallException {
-          path = null;
+          try {
+            // 复用页面既有 RepaintBoundary（Theme 红线）；超长降级 PDF
+            path = await BodyScreenshotRenderer.renderToFile(_bodyBoundaryKey);
+          } on TooTallException {
+            path = null;
+          }
+        } finally {
+          if (mounted) setState(() => _shareScope = null);
         }
       }
-      path ??= await ItemPdfExporter.export(_item);
+      path ??= await ItemPdfExporter.export(
+        _item,
+        scope: scope,
+        blockAppendixText: appendixText,
+      );
       if (!mounted) return;
       if (path == null) {
         _snack('分享失败：未生成文件，请重试');
@@ -1540,9 +1754,17 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 摘要/标签切换器（机器产出，只读+刷新）与灵感区（人的碎片想法，
   /// 可编辑文本、失焦即存）分家——两者交互模式不同，不混一个组件。
   Widget _inspirationSection() {
+    // 分享截图范围裁剪（2026-10-05 接通）：scope 非空=截图窗口内，
+    // 按勾选收起分区；常态（null）全部照常渲染。
+    final showAi = _shareScope?.includeSummary ?? true;
+    final showInspiration = _shareScope?.includeInspiration ?? true;
+    if (!showAi && !showInspiration) return const SizedBox.shrink();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
-      children: [_aiOutputSection(), _inspirationTextArea()],
+      children: [
+        if (showAi) _aiOutputSection(),
+        if (showInspiration) _inspirationTextArea(),
+      ],
     );
   }
 

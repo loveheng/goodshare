@@ -13,11 +13,17 @@ import 'image_annotator.dart';
 Future<void> showAnnotationEditorPage(
   BuildContext context, {
   required InboxItem item,
+  String? blockKey,
+  String? imagePath,
 }) {
   return Navigator.of(context, rootNavigator: true).push(
     MaterialPageRoute<void>(
       fullscreenDialog: true,
-      builder: (_) => ImageAnnotator(item: item),
+      builder: (_) => ImageAnnotator(
+        item: item,
+        blockKey: blockKey,
+        imagePath: imagePath,
+      ),
     ),
   );
 }

@@ -5,6 +5,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../update/installer.dart';
+import '../ui/toast.dart';
 import '../update/remote_config_store.dart';
 import '../update/update_manifest.dart';
 import '../update/update_service.dart';
@@ -62,10 +63,10 @@ class _UpdatePageState extends State<UpdatePage> {
     try {
       await _service.setSourceUrl(_urlCtrl.text);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('更新源已保存')));
+      ToastManager.show('更新源已保存', kind: ToastKind.success);
     } on UpdateException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
+      ToastManager.show(e.toString(), kind: ToastKind.error);
     }
   }
 
@@ -140,8 +141,8 @@ class _UpdatePageState extends State<UpdatePage> {
       await installApk(apk.path);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('$e（首次安装需在系统弹窗中允许「安装未知应用」）')));
+      ToastManager.show('$e（首次安装需在系统弹窗中允许「安装未知应用」）',
+          kind: ToastKind.error);
     }
   }
 
@@ -151,7 +152,12 @@ class _UpdatePageState extends State<UpdatePage> {
     final manifest = _manifest;
     return Scaffold(
       appBar: AppBar(
-        automaticallyImplyLeading: false,
+        automaticallyImplyLeading: false, // 出口=显式 ×（去箭头拍板的完整形态）
+        leading: IconButton(
+          tooltip: '关闭',
+          icon: const Icon(Icons.close),
+          onPressed: () => Navigator.pop(context),
+        ),
         title: const Text('更新'),
       ),
       body: ListView(

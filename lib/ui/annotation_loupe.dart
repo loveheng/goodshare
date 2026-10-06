@@ -6,10 +6,15 @@ import '../render/annotation_painter.dart';
 /// 放大镜（image-markup.md §5 / §5.1）：锚点级拖动时就近浮现被对准区域的
 /// 放大视图（含十字准星）——「放大镜中世界，画布纹丝不动」。
 ///
-/// 技术纪律（§5.1）：**复渲染而非截屏**——`Transform.scale` + `ClipOval`
-/// 在气泡内再渲染一遍图层（实时截屏法 60fps 拖拽掉帧，弃用）；镜中**只渲染
-/// 原图 + 当前操作标注的本体线**（不做选中态/其他标注/吸附线——200% 视野里
-/// 多余图层全是噪音），经 [focusIds] 过滤。
+/// 技术纪律（§5.1）：**复渲染而非截屏**——镜内再渲染一遍图层（实时截屏法
+/// 60fps 拖拽掉帧，弃用）；镜中**只渲染原图 + 当前操作标注的本体线**（不做
+/// 选中态/其他标注/吸附线——200% 视野里多余图层全是噪音），经 [focusIds] 过滤。
+///
+/// 取景模型（2026-10-06 修指向偏差）：整张画布（原图+当前标注，同一归一化
+/// 参照系）1:1 复刻后经 [loupeTransform] 平移+放大——**笔点恒钉在镜心**，
+/// 十字准星所指就是手指下方的真实画布点。旧实现 FittedBox cover 居中裁切 +
+/// Transform.scale 以画布中心为锚，镜中内容与笔点无关（「镜中指 A 实际点 B」
+/// 即此）；标注层当年按整框归一化重画，恰好与放大的背景错位叠加。
 ///
 /// 边缘翻转（§5.1）：默认在手指斜上方，靠近顶/左边缘自动翻转到下方/右侧。
 ///
@@ -71,24 +76,37 @@ class AnnotationLoupe extends StatelessWidget {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              // 复渲染法：原图层放大（FittedBox 充满后 Transform.scale 放大视口中心）
-              FittedBox(
-                fit: BoxFit.cover,
-                child: SizedBox(
-                  width: canvasSize.width,
-                  height: canvasSize.height,
-                  child: Transform.scale(
-                    scale: magnification,
-                    child: background,
-                  ),
-                ),
-              ),
-              // 镜中标注层：只画当前操作标注本体线（§5.1 噪音纪律）
-              IgnorePointer(
-                child: CustomPaint(
-                  painter: _LoupeOverlay(
-                    annotations: annotations,
-                    focusIds: focusIds,
+              // 取景层（2026-10-06 修指向偏差）：整画布（原图+当前标注，同一
+              // 归一化参照系）1:1 复刻后经 [loupeTransform] 平移+放大——笔点
+              // 恒钉镜心，十字准星所指=手指下方的真实画布点；标注层与原图走
+              // 同一矩阵，永不错位。OverflowBox 给画布尺寸约束（Stack 单元是
+              // 直径紧约束，直接放会被压扁），超界内容由 ClipOval 裁掉。
+              ClipRect(
+                child: OverflowBox(
+                  alignment: Alignment.topLeft,
+                  maxWidth: canvasSize.width,
+                  maxHeight: canvasSize.height,
+                  child: Transform(
+                    transform:
+                        loupeTransform(fingerLocal, radius, magnification),
+                    child: SizedBox(
+                      width: canvasSize.width,
+                      height: canvasSize.height,
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          background,
+                          IgnorePointer(
+                            child: CustomPaint(
+                              painter: _LoupeOverlay(
+                                annotations: annotations,
+                                focusIds: focusIds,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -106,6 +124,17 @@ class AnnotationLoupe extends StatelessWidget {
   }
 }
 
+/// 放大镜取景矩阵（纯函数，单测锁定）：画布点 p → 镜内坐标 = 镜心 + m·(p − 笔点)。
+/// 笔点恒映到镜心 `(radius, radius)`——十字准星所指即手指下方的真实画布点；
+/// 放大锚点=笔点，拖动时镜中内容随手指平滑跟随。
+Matrix4 loupeTransform(Offset finger, double radius, double magnification) =>
+    Matrix4.translationValues(
+          radius - magnification * finger.dx,
+          radius - magnification * finger.dy,
+          0,
+        ) *
+        Matrix4.diagonal3Values(magnification, magnification, 1);
+
 class _LoupeOverlay extends CustomPainter {
   _LoupeOverlay({required this.annotations, required this.focusIds});
 
@@ -114,8 +143,8 @@ class _LoupeOverlay extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // 镜内坐标与画布同构（FittedBox cover 后经 Transform.scale 放大，
-    // 归一化坐标画在整框即等效对准）；无选中态、无其他标注、无吸附线。
+    // 标注层在 [loupeTransform] 内与原图同一矩阵（画布尺寸复刻，归一化坐标
+    // 画满整框即与画布对位）；无选中态、无其他标注、无吸附线。
     paintAnnotations(canvas, size, annotations, onlyIds: focusIds);
   }
 

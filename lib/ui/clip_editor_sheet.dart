@@ -7,6 +7,8 @@ import 'package:video_player/video_player.dart';
 import '../action/commands.dart';
 import '../action/item_action_handler.dart';
 import '../ai/video_clips.dart';
+import 'toast.dart';
+import '../data/block_artifacts.dart' show BlockArtifactKind;
 import '../doc/rich_text.dart' show MarkdownSubsetParser, VideoBlock;
 import '../models/item.dart';
 import '../share/attachments.dart' show resolveLocalMediaSrc;
@@ -20,20 +22,35 @@ Future<void> showClipEditorSheet(
   required ItemActionHandler handler,
   required InboxItem item,
   required bool vaultContext,
+  String? blockKey,
 }) {
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
-    builder: (_) => _ClipEditorSheet(handler: handler, item: item, vaultContext: vaultContext),
+    builder: (_) => _ClipEditorSheet(
+      handler: handler,
+      item: item,
+      vaultContext: vaultContext,
+      blockKey: blockKey,
+    ),
   );
 }
 
 class _ClipEditorSheet extends StatefulWidget {
-  const _ClipEditorSheet({required this.handler, required this.item, required this.vaultContext});
+  const _ClipEditorSheet({
+    required this.handler,
+    required this.item,
+    required this.vaultContext,
+    this.blockKey,
+  });
 
   final ItemActionHandler handler;
   final InboxItem item;
   final bool vaultContext;
+
+  /// 视频块 key（块级切片 2026-10-05）：行内 `local://` = 该块切片（区间按块
+  /// 隔离、源为块文件）；null / 顶级 'item' = 条目级切片（行为不变）。
+  final String? blockKey;
 
   @override
   State<_ClipEditorSheet> createState() => _ClipEditorSheetState();
@@ -50,6 +67,15 @@ class _ClipEditorSheetState extends State<_ClipEditorSheet> {
   Timer? _initTimeout;
 
   VideoPlayerController? _buildController() {
+    // 块级切片（2026-10-05）：行内视频块源 = blockKey 本身（blockKey 即正文
+    // 媒体行的 local:// url，逐字相等）。
+    final key = widget.blockKey;
+    if (key != null &&
+        key != BlockArtifactKind.topLevelKey &&
+        key.startsWith('local://')) {
+      final f = File(resolveLocalMediaSrc(key));
+      return f.existsSync() ? VideoPlayerController.file(f) : null;
+    }
     final raw = widget.item.rawFilePath;
     if (raw != null && raw.isNotEmpty) {
       if (raw.startsWith('content://')) {
@@ -122,15 +148,14 @@ class _ClipEditorSheetState extends State<_ClipEditorSheet> {
       setState(() => _start = _controller?.value.position.inMilliseconds);
 
   void _markEnd() {
-    final messenger = ScaffoldMessenger.of(context);
     final s = _start;
     if (s == null) {
-      messenger.showSnackBar(const SnackBar(content: Text('先点「设为起点」')));
+      ToastManager.show('先点「设为起点」', kind: ToastKind.error);
       return;
     }
     final e = _controller?.value.position.inMilliseconds ?? 0;
     if (!isValidClipInterval(s, e)) {
-      messenger.showSnackBar(const SnackBar(content: Text('区间需 1 秒 ~ 30 分钟，且终点在起点之后')));
+      ToastManager.show('区间需 1 秒 ~ 30 分钟，且终点在起点之后', kind: ToastKind.error);
       return;
     }
     setState(() {
@@ -142,13 +167,13 @@ class _ClipEditorSheetState extends State<_ClipEditorSheet> {
   /// 标记 ≠ 完成：保存只登记时间点，不触发任何处理。
   Future<void> _saveMarks() async {
     if (_newMarks.isEmpty) return;
-    final messenger = ScaffoldMessenger.of(context);
     var ok = 0;
     String? failReason;
     for (final c in _newMarks) {
       try {
         await widget.handler.execute(
-          ClipCommand(widget.item.id!, startMs: c[0], endMs: c[1]),
+          ClipCommand(widget.item.id!,
+              startMs: c[0], endMs: c[1], blockKey: widget.blockKey),
           vaultContext: widget.vaultContext,
         );
         ok++;
@@ -156,9 +181,10 @@ class _ClipEditorSheetState extends State<_ClipEditorSheet> {
         failReason = e.hint == null ? e.message : '${e.message}：${e.hint}';
       }
     }
-    messenger.showSnackBar(SnackBar(
-      content: Text(ok > 0 ? '已标记 $ok 个区间（处理后才算收藏完成）' : failReason ?? '未能标记'),
-    ));
+    ToastManager.show(
+      ok > 0 ? '已标记 $ok 个区间（处理后才算收藏完成）' : failReason ?? '未能标记',
+      kind: ok > 0 ? ToastKind.success : ToastKind.error,
+    );
     if (ok > 0 && mounted) {
       setState(() => _newMarks.clear());
       Navigator.pop(context, true);
@@ -167,20 +193,22 @@ class _ClipEditorSheetState extends State<_ClipEditorSheet> {
 
   /// 对既有标记执行所选链路子集（extract/transcribe/summary）。
   Future<void> _process(ClipSegment seg) async {
-    final messenger = ScaffoldMessenger.of(context);
     try {
       await widget.handler.execute(
         ClipProcessCommand(widget.item.id!,
-            startMs: seg.startMs, endMs: seg.endMs, steps: _steps.toList()),
+            startMs: seg.startMs,
+            endMs: seg.endMs,
+            steps: _steps.toList(),
+            blockKey: widget.blockKey),
         vaultContext: widget.vaultContext,
       );
-      messenger.showSnackBar(SnackBar(
-        content: Text('已开始处理（${_steps.map(_stepLabel).join(' / ')}），完成后在「关键区间」查看'),
-      ));
+      ToastManager.show(
+          '已开始处理（${_steps.map(_stepLabel).join(' / ')}），完成后在「关键区间」查看');
       if (mounted) Navigator.pop(context, true);
     } on ActionException catch (e) {
-      messenger.showSnackBar(SnackBar(
-          content: Text(e.hint == null ? e.message : '${e.message}：${e.hint}')));
+      ToastManager.show(
+          e.hint == null ? e.message : '${e.message}：${e.hint}',
+          kind: ToastKind.error);
     }
   }
 
@@ -194,7 +222,15 @@ class _ClipEditorSheetState extends State<_ClipEditorSheet> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final existing = parseClipsJson(widget.item.clipsJson);
+    // 既有区间按块过滤（块级化 2026-10-05）：行内块只看本块区间，与条目级/
+    // 其他视频块互不混淆（'item' 哨兵归一化为条目级 null，与落库口径一致）。
+    final inlineKey =
+        widget.blockKey != null && widget.blockKey != BlockArtifactKind.topLevelKey
+            ? widget.blockKey
+            : null;
+    final existing = parseClipsJson(widget.item.clipsJson)
+        .where((c) => c.blockKey == inlineKey)
+        .toList();
     final pos = _controller?.value.position.inMilliseconds ?? 0;
     final dur = _controller?.value.duration.inMilliseconds ?? 0;
     return Padding(
@@ -228,7 +264,10 @@ class _ClipEditorSheetState extends State<_ClipEditorSheet> {
                         .bodySmall
                         ?.copyWith(color: scheme.onErrorContainer)),
               )
-            else if (_ready && _controller != null && _controller.value.isInitialized)
+            else if (_ready &&
+                _controller != null &&
+                _controller.value.isInitialized &&
+                (_controller.value.size.width) > 0)
               GestureDetector(
                 onTap: () => setState(() {
                   _controller.value.isPlaying
@@ -238,6 +277,19 @@ class _ClipEditorSheetState extends State<_ClipEditorSheet> {
                 child: AspectRatio(
                   aspectRatio: _controller.value.aspectRatio,
                   child: VideoPlayer(_controller),
+                ),
+              )
+            else if (_ready && _controller != null && _controller.value.isInitialized)
+              // 音频源（块级切片扩展 2026-10-05）：无视频轨，AspectRatio(0) 会
+              // 布局溢出——给等高占位；播放 / 打点 / 进度条照常工作。
+              Container(
+                height: 140,
+                alignment: Alignment.center,
+                color: scheme.surfaceContainerHighest,
+                child: Icon(
+                  Icons.graphic_eq,
+                  size: 40,
+                  color: scheme.onSurfaceVariant,
                 ),
               )
             else

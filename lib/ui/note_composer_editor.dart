@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'smart_floating_hub.dart';
 
 import '../app/lifecycle_manager.dart';
+import 'toast.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -922,18 +923,17 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
   }) async {
     if (_sending) return;
     setState(() => _sending = true);
-    final messenger = ScaffoldMessenger.of(context);
     try {
       final file = await pick();
       if (file == null) return;
       final saved = await copyToAppDir(file.path);
       if (saved == null) {
-        messenger.showSnackBar(SnackBar(content: Text(failMsg)));
+        ToastManager.show(failMsg, kind: ToastKind.error);
         return;
       }
       _insertMedia(await toLocalMediaUrl(saved), kind: NoteMediaKind.image);
     } catch (e) {
-      if (mounted) messenger.showSnackBar(SnackBar(content: Text('插图失败：$e')));
+      if (mounted) ToastManager.show('插图失败：$e', kind: ToastKind.error);
     } finally {
       if (mounted) setState(() => _sending = false);
     }
@@ -1035,26 +1035,24 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     if (_sending) return null;
     _pendingVideoPath = null; // 清陈值：取消/失败不得残留上一次的待插路径
     setState(() => _sending = true);
-    final messenger = ScaffoldMessenger.of(context);
     try {
       final file = await pick();
       if (file == null) return null;
       final saved = await copyToAppDir(file.path);
       if (saved == null) {
-        messenger.showSnackBar(SnackBar(content: Text(failMsg)));
+        ToastManager.show(failMsg, kind: ToastKind.error);
         return null;
       }
       final check = await checkNoteVideoAlbum(saved);
       if (check != null && check.blocking) {
-        messenger.showSnackBar(
-          SnackBar(
-            content: Text(switch (check.kind) {
-              NoteVideoCheckKind.unsupportedFormat => '暂不支持该格式，建议使用 MP4 或 MOV',
-              NoteVideoCheckKind.tooLarge => '视频过大（>100MB），建议剪短后再嵌入',
-              NoteVideoCheckKind.unreadable => '视频无法读取',
-              _ => '视频校验失败',
-            }),
-          ),
+        ToastManager.show(
+          switch (check.kind) {
+            NoteVideoCheckKind.unsupportedFormat => '暂不支持该格式，建议使用 MP4 或 MOV',
+            NoteVideoCheckKind.tooLarge => '视频过大（>100MB），建议剪短后再嵌入',
+            NoteVideoCheckKind.unreadable => '视频无法读取',
+            _ => '视频校验失败',
+          },
+          kind: ToastKind.error,
         );
         // 拦截类：已拷入私有目录的副本立即清理，防孤儿文件
         unawaited(() async {
@@ -1073,7 +1071,7 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
       return check;
     } catch (e) {
       if (mounted) {
-        messenger.showSnackBar(SnackBar(content: Text('视频添加失败：$e')));
+        ToastManager.show('视频添加失败：$e', kind: ToastKind.error);
       }
       return null;
     } finally {

@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:google_mlkit_barcode_scanning/google_mlkit_barcode_scanning.dart';
 
+import '../data/block_artifacts.dart' show BlockArtifactInput, BlockArtifactKind;
 import '../data/repository.dart';
 import 'reconstructor.dart';
 import 'ml_capability.dart';
@@ -26,13 +27,16 @@ class BarcodeReconstructor extends MlCapability {
   Future<CapabilityReadiness> ensureReady() async => CapabilityReadiness.ready;
 
   @override
-  Future<bool> handles(ReconstructInput input) async =>
-      input.itemType == 'image' && input.taskAction == Repository.taskScanBarcode;
+  Future<bool> handles(ReconstructInput input) async {
+    final block = Repository.parseBlockAction(input.taskAction);
+    if (block != null) return block.$1 == 'block_scan_barcode';
+    return input.itemType == 'image' && input.taskAction == Repository.taskScanBarcode;
+  }
 
   /// 执行：扫描图片中所有条码 / 二维码，返回 [类型:值] 列表（文件缺失时标记）。
   @override
   Future<BarcodeRaw> run(ReconstructInput input) async {
-    final path = input.rawFilePath;
+    final path = input.blockKey != null ? input.blockFilePath : input.rawFilePath;
     if (path == null || path.isEmpty || !File(path).existsSync()) {
       return BarcodeRaw(const [], fileMissing: true);
     }
@@ -60,10 +64,35 @@ class BarcodeReconstructor extends MlCapability {
     final r = raw as BarcodeRaw;
     final humanMd = input.rawContent ?? '';
     if (r.fileMissing) {
-      return ReconstructResult(humanMd: humanMd, note: '图片文件缺失，无法扫描条码');
+      return input.blockKey != null
+          ? ReconstructResult(
+              humanMd: humanMd,
+              blockKey: input.blockKey,
+              blockArtifacts: const [],
+              note: '图片文件缺失，无法扫描条码',
+            )
+          : ReconstructResult(humanMd: humanMd, note: '图片文件缺失，无法扫描条码');
     }
     if (r.entries.isEmpty) {
-      return ReconstructResult(humanMd: humanMd, note: '未识别到条码 / 二维码');
+      return input.blockKey != null
+          ? ReconstructResult(
+              humanMd: humanMd,
+              blockKey: input.blockKey,
+              blockArtifacts: const [],
+              note: '未识别到条码 / 二维码',
+            )
+          : ReconstructResult(humanMd: humanMd, note: '未识别到条码 / 二维码');
+    }
+    if (input.blockKey != null) {
+      // 块模式：条码落 block_artifacts[barcode]（换行分隔 [类型:值]）
+      return ReconstructResult(
+        humanMd: humanMd,
+        blockKey: input.blockKey,
+        blockArtifacts: [
+          BlockArtifactInput(BlockArtifactKind.barcode, text: r.entries.join('\n')),
+        ],
+        note: '已识别 ${r.entries.length} 个条码 / 二维码',
+      );
     }
     return ReconstructResult(
       humanMd: humanMd,

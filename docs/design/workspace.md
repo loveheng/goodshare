@@ -9,7 +9,7 @@ updated: 2026-10-05
 
 ## 1. 背景与现状
 
-工作区功能已上线两层形态（ui-spec §4.11，2026-09-30 D2 拍板卡片化）：列表层 2 列卡片网格（封面拼贴+条目数）、条目层瀑布流双列；条目层批量选择已接 `SelectionController`/`SelectionActionBar`（card-batch-selection 配置），**「移出本工作区」为既有预留候选**。
+工作区功能已上线两层形态（ui-spec §4.11，2026-09-30 D2 拍板卡片化）：列表层 2 列卡片网格（封面拼贴+条目数）、条目层瀑布流双列；条目层批量选择已接 `SelectionController`/`SelectionActionBar`（card-batch-selection 配置）；**「移出本工作区」已于 2026-10-05 转正落地**（批处理条第五动作，§3.3）。
 
 缺口：UI 层没有任何删除/重命名工作区入口（用户视角「工作区不能删除」）；命令层 `DeleteWorkspaceCommand`（op=delete_workspace）与 MCP `delete_workspace`（第 8 工具）已存在——`_deleteWorkspace` 级联清理 workspaces/workspace_items 关系行，**条目本身不受影响**。
 
@@ -38,7 +38,7 @@ updated: 2026-10-05
 
 ### 3.3 清空链路（降为独立候选）
 
-- 「移出本工作区」批量动作（既有预留候选）：移除=解除归属回「全部」，**不删条目**；文案与「删除条目」严格分开。B 快捷删定稿后此链路不阻塞删除，独立排期。
+- 「移出本工作区」批量动作（2026-10-05 转正落地）：移除=解除归属回「全部」，**不删条目**；文案与「删除条目」严格分开（Snackbar 明示「条目保留在全部」）。
 
 ### 3.4 反馈与边界
 
@@ -59,4 +59,4 @@ updated: 2026-10-05
 - **D-WS1 = B 快捷删**：非空弹窗「保留内容并删除」danger 主按钮 + 取消；不做强守门/深链清空。实现：空区 `confirmDialog` 轻确认；非空带条数 content；确认后携带 `DeleteWorkspaceCommand.ackNonEmpty=true`。
 - **D-WS2 = 同守门**：`ackNonEmpty` 仅 `CommandActor.ui` 可携——非空删除 AI actor 一律拒绝（无 ack=invalidRequest 带条数与去向 hint；带 ack=forbidden）；MCP 工具描述同步明示。计数与列表同口径（排除 Vault/已删，不泄露保险箱条目数）。
 - **D-WS3 = 重命名随批**：长按弹层一并做，复用整页创建表单（`initialName` 预填 + 隐藏创建定位语 +「保存」），`RenameWorkspaceCommand` 已有命令层零新增。
-- **落地注记**：测试钉住三口径（无 ack 拒绝含条数 / ui ack 删壳条目保留 / ai ack 仍拒）；删除成功 Snackbar 直接回写 `CommandResult.note`（含保留条数）；「移出本工作区」批量转正降为独立候选（§3.3）。
+- **落地注记**：测试钉住三口径（无 ack 拒绝含条数 / ui ack 删壳条目保留 / ai ack 仍拒）；删除成功 Snackbar 直接回写 `CommandResult.note`（含保留条数）；「移出本工作区」批量转正已于 2026-10-05 落地（§3.3）。

@@ -3,9 +3,13 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../ai/palette_reconstructor.dart' show colorFromMachineJson;
+import '../doc/rich_text.dart';
 import '../models/item.dart';
+import '../share/attachments.dart' show resolveLocalMediaSrc;
+import 'annotated_image.dart';
 import 'goodshare_image.dart';
 import 'tokens.dart';
+import 'video_cover.dart';
 
 /// 瀑布流通用卡片（2026-09-30 改版，用户拍板「瀑布式卡片布局」取代文档行列表）：
 /// 图片条目以真图铺卡顶（高度自适应原图比例，瀑布流错落），文本条目以预览文字
@@ -39,6 +43,18 @@ class ContentCard extends StatelessWidget {
         _ => Icons.notes,
       };
 
+  /// 正文首个行内媒体块（rich-text-media §2）：取图片或视频块（音频不进卡面），
+  /// 无则 null。列表卡路径同步解析，正文一次 parse 开销与预览剥壳同量级。
+  ({String url, bool isVideo})? _firstInlineMedia() {
+    final src = item.bodyText;
+    if (src.isEmpty) return null;
+    for (final b in const MarkdownSubsetParser().parse(src)) {
+      if (b is ImageBlock) return (url: b.url, isVideo: false);
+      if (b is VideoBlock) return (url: b.url, isVideo: true);
+    }
+    return null;
+  }
+
   static String labelOf(String type) => switch (type) {
         InboxItem.typeNote => '便签',
         InboxItem.typeUrl => '链接',
@@ -61,29 +77,59 @@ class ContentCard extends StatelessWidget {
   }
 
   /// 卡顶媒体区：图片条目真图铺满（不限高——瀑布流按比例错落）；
+  /// 笔记条目提取正文首个行内媒体块真图/视频封面（2026-10-06：列表卡不再
+  /// 显示 `[图片]`/`[视频]` 占位文本，媒体块按视觉记忆呈现）；
   /// 其余类型给一个矮的 type 色带图标头，与图片卡形成节奏差。
   Widget _media(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     if (item.isImage && item.hasAttachment) {
-      final image = GoodshareImage(
+      // 常态标注叠加（2026-10-06）：列表卡图片即显示标注，无需点进编辑页。
+      // AnnotatedImage 自持等比容器 + 叠加层，无标注自动零渲染。
+      final image = AnnotatedImage(
+        itemId: item.id!,
         file: File(item.rawFilePath!),
         fit: BoxFit.cover,
         // 瀑布流卡宽约半屏；4x 保证竖长图放大不糊，同时严格限解码宽
         cacheWidth: 1080,
         // V3 主色调占位：解码完成前先铺主色，配合 AspectRatio 零跳动
         placeholderColor: colorFromMachineJson(item.machineJson),
-        errorBuilder: (_, _, _) => SizedBox(
-          height: 96,
-          child: Icon(iconOf(item.itemType), size: 40, color: scheme.outline),
-        ),
+        aspectRatio: item.aspectRatio,
       );
       return ClipRRect(
         borderRadius: const BorderRadius.vertical(top: Radius.circular(Radii.md)),
         // 尺寸前置（rich-text-component.md §6.1 V1）：有宽高比时先按比例占位，
-        // 图片解码完成不引起瀑布流高度跳动；无比例退回内在尺寸自适应
-        child: item.aspectRatio != null
-            ? AspectRatio(aspectRatio: item.aspectRatio!, child: image)
-            : image,
+        // 图片解码完成不引起瀑布流高度跳动；无比例退回首帧探测定版
+        child: image,
+      );
+    }
+    // 笔记行内媒体块（rich-text-media §2）：首个图片块真图 / 视频块封面帧，
+    // 失败回落图标头（与顶级媒体三态同口径，非阻断）
+    final media = _firstInlineMedia();
+    if (media != null) {
+      final Widget content = media.isVideo
+          ? VideoCoverImage(url: media.url, fit: BoxFit.cover)
+          : GoodshareImage(
+            file: File(resolveLocalMediaSrc(media.url)),
+            fit: BoxFit.cover,
+            cacheWidth: 1080,
+            placeholderColor: colorFromMachineJson(item.machineJson),
+            errorBuilder: (_, _, _) => SizedBox(
+              height: 96,
+              child: Icon(Icons.notes, size: 40, color: scheme.outline),
+            ),
+          );
+      return ClipRRect(
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(Radii.md)),
+        child: Stack(
+          fit: StackFit.passthrough,
+          children: [
+            AspectRatio(aspectRatio: 4 / 3, child: content),
+            if (media.isVideo)
+              const Positioned.fill(
+                child: Center(child: Icon(Icons.play_circle_fill, size: 48, color: Colors.white70)),
+              ),
+          ],
+        ),
       );
     }
     return SizedBox(

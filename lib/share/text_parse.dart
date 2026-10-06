@@ -1,3 +1,4 @@
+import '../doc/rich_text.dart';
 import '../models/item.dart';
 
 /// 文本/链接归一（摄入共用，ShareIntake 与 TextCollector 均走此函数）：
@@ -15,12 +16,17 @@ import '../models/item.dart';
   final isPureUrl = around.isEmpty && raw.trim() == url;
   return (
     type: InboxItem.typeUrl,
-    title: isPureUrl ? null : (around.isEmpty ? null : around.split('\n').first.trim()),
+    // 「标题\nURL」首行可能是 md 行（如 `# 标题`）→ 剥壳落纯文本标题
+    title: isPureUrl
+        ? null
+        : (around.isEmpty ? null : titleToPlain(around.split('\n').first.trim())),
     text: raw,
   );
 }
 
+/// 原文首行 → 纯文本标题（剥行内标记与行首 `#`；剥完为空按无标题处理）。
 String? _firstLine(String s) {
-  final line = s.trim().split('\n').first.trim();
-  return line.isEmpty ? null : (line.length > 80 ? '${line.substring(0, 80)}…' : line);
+  final line = titleToPlain(s.trim().split('\n').first.trim());
+  if (line.isEmpty) return null;
+  return line.length > 80 ? '${line.substring(0, 80)}…' : line;
 }

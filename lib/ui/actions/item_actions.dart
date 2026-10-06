@@ -164,6 +164,43 @@ abstract final class ItemActions {
   }) =>
       ItemAction(id: 'workspace', icon: Icons.workspaces_outlined, label: '工作区', onInvoke: onOpen);
 
+  /// 重新处理（reprocess，2026-10-05 转正回 UI，推翻 2026-10-02 摘除拍板）：
+  /// 仅管线有真实动作的类型收录（image=重跑 OCR / url=重抓正文 / chatlog=重
+  /// 解析）；音/视频走专用「转写」入口、便签/文档无管线，收录即死项不渲染。
+  /// 「重置为原文再重跑」的确认由页面承担（主动重做会覆盖现正文，memory §173）。
+  static ItemAction? reprocess(
+    ItemActionContext ctx, {
+    required Future<void> Function() run,
+  }) {
+    const eligible = {
+      InboxItem.typeImage,
+      InboxItem.typeUrl,
+      InboxItem.typeChatlog,
+    };
+    if (!eligible.contains(ctx.item.itemType)) return null;
+    return ItemAction(
+      id: 'reprocess',
+      icon: Icons.autorenew_outlined,
+      label: '重新处理',
+      onInvoke: run,
+    );
+  }
+
+  /// 重分类（reclassify，2026-10-05 转正；同日拍板「方向二」人工全放开）：
+  /// 类型与标签同属用户权威元数据，UI 对全部条目收录「重分类…」选择器入口；
+  /// AI 客户端白名单仍在动作层 `_reclassifyError`（仅 image→document）。
+  /// 目标选择与「媒体→文本」后果确认由页面承担。
+  static ItemAction reclassify(
+    ItemActionContext ctx, {
+    required Future<void> Function() run,
+  }) =>
+      ItemAction(
+        id: 'reclassify',
+        icon: Icons.category_outlined,
+        label: '重分类…',
+        onInvoke: run,
+      );
+
   /// 对 AI 可见（ai-visibility v20）：人类笔记默认不可见；开启后 AI（MCP）方可读取。
   /// 仅人类笔记可切换（AI 自身笔记恒可见，无需开关）。
   static ItemAction? aiVisible(
@@ -200,53 +237,51 @@ abstract final class ItemActions {
     );
   }
 
-  /// 允许 AI 处理（ai-visibility 补丁）：人类笔记默认不允许管线（OCR/翻译/摘要/转写/切片）
-  /// 处理；开启即人类对端侧管线的授权。仅人类笔记可切换。开关仅 UI 可改。
-  static ItemAction? aiProcess(
-    ItemActionContext ctx, {
-    required Future<void> Function(bool on) run,
-    bool grouped = false,
-  }) {
-    if (ctx.item.author == InboxItem.authorAi) return null;
-    return ItemAction(
-      id: 'set_ai_process',
-      icon: Icons.auto_awesome_outlined,
-      label: ctx.item.aiProcess ? '允许 AI 处理（已开）' : '允许 AI 处理（已关）',
-      checked: ctx.item.aiProcess,
-      onInvoke: () => run(!ctx.item.aiProcess),
-      grouped: grouped,
-    );
-  }
-
-  /// `⋯` 功能面板的动作序列：仅权限开关类（保险箱 / 对AI可见 / 允许AI编辑 /
-  /// 允许AI处理 / 机器码）。分享、删除已移至详情页底栏的常驻连接按钮组（单一入口，
-  /// 不在此重复），本面板只承载权限开关的集中切换，并连成一个连接按钮组呈现。
+  /// `⋯` 功能面板的动作序列：权限开关类（保险箱 / 对AI可见 / 允许AI编辑 /
+  /// 机器码）连成连接按钮组；纠错类（重新处理 / 重分类）条件收录为独立项
+  /// （2026-10-05 转正，推翻 2026-10-02 摘除拍板——AI 误判需要人类干预出口）。
+  /// 分享、删除仍在详情页底栏常驻连接按钮组，不在此重复。
+  /// 「允许 AI 处理」已删除（2026-10-05 拍板：管线回写授权不再要独立开关，
+  /// 与 ai_editable 双开关冗余）。
   static List<ItemAction> overflowSheet(
     ItemActionContext ctx, {
     required Future<void> Function(bool on) onVault,
     required Future<void> Function(bool on) onAiVisible,
     required Future<void> Function(bool on) onAiEditable,
-    required Future<void> Function(bool on) onAiProcess,
     required VoidCallback onMachineToggle,
+    required Future<void> Function() onReprocess,
+    required Future<void> Function() onReclassify,
   }) =>
       [
         vault(ctx, run: onVault, grouped: true),
         aiVisible(ctx, run: onAiVisible, grouped: true),
         aiEditable(ctx, run: onAiEditable, grouped: true),
-        aiProcess(ctx, run: onAiProcess, grouped: true),
         machineMode(ctx, onToggle: onMachineToggle, grouped: true),
+        reprocess(ctx, run: onReprocess),
+        reclassify(ctx, run: onReclassify),
       ].whereType<ItemAction>().toList();
 
   /// 列表批量操作栏动作集（§3.2 页面配置收敛于此，组合E 三页共用）：
-  /// 全部页/搜索页/工作区内 = 全量四项；保险箱视图 = 去「置顶/工作区」
-  /// （置顶仅全部页生效拍板、Vault 条目动作层拒绝入工作区），保险箱项换「移出」。
-  static List<SelectionActionSpec> selectionBar({required bool inVaultView}) => [
+  /// 全部页/搜索页 = 全量四项；保险箱视图 = 去「置顶/工作区」（置顶仅全部页
+  /// 生效拍板、Vault 条目动作层拒绝入工作区），保险箱项换「移出」；
+  /// 工作区内页加「移出本工作区」（workspace.md §3.3 转正：解除归属不删条目）。
+  static List<SelectionActionSpec> selectionBar({
+    required bool inVaultView,
+    bool inWorkspaceView = false,
+  }) =>
+      [
         if (!inVaultView)
           const SelectionActionSpec(
               id: 'set_pin', icon: Icons.push_pin_outlined, label: '置顶'),
         if (!inVaultView)
           const SelectionActionSpec(
               id: 'workspace', icon: Icons.workspaces_outlined, label: '工作区'),
+        if (inWorkspaceView)
+          const SelectionActionSpec(
+            id: 'remove_from_workspace',
+            icon: Icons.playlist_remove_outlined,
+            label: '移出工作区',
+          ),
         SelectionActionSpec(
           id: 'set_vault',
           icon: Icons.lock_outline,

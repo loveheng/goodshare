@@ -5,6 +5,7 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
 import '../models/item.dart';
+import 'share_scope_sheet.dart' show ShareScope;
 
 /// 详情条目导出 PDF（ui-spec §4.3 两区改版：公共区「导出 PDF」）。
 ///
@@ -31,12 +32,23 @@ class ItemPdfExporter {
     return firstLine.isEmpty ? '拾贝条目' : firstLine;
   }
 
-  static Future<String?> export(InboxItem item) async {
+  /// [scope] 分享范围勾选（share_scope_sheet.dart）：四个开关在此**真实裁剪**
+  /// 产物内容（2026-10-05 修：此前 scope 拿到即弃，勾选零作用且违反
+  /// 「灵感区默认关」隐私红线注释）。标签随「AI 摘要」开关联动（勾选单
+  /// 无独立项，同属 AI 产出区）；[blockAppendixText] 为调用方从块通道
+  /// 装载的 OCR/转写文本（勾选「识别与转写文本」时传入）。
+  static Future<String?> export(
+    InboxItem item, {
+    ShareScope scope = const ShareScope(),
+    String? blockAppendixText,
+  }) async {
     final fontBytes = await rootBundle.load(
       'assets/fonts/DroidSansFallbackFull.ttf',
     );
     final font = pw.Font.ttf(fontBytes);
     final title = _titleOf(item);
+    final inspiration = item.inspirationMd?.trim() ?? '';
+    final appendix = blockAppendixText?.trim() ?? '';
     final doc = pw.Document();
     doc.addPage(
       pw.MultiPage(
@@ -53,11 +65,14 @@ class ItemPdfExporter {
             style: pw.TextStyle(font: font, fontSize: _fontSizeMeta, color: PdfColors.grey),
           ),
           pw.Divider(height: 24),
-          pw.Text(
-            item.bodyText,
-            style: pw.TextStyle(font: font, fontSize: _fontSizeBody),
-          ),
-          if (item.summaryMd != null && item.summaryMd!.trim().isNotEmpty) ...[
+          if (scope.includeBody)
+            pw.Text(
+              item.bodyText,
+              style: pw.TextStyle(font: font, fontSize: _fontSizeBody),
+            ),
+          if (scope.includeSummary &&
+              item.summaryMd != null &&
+              item.summaryMd!.trim().isNotEmpty) ...[
             pw.SizedBox(height: 16),
             pw.Text(
               '摘要',
@@ -69,11 +84,35 @@ class ItemPdfExporter {
               style: pw.TextStyle(font: font, fontSize: _fontSizeBody),
             ),
           ],
-          if (item.tags.isNotEmpty) ...[
+          if (scope.includeSummary && item.tags.isNotEmpty) ...[
             pw.SizedBox(height: 12),
             pw.Text(
               '标签：${item.tags.join('、')}',
               style: pw.TextStyle(font: font, fontSize: _fontSizeMeta, color: PdfColors.grey),
+            ),
+          ],
+          if (scope.includeInspiration && inspiration.isNotEmpty) ...[
+            pw.SizedBox(height: 16),
+            pw.Text(
+              '灵感',
+              style: pw.TextStyle(font: font, fontSize: _fontSizeHeading),
+            ),
+            pw.SizedBox(height: 6),
+            pw.Text(
+              inspiration,
+              style: pw.TextStyle(font: font, fontSize: _fontSizeBody),
+            ),
+          ],
+          if (scope.includeBlockAppendix && appendix.isNotEmpty) ...[
+            pw.SizedBox(height: 16),
+            pw.Text(
+              '识别与转写文本',
+              style: pw.TextStyle(font: font, fontSize: _fontSizeHeading),
+            ),
+            pw.SizedBox(height: 6),
+            pw.Text(
+              appendix,
+              style: pw.TextStyle(font: font, fontSize: _fontSizeBody),
             ),
           ],
         ],

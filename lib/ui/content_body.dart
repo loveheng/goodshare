@@ -4,6 +4,34 @@ import '../doc/rich_text.dart';
 import 'rich_text_view.dart';
 import 'tokens.dart';
 
+/// 待办交互作用域（2026-10-05 待办勾选批次）：详情页在正文滚动区外层挂本
+/// scope，[ContentBodySliver] 未显式给回调时回落取用。
+///
+/// 刻意只让 **sliver 面正文**（[ContentBodySliver]）消费本 scope——摘要卡/
+/// 块能力页等直接用 `RichTextView` 的位置不回落（AI 摘要里的 `- [ ]` 样式行
+/// 不是真待办，不可勾）。
+class TodoInteractionScope extends InheritedWidget {
+  const TodoInteractionScope({
+    super.key,
+    this.onToggle,
+    this.done,
+    required super.child,
+  });
+
+  /// 勾选回调（待办行纯文本 + 目标状态）；null = 只读。
+  final void Function(String text, bool done)? onToggle;
+
+  /// 行文本 → 是否已勾（todo_state_json 按 hash 关联）。
+  final bool Function(String text)? done;
+
+  static TodoInteractionScope? of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<TodoInteractionScope>();
+
+  @override
+  bool updateShouldNotify(TodoInteractionScope oldWidget) =>
+      onToggle != oldWidget.onToggle || done != oldWidget.done;
+}
+
 /// 富文本正文公共组件（呈现层唯一入口，SSOT：docs/design/rich-text-component.md）。
 ///
 /// 三层架构：调用层（页面）→ 本组件（呈现层）→ `lib/doc/rich_text.dart`（规则层）。
@@ -163,6 +191,10 @@ class _ContentBodySliverState extends State<ContentBodySliver>
           ? const SliverToBoxAdapter(child: SizedBox.shrink())
           : SliverToBoxAdapter(child: empty);
     }
+    // 待办交互回落：显式参数优先，缺省回落 TodoInteractionScope（详情页正文）
+    final scope = TodoInteractionScope.of(context);
+    final onToggle = widget.onTodoToggle ?? scope?.onToggle;
+    final todoDone = widget.todoDone ?? scope?.done;
     return SliverList(
       delegate: SliverChildBuilderDelegate(
         (c, i) => Padding(
@@ -173,8 +205,8 @@ class _ContentBodySliverState extends State<ContentBodySliver>
             c,
             blocks[i],
             serif: widget.serif,
-            onTodoToggle: widget.onTodoToggle,
-            todoDone: widget.todoDone,
+            onTodoToggle: onToggle,
+            todoDone: todoDone,
           ),
         ),
         childCount: blocks.length,

@@ -7,6 +7,7 @@ import '../../data/repository.dart';
 import '../../models/item.dart';
 import '../actions/item_actions.dart';
 import '../confirm_dialog.dart';
+import '../toast.dart';
 import '../tokens.dart';
 
 /// 列表批量选择模式骨架（card-batch-selection.md §3.1）：
@@ -184,16 +185,15 @@ class BatchActionExecutor {
     bool vaultContext = false,
   }) async {
     if (selected.isEmpty) return false;
-    final messenger = ScaffoldMessenger.of(context);
     try {
       await _handler.executeAll([for (final it in selected) build(it)],
           vaultContext: vaultContext);
       // 成功落库触感（ui-spec §6.0 触感映射：medium=成功落库）
       HapticFeedback.mediumImpact();
-      messenger.showSnackBar(SnackBar(content: Text('$successMsg（${selected.length} 条）')));
+      ToastManager.show('$successMsg（${selected.length} 条）', kind: ToastKind.success);
       return true;
     } on ActionException catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+      ToastManager.show(e.message, kind: ToastKind.error);
       return false;
     }
   }
@@ -204,6 +204,8 @@ class BatchActionExecutor {
 /// - 置顶：混合态整批置顶（拍板「混合态只显示置顶」）；
 /// - 保险箱：全部页/搜索/工作区内 = 整批移入；保险箱视图 = 整批移出（vaultContext）；
 /// - 工作区：选择器 → 整批加入（Vault 条目动作层拒绝，事务整体回滚不拆单）；
+/// - 移出本工作区（workspace.md §3.3 转正）：仅工作区内页，整批解除归属回
+///   「全部」，**不删条目**——文案与「删除」严格分开，Snackbar 明示去与留；
 /// - 删除：确认弹窗只报数量（拍板），软删 30 天兜底。
 /// 成功即退出选择模式（列表刷新由各页 RepoAutoReload / 重新拉取承担）。
 Future<void> runSelectionBatch(
@@ -214,6 +216,7 @@ Future<void> runSelectionBatch(
   required List<InboxItem> items,
   required String actionId,
   required bool vaultView,
+  String? workspaceId,
 }) async {
   final selected = [
     for (final it in items)
@@ -268,6 +271,17 @@ Future<void> runSelectionBatch(
         successMsg: '已加入工作区',
       );
       if (ok) selection.exit();
+    case 'remove_from_workspace':
+      // §3.3 移除语义：解除归属回「全部」、不删条目——轻动作无确认，
+      // Snackbar 文案明示去与留（与「删除」严格分开）。
+      if (workspaceId == null || workspaceId.isEmpty) return;
+      final ok = await executor.run(
+        context,
+        selected,
+        build: (it) => RemoveFromWorkspaceCommand(workspaceId, it.id!),
+        successMsg: '已移出工作区（条目保留在「全部」）',
+      );
+      if (ok) selection.exit();
     case 'delete':
       if (!context.mounted) return;
       final confirmed = await confirmDialog(
@@ -283,6 +297,8 @@ Future<void> runSelectionBatch(
         selected,
         build: (it) => DeleteItemCommand(it.id!),
         successMsg: '已删除',
+        // 保险箱视图删除同样需要 Vault 上下文，否则动作层按不可见拒绝（「条目不存在」）。
+        vaultContext: vaultView,
       );
       if (ok) selection.exit();
   }

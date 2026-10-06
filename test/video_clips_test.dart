@@ -5,6 +5,7 @@ import 'package:goodshare/action/commands.dart';
 import 'package:goodshare/action/item_action_handler.dart';
 import 'package:goodshare/ai/reconstructor.dart';
 import 'package:goodshare/ai/video_clips.dart';
+import 'package:goodshare/data/block_artifacts.dart' show BlockArtifactKind;
 import 'package:goodshare/data/db.dart';
 import 'package:goodshare/data/repository.dart';
 import 'package:goodshare/models/item.dart';
@@ -218,6 +219,119 @@ void main() {
       expect(seg.summary, '区间摘要');
     });
 
+  });
+
+  group('块级切片（2026-10-05：块类型不再继承条目 itemType）', () {
+    const key = 'local://shares/a.mp4';
+
+    test('block_clip 任务串编解码往返；条目级 clip 串不误判', () {
+      final a =
+          Repository.blockClipTaskAction(key, 120000, 185000, [kClipStepSummary]);
+      expect(a, 'block_clip:$key|120000-185000|ts', reason: '摘要带动转写 → ts');
+      final parsed = Repository.parseBlockClipAction(a);
+      expect(parsed, isNotNull);
+      expect(parsed!.$1, key);
+      expect(parsed.$2, 120000);
+      expect(parsed.$3, 185000);
+      expect(parsed.$4, [kClipStepTranscribe, kClipStepSummary]);
+      expect(Repository.parseBlockClipAction('clip:0-5000:et'), isNull);
+      expect(Repository.parseBlockClipAction('block_clip:$key|bad|e'), isNull);
+    });
+
+    test('mergeClipResult 按 blockKey 隔离：同区间不同块互不顶替', () {
+      const itemSeg = ClipSegment(startMs: 0, endMs: 1000, createdAt: 1);
+      const blockSeg = ClipSegment(
+          startMs: 0, endMs: 1000, blockKey: 'local://a.mp4', createdAt: 2);
+      final merged =
+          mergeClipResult([itemSeg], blockSeg.copyWith(status: kClipStatusDone));
+      expect(merged.length, 2, reason: '条目级与块级同区间不互撞');
+      final back =
+          mergeClipResult(merged, blockSeg.copyWith(status: kClipStatusDone));
+      expect(back.length, 2, reason: '同块同区间精确替换');
+    });
+
+    test('笔记条目内的视频块可切片（块类型放行，不继承 note）；条目级仍拒', () async {
+      final repo = Repository();
+      final handler = ItemActionHandler(repo);
+      await repo.add(InboxItem(
+          itemType: InboxItem.typeNote,
+          rawContent: 'n',
+          humanMd: '[视频]($key)',
+          createdAt: 1));
+      final id = (await repo.list()).first.id!;
+
+      await handler.execute(
+          ClipCommand(id, startMs: 1000, endMs: 61000, blockKey: key));
+      final seg = parseClipsJson((await repo.byId(id))!.clipsJson).single;
+      expect(seg.blockKey, key);
+      expect(seg.status, kClipStatusMarked);
+
+      await handler.execute(ClipProcessCommand(id,
+          startMs: 1000, endMs: 61000,
+          steps: [kClipStepExtract], blockKey: key));
+      final tasks = await repo.pendingTasks();
+      expect(tasks.single['task_action'], 'block_clip:$key|1000-61000|e');
+
+      // 块级放行不等于条目级放行：note 条目级切片仍被拒
+      await expectLater(
+        handler.execute(ClipCommand(id, startMs: 2000, endMs: 62000)),
+        throwsA(isA<ActionException>()),
+      );
+    });
+
+    test("顶级 'item' 哨兵归一化条目级：clips 无 block_key、任务串走 clip:", () async {
+      final repo = Repository();
+      final handler = ItemActionHandler(repo);
+      await repo.add(InboxItem(
+          itemType: InboxItem.typeVideo,
+          rawContent: 'v',
+          rawFilePath: '/tmp/a.mp4',
+          createdAt: 1));
+      final id = (await repo.list()).first.id!;
+
+      await handler.execute(ClipCommand(id,
+          startMs: 1000, endMs: 61000, blockKey: BlockArtifactKind.topLevelKey));
+      final seg = parseClipsJson((await repo.byId(id))!.clipsJson).single;
+      expect(seg.blockKey, isNull);
+
+      await handler.execute(ClipProcessCommand(id,
+          startMs: 1000, endMs: 61000,
+          steps: [kClipStepExtract], blockKey: BlockArtifactKind.topLevelKey));
+      final tasks = await repo.pendingTasks();
+      expect(tasks.single['task_action'], 'clip:1000-61000:e');
+    });
+
+    test('音频同样可切片：音频块按块类型放行；顶级音频条目（item 哨兵）也放行', () async {
+      final repo = Repository();
+      final handler = ItemActionHandler(repo);
+      const aKey = 'local://shares/a.m4a';
+      await repo.add(InboxItem(
+          itemType: InboxItem.typeNote,
+          rawContent: 'n',
+          humanMd: '[录音]($aKey)',
+          createdAt: 1));
+      final noteId = (await repo.list()).first.id!;
+      await handler.execute(
+          ClipCommand(noteId, startMs: 1000, endMs: 61000, blockKey: aKey));
+      expect(
+          parseClipsJson((await repo.byId(noteId))!.clipsJson).single.blockKey,
+          aKey);
+
+      // 顶级音频条目（'item' 哨兵 → 条目级）也可切片
+      await repo.add(InboxItem(
+          itemType: InboxItem.typeAudio,
+          rawContent: 'a',
+          rawFilePath: '/tmp/a.m4a',
+          createdAt: 2));
+      final audioId = (await repo.list())
+          .firstWhere((e) => e.itemType == InboxItem.typeAudio)
+          .id!;
+      await handler.execute(ClipCommand(audioId,
+          startMs: 1000, endMs: 61000, blockKey: BlockArtifactKind.topLevelKey));
+      expect(
+          parseClipsJson((await repo.byId(audioId))!.clipsJson).single.blockKey,
+          isNull);
+    });
   });
 
   group('备份白名单：过准入的视频进备份', () {

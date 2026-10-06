@@ -41,6 +41,8 @@ List<String> normalizeClipSteps(List<String> steps) {
 /// - `status == done / failed`：链路跑完 / 失败（note 说明哪一步失败，人与 AI 同读一份）。
 /// - 各步骤产物按需出现：clipPath（提取的片段文件，相对 documents）、text（转写）、
 ///   summary（摘要）——止步于片段本身时只有 clipPath。
+/// - `blockKey`（块级化 2026-10-05）：行内视频块的 local:// 块 key；null = 条目级
+///   切片（顶级视频条目）。多视频块同条目时按 key 隔离区间，互不混淆。
 class ClipSegment {
   const ClipSegment({
     required this.startMs,
@@ -51,11 +53,15 @@ class ClipSegment {
     this.text,
     this.summary,
     this.note,
+    this.blockKey,
     required this.createdAt,
   });
 
   final int startMs;
   final int endMs;
+
+  /// 所属视频块（行内块切片，2026-10-05）；null = 条目级切片。
+  final String? blockKey;
 
   /// 用户勾选的处理范围（规整后；空 = 纯标记待选步骤）。
   final List<String> steps;
@@ -77,6 +83,7 @@ class ClipSegment {
         'end_ms': endMs,
         'steps': steps,
         'status': status,
+        if (blockKey != null) 'block_key': blockKey,
         if (clipPath != null) 'clip_path': clipPath,
         if (text != null) 'text': text,
         if (summary != null) 'summary': summary,
@@ -97,6 +104,7 @@ class ClipSegment {
           ? normalizeClipSteps([for (final x in (j['steps'] as List)) if (x is String) x])
           : const [],
       status: j['status'] is String ? j['status'] as String : kClipStatusMarked,
+      blockKey: j['block_key'] is String ? j['block_key'] as String : null,
       clipPath: j['clip_path'] is String ? j['clip_path'] as String : null,
       text: j['text'] is String ? j['text'] as String : null,
       summary: j['summary'] is String ? j['summary'] as String : null,
@@ -112,6 +120,7 @@ class ClipSegment {
     String? text,
     String? summary,
     String? note,
+    String? blockKey,
   }) =>
       ClipSegment(
         startMs: startMs,
@@ -122,6 +131,7 @@ class ClipSegment {
         text: text ?? this.text,
         summary: summary ?? this.summary,
         note: note ?? this.note,
+        blockKey: blockKey ?? this.blockKey,
         createdAt: createdAt,
       );
 }
@@ -158,10 +168,12 @@ bool isValidClipInterval(int startMs, int endMs) =>
     (endMs - startMs) >= 1000 &&
     (endMs - startMs) <= 30 * 60 * 1000;
 
-/// 把队列产出合并进既有切片列表（按 startMs/endMs 精确匹配；未找到则追加自愈）。
+/// 把队列产出合并进既有切片列表（按 blockKey + 区间精确匹配；未找到则追加自愈）。
 List<ClipSegment> mergeClipResult(List<ClipSegment> clips, ClipSegment result) {
-  final idx =
-      clips.indexWhere((c) => c.startMs == result.startMs && c.endMs == result.endMs);
+  final idx = clips.indexWhere((c) =>
+      c.blockKey == result.blockKey &&
+      c.startMs == result.startMs &&
+      c.endMs == result.endMs);
   if (idx == -1) return [...clips, result];
   return [...clips]..[idx] = result;
 }

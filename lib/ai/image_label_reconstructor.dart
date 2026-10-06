@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:google_mlkit_image_labeling/google_mlkit_image_labeling.dart';
 
+import '../data/block_artifacts.dart' show BlockArtifactInput, BlockArtifactKind;
 import '../data/repository.dart';
 import 'reconstructor.dart';
 import 'image_labels_zh.dart';
@@ -29,14 +30,18 @@ class ImageLabelCapability extends MlCapability {
   Future<CapabilityReadiness> ensureReady() async => CapabilityReadiness.ready;
 
   @override
-  Future<bool> handles(ReconstructInput input) async =>
-      input.itemType == 'image' && input.taskAction == Repository.taskClassifyImage;
+  Future<bool> handles(ReconstructInput input) async {
+    final block = Repository.parseBlockAction(input.taskAction);
+    if (block != null) return block.$1 == 'block_classify';
+    return input.itemType == 'image' && input.taskAction == Repository.taskClassifyImage;
+  }
 
   /// 执行：创建 base 模型 labeler，对图片推理，返回已映射 + 已过滤的标签
   ///（文件缺失时标记 [ImageLabelRaw.fileMissing]，由归一化给出可观测原因）。
   @override
   Future<ImageLabelRaw> run(ReconstructInput input) async {
-    final path = input.rawFilePath;
+    // 块模式源为块图片文件（queue_consumer 解析的 blockFilePath），条目级源为 rawFilePath
+    final path = input.blockKey != null ? input.blockFilePath : input.rawFilePath;
     if (path == null || path.isEmpty || !File(path).existsSync()) {
       return ImageLabelRaw(const [], fileMissing: true);
     }
@@ -65,15 +70,38 @@ class ImageLabelCapability extends MlCapability {
     final r = raw as ImageLabelRaw;
     final humanMd = input.rawContent ?? '';
     if (r.fileMissing) {
-      return ReconstructResult(
-        humanMd: humanMd,
-        note: '图片文件缺失，无法分类',
-      );
+      // 块模式：空产物 + 原因进 note（handler 据此落 block_artifacts 占位并透传 note）
+      return input.blockKey != null
+          ? ReconstructResult(
+              humanMd: humanMd,
+              blockKey: input.blockKey,
+              blockArtifacts: const [],
+              note: '图片文件缺失，无法分类',
+            )
+          : ReconstructResult(humanMd: humanMd, note: '图片文件缺失，无法分类');
     }
     if (r.tags.isEmpty) {
+      return input.blockKey != null
+          ? ReconstructResult(
+              humanMd: humanMd,
+              blockKey: input.blockKey,
+              blockArtifacts: const [],
+              note: '未识别出已知分类（图片可能过于抽象，或模型置信度均不足 0.5）',
+            )
+          : ReconstructResult(
+              humanMd: humanMd,
+              note: '未识别出已知分类（图片可能过于抽象，或模型置信度均不足 0.5）',
+            );
+    }
+    if (input.blockKey != null) {
+      // 块模式：标签落 block_artifacts[classification]（换行分隔，便于展示与 MCP 读取）
       return ReconstructResult(
         humanMd: humanMd,
-        note: '未识别出已知分类（图片可能过于抽象，或模型置信度均不足 0.5）',
+        blockKey: input.blockKey,
+        blockArtifacts: [
+          BlockArtifactInput(BlockArtifactKind.classification, text: r.tags.join('\n')),
+        ],
+        note: '已识别 ${r.tags.length} 个分类标签',
       );
     }
     return ReconstructResult(

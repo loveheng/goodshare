@@ -73,10 +73,9 @@ class QueueConsumer {
     final taskId = task['task_id'] as String;
     final itemId = task['item_id'] as String;
     final taskAction = task['task_action'] as String?;
-    // 块附件通道（block-artifact-workflow.md §2.5/§2.6）：block_* 任务豁免
-    // aiProcess 门禁（手动即授权——UI 主体入队时动作层已按 actor 分叉校验过，
-    // 到达队列的块任务必然是 ui 发起或已授权的），失败也不标条目 is_processed
-    //（块任务的产物在块级，条目状态零触碰）。
+    // 块附件通道（block-artifact-workflow.md §2.5）：block_* 任务失败不标条目
+    // is_processed（块任务的产物在块级，条目状态零触碰）。
+    // 「允许 AI 处理」队列侧 skip 已随开关一并移除（2026-10-05 拍板）。
     final blockParsed = Repository.parseBlockAction(taskAction);
     final isBlock = blockParsed != null;
     if (!await _repo.claimTask(taskId)) return; // 已被取消/认领，跳过
@@ -85,19 +84,6 @@ class QueueConsumer {
     if (item == null || item.isDeleted) {
       // 条目在入队后被删（软删已会取消任务，此处兜底竞态）
       await _repo.finishTask(taskId, 'cancelled');
-      return;
-    }
-
-    // 管线回写授权门禁（ai-visibility 补丁）：人类笔记默认不授权管线处理，
-    // 未开启「允许 AI 处理」则直接跳过该任务——不跑重建、不标失败，
-    // 避免误判失败与空耗算力。原因落 note，UI 任务态/详情状态条可读到。
-    // 块任务豁免（§2.6）：手动即授权；MCP 侧未授权的块任务在动作层入队前已被拒。
-    if (!isBlock && !item.aiProcess) {
-      await _repo.finishTask(
-        taskId,
-        'skipped',
-        note: '未授权 AI 处理：在笔记详情开启「允许 AI 处理」后方可处理',
-      );
       return;
     }
 
@@ -171,11 +157,19 @@ class QueueConsumer {
           input.taskAction == Repository.taskLlmTags;
       // 切片任务 = 提区间音轨 + ASR + LLM 摘要三段串行，单独放宽到 180s（设计 video-clips.md）
       final isClipTask = input.taskAction?.startsWith(Repository.taskClipPrefix) ?? false;
+      // 转写任务（条目级 transcribe_audio* / 块级 block_transcribe*）放宽到 600s：
+      // Sherpa 端侧推理整段音视频常超 60s（视频还要先解码抽轨），AsrEngine 内部
+      // 上限即 10 分钟——消费侧 60s 强杀会让转写「永远超时降级」，表现为一直失败
+      // （2026-10-06 用户反馈视频/音频转写不成功的根因）。
+      final isTranscribeTask = Repository.isTranscribeAction(input.taskAction) ||
+          input.taskAction?.startsWith('block_transcribe') == true;
       final timeout = isClipTask
           ? const Duration(seconds: 180)
-          : isLlmTask
-              ? const Duration(seconds: 120)
-              : const Duration(seconds: 60);
+          : isTranscribeTask
+              ? const Duration(minutes: 10)
+              : isLlmTask
+                  ? const Duration(seconds: 120)
+                  : const Duration(seconds: 60);
       // 执行侧计时（§4 卡头耗时）：upsert 的 ON CONFLICT 只刷 updated_at
       //（created_at 保留首建），重算后「created/updated 差值」掺入闲置时间
       // 不准——耗时在重建器执行处实测，注入各产物 meta_json.elapsed_ms。

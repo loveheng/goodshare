@@ -8,6 +8,7 @@ import 'ui/privacy_blur_overlay.dart';
 import 'ui/tokens.dart' show Radii;
 import 'ai/asr_reconstructor.dart';
 import 'ai/ai_queue_service.dart';
+import 'ui/toast.dart';
 import 'ai/capabilities.dart';
 import 'ai/llm.dart';
 import 'ai/llm_model_manager.dart';
@@ -21,6 +22,7 @@ import 'ai/image_label_reconstructor.dart';
 import 'ai/barcode_reconstructor.dart';
 import 'ai/text_analysis_capability.dart';
 import 'ai/document_scan_capability.dart';
+import 'ai/document_normalize_reconstructor.dart';
 import 'ai/queue_consumer.dart';
 import 'ai/reconstructor.dart';
 import 'ai/translate_reconstructor.dart';
@@ -126,6 +128,9 @@ Future<void> main() async {
         },
       ),
       TranslationReconstructor(service: translationService),
+      // 文档归一化（content-pipeline §9，2026-10-06）：document 摄入自动入队
+      // normalize_document，按扩展名分派 html/plain/pdf/md 归一化器
+      const DocumentNormalizeReconstructor(),
       // 端侧 LLM（2026-09-28）：摘要（summary_md）与关键词提取，均由显式命令入队
       // 视频切片（2026-09-29）：区间音轨→ASR→LLM 摘要，产出合并进 clips_json
       LlmReconstructor(engine: llmEngine),
@@ -354,6 +359,9 @@ class GoodShareApp extends StatelessWidget {
     return MaterialApp(
       title: '拾贝',
       debugShowCheckedModeBanner: false,
+      // 全局 Toast 挂根 overlay（lib/ui/toast.dart）：不依赖子页 context，
+      // 页面切换/弹层关闭不影响提示生命周期（SnackBar 退役配套）。
+      navigatorKey: ToastManager.navigatorKey,
       // 规则五：全局钳制字号缩放上限 1.5x，避免系统特大字体下 RenderFlex overflow
       builder: (context, child) {
         final data = MediaQuery.of(context);

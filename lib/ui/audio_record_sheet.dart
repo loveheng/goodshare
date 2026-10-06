@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:record/record.dart';
 
 import '../share/attachments.dart';
+import 'toast.dart';
 import 'tokens.dart';
 
 /// 录音弹框（2026-10-03 拍板：速记条与详情页编辑**统一**录音入口，形态对齐
@@ -87,9 +88,8 @@ class _AudioRecordSheetState extends State<AudioRecordSheet> {
   }
 
   Future<void> _start() async {
-    final messenger = ScaffoldMessenger.of(context);
     if (!await _recorder.hasPermission()) {
-      messenger.showSnackBar(const SnackBar(content: Text('缺少麦克风权限')));
+      ToastManager.show('缺少麦克风权限', kind: ToastKind.error);
       if (mounted) Navigator.of(context).pop();
       return;
     }
@@ -125,7 +125,7 @@ class _AudioRecordSheetState extends State<AudioRecordSheet> {
         setState(() {}); // 计时刷新
       });
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('录音启动失败：$e')));
+      ToastManager.show('录音启动失败：$e', kind: ToastKind.error);
       if (mounted) Navigator.of(context).pop();
     }
   }

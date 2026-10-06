@@ -158,8 +158,17 @@ List<ContentCapability> capabilitiesFor(BlockKind kind) =>
 
 /// 独立能力（detail-two-zone.md §5.2 改版 2026-10-01：类型专属功能从
 /// 二级详情页 chips 全部拆入三级能力页）：**链外单发**，不走产出回注——
-/// 分类/条码/文本分析写 facets 标注，切片/提取音轨/字幕导出为媒体工具流。
+/// 分类/条码/文本分析写 facets 标注，切片为媒体工具流。
 /// 执行经执行作用域 `onRunStandalone(id)` 分发（命令入队或打开工具页）。
+///
+/// **2026-10-05 视频三级页 IA**：媒体类两项不再列独立 chip——
+/// - 提取音轨：**升回工作流首步骤「提取音频」**（见 workflow.dart `_videoSpec`，
+///   产 audio_file「音轨」卡，承载内联播放/导出/锚点切换）；
+/// - 字幕导出：转写一步双产物已落字幕产物卡，卡上「导出」即此出口，再列
+///   一枚 chip 是同一能力两个入口。
+/// 故音 / 视频独立能力 = **切片**一项（2026-10-05 扩展：音频块/音频条目同享）。
+/// 命令与执行函数保留（`ExtractAudioCommand` / `extractAudioTrack` /
+/// `exportSubtitles`）供 MCP 与后续挂载点，非死代码待办。
 class StandaloneCapability {
   const StandaloneCapability(this.id, this.label, this.icon, this.appliesTo);
 
@@ -177,13 +186,13 @@ const List<StandaloneCapability> kStandaloneCapabilities = [
       [BlockKind.image]),
   StandaloneCapability('scan_barcode', '识别条码', Icons.qr_code_scanner_outlined,
       [BlockKind.image]),
-  StandaloneCapability('analyze_text', '分析文本', Icons.text_snippet_outlined,
-      [BlockKind.text]),
-  StandaloneCapability('clip', '切片', Icons.content_cut, [BlockKind.video]),
-  StandaloneCapability('extract_audio', '提取音轨', Icons.audiotrack_outlined,
-      [BlockKind.audio, BlockKind.video]),
-  StandaloneCapability('export_subtitle', '字幕导出', Icons.subtitles_outlined,
-      [BlockKind.audio, BlockKind.video]),
+  // 分析文本（analyze_text）无人类 chip（2026-10-05 拍板）：facets（语言/实体）
+  // 是机器维度（MCP get_item 消费、V2 AI 分类页聚类视角），人类展示与标签重复、
+  // 产出无处看——命令与管线保留供 MCP（analyze_text_item）。
+  // 音 / 视频独立能力：切片（2026-10-05 扩展音频）——提取音轨已升为「提取音频」
+  // 首步骤（audio_file「音轨」卡），字幕导出并入字幕卡「导出」，均无需独立 chip。
+  StandaloneCapability('clip', '切片', Icons.content_cut,
+      [BlockKind.video, BlockKind.audio]),
 ];
 
 /// 按块类型取适用独立能力（保清单序）。
@@ -191,6 +200,14 @@ List<StandaloneCapability> standaloneFor(BlockKind kind) => [
       for (final c in kStandaloneCapabilities)
         if (c.appliesTo.contains(kind)) c,
     ];
+
+/// 块类型 → 展示名（三级能力页标题栏：图片 / 音频 / 视频 / 文本）。
+String blockKindLabel(BlockKind kind) => switch (kind) {
+      BlockKind.image => '图片',
+      BlockKind.audio => '音频',
+      BlockKind.video => '视频',
+      BlockKind.text => '文本',
+    };
 
 /// inbox item_type → BlockKind（顶层媒体区/正文块共用）。
 BlockKind blockKindOfItemType(String itemType) => switch (itemType) {

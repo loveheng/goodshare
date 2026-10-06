@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../ai/capability.dart';
 import '../ai/capability_chain.dart';
 import '../ai/workflow.dart' show WorkflowStep, workflowFor;
+import '../ai/video_clips.dart' show ClipSegment;
 import '../share/attachments.dart' show resolveLocalMediaSrc;
 import 'block_capability_page.dart';
 import 'block_workflow_page.dart';
@@ -273,7 +274,6 @@ Future<void> openBlockCapability(
   if (blockKey != null &&
       executor.loadBlockArtifacts != null &&
       executor.onRunWorkflowStep != null &&
-      executor.onApplyArtifact != null &&
       executor.resetBlock != null) {
     await Navigator.of(context, rootNavigator: true).push(
       MaterialPageRoute<void>(
@@ -287,9 +287,10 @@ Future<void> openBlockCapability(
           onPreviewActivate: previewActivate,
           loadArtifacts: executor.loadBlockArtifacts!,
           onRunStep: executor.onRunWorkflowStep!,
-          onApplyArtifact: executor.onApplyArtifact!,
           onReset: executor.resetBlock!,
-          onRunStandalone: executor.onRunStandalone,
+          loadClips: executor.loadBlockClips,
+          onRunStandalone: (id, _) => executor.onRunStandalone(id, blockKey),
+          loadAnnotationCount: executor.loadAnnotationCount,
           onCueSeek: executor.onCueSeek,
           onEditArtifact: executor.onEditArtifact,
         ),
@@ -309,7 +310,7 @@ Future<void> openBlockCapability(
     onReset: executor.onReset,
     onEditOutput: executor.onEditOutput,
     onApply: executor.onApply,
-    onRunStandalone: executor.onRunStandalone,
+    onRunStandalone: (id) => executor.onRunStandalone(id, null),
   );
 }
 
@@ -388,7 +389,8 @@ class BlockCapabilityExecutor extends InheritedWidget {
     required this.loadPersistedOutputs,
     this.loadBlockArtifacts,
     this.onRunWorkflowStep,
-    this.onApplyArtifact,
+    this.loadAnnotationCount,
+    this.loadBlockClips,
     this.resetBlock,
     this.onCueSeek,
     this.onEditArtifact,
@@ -408,7 +410,17 @@ class BlockCapabilityExecutor extends InheritedWidget {
   final Future<String?> Function(String raw) onEditOutput;
 
   /// 独立能力执行（分类/条码/分析入队命令；切片打开工具流）。
-  final Future<void> Function(String capabilityId) onRunStandalone;
+  /// [blockKey] 非 null = 图片**块**能力（块级化 2026-10-05）：顶级 'item' 与行内
+  /// local:// 同走此路径；null = 条目级能力（旧 BlockCapabilityPage）。
+  final Future<void> Function(String capabilityId, String? blockKey) onRunStandalone;
+
+  /// 块标注计数回调（按 blockKey 查 AnnotationStore），用于块工作流页展示面。
+  final Future<int> Function(String blockKey)? loadAnnotationCount;
+
+  /// 块切片区间回调（块级切片 2026-10-05）：返回该视频块已登记的关键区间，
+  /// 供三级页「切片区间」区展示（详情页正文无块级切片展示面——保存后用户
+  /// 停留的三级页就地可见）；null 不展示。
+  final Future<List<ClipSegment>> Function(String blockKey)? loadBlockClips;
 
   /// 读该块已落库产出（中断续跑 restore 数据源）。
   final Map<int, String> Function() loadPersistedOutputs;
@@ -423,9 +435,6 @@ class BlockCapabilityExecutor extends InheritedWidget {
   /// 执行工作流步骤（组装 block 命令入队 → 等任务落定 → 按产物判成功）。
   final Future<bool> Function(WorkflowStep step, String blockKey, String? sourceKind)?
       onRunWorkflowStep;
-
-  /// 产物应用（回注：就近插入源媒体行正下方 / 灵感区，§3.4 动词体系）。
-  final Future<void> Function(String blockKey, String kind, String text)? onApplyArtifact;
 
   /// Reset 该块全部产物（表行 + 文件产物删盘，§2.2 纪律 7）。
   final Future<void> Function(String blockKey)? resetBlock;

@@ -46,25 +46,39 @@ class AsrEngine {
   }
 
   /// 转写并产出字幕 cue（VAD 分段）：音频或视频输入皆可（视频经同一
-  /// `_toWav16k` 抽取音轨）。成功返回非空 cue 列表，失败返回 null。
-  Future<List<AsrCue>?> transcribeToCues(
+  /// `_toWav16k` 抽取音轨）。返回 `(cues, error)`：
+  /// - 成功：`(非空 cue 列表, null)`；
+  /// - 失败：`(null 或空, 原因)`——error 透传给任务 note（R1：失败必须可
+  ///   观测，笼统「模型未产出结果」会掩盖真实原因，如模型文件缺失/解码失败）。
+  Future<(List<AsrCue>?, String?)> transcribeToCues(
       String audioPath, AsrModel model,
       {required String modelDir}) async {
     final vad = await ensureVadModelFile();
     if (vad == null) {
       debugPrint('[AsrEngine] vad model unavailable, cues channel skipped');
-      return null;
+      return (null, 'VAD 模型解出失败（字幕分段通道不可用）');
     }
     final r = await _run(audioPath, model.id, modelDir, vadPath: vad);
-    final raw = r?.cues;
-    if (raw == null || raw.isEmpty) return null;
-    return raw.map(AsrCue.fromJson).toList();
+    if (r == null) {
+      return (null, '音频解码/重采样失败（格式不支持或文件损坏）');
+    }
+    if (r.error != null) {
+      return (null, '转写引擎报错：${r.error}');
+    }
+    final raw = r.cues;
+    if (raw == null || raw.isEmpty) {
+      return (null, '模型未产出结果');
+    }
+    return (raw.map(AsrCue.fromJson).toList(), null);
   }
 
   Future<_AsrJobResult?> _run(String audioPath, String modelId,
       String modelDir,
       {String? vadPath}) async {
-    if (!File(audioPath).existsSync()) {
+    // content:// 引用模式条目（不复制原件）：Dart File 无法 stat 跨进程 URI，
+    // 解码由原生侧 ContentResolver 数据源承载——放行给原生判断可达性。
+    final isUri = audioPath.startsWith('content://') || audioPath.startsWith('file://');
+    if (!isUri && !File(audioPath).existsSync()) {
       debugPrint('[AsrEngine] audio not found: $audioPath');
       return null;
     }
