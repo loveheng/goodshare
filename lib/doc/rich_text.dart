@@ -900,139 +900,57 @@ class MarkdownSubsetParser implements RichTextParser {
     });
   }
 
-  List<RichBlock> _parseBlocks(List<String> lines) {
+  /// 责任链注册表：顺序严格对齐旧版 if-else 优先级，段落永远垫底兜底。
+  static final List<_BlockSyntax> _syntaxes = [
+    _FenceSyntax(),
+    _DividerSyntax(),
+    _TableSyntax(),
+    _HeadingSyntax(),
+    _QuoteSyntax(),
+    _ListSyntax(),
+    _ImageLineSyntax(),
+    _MediaLinkSyntax(),
+    _ParagraphSyntax(),
+  ];
+
+  /// Markdown → 块树（责任链调度）。静态化以便 [_QuoteSyntax] 递归复用（陷阱 G）。
+  static List<RichBlock> _parseBlocks(List<String> lines) {
+    final reader = _LineReader(lines);
     final blocks = <RichBlock>[];
-    var i = 0;
 
-    while (i < lines.length) {
-      final line = lines[i];
-
-      // 代码块：围栏内原样保留，不解析行内
-      final fence = _fence.firstMatch(line);
-      if (fence != null) {
-        final buf = <String>[];
-        i++;
-        while (i < lines.length && _fence.firstMatch(lines[i]) == null) {
-          buf.add(lines[i]);
-          i++;
-        }
-        i++; // 跳过闭合围栏（缺失时不抛，按到文末处理）
-        final lang = fence.group(1)!;
-        blocks.add(CodeBlock(code: buf.join('\n'), language: lang.isEmpty ? null : lang));
+    while (!reader.isDone) {
+      // 空行是块间隙：跳过，且绝不并入段落（陷阱 C）
+      if (reader.peek()!.trim().isEmpty) {
+        reader.advance();
         continue;
       }
 
-      if (_divider.hasMatch(line)) {
-        blocks.add(const DividerBlock());
-        i++;
-        continue;
-      }
-
-      if (_isTableStart(lines, i)) {
-        final (block, consumed) = _parseTable(lines, i);
-        blocks.add(block);
-        i += consumed;
-        continue;
-      }
-
-      final heading = _heading.firstMatch(line);
-      if (heading != null) {
-        blocks.add(HeadingBlock(
-          level: heading.group(1)!.length,
-          inline: parseInline(heading.group(2)!),
-        ));
-        i++;
-        continue;
-      }
-
-      if (_quote.hasMatch(line)) {
-        final buf = <String>[];
-        while (i < lines.length && _quote.hasMatch(lines[i])) {
-          buf.add(lines[i].replaceFirst(_quote, ''));
-          i++;
-        }
-        blocks.add(QuoteBlock(_parseBlocks(buf)));
-        continue;
-      }
-
-      // 列表：连续的同类型项聚合为一个 ListBlock
-      final bullet = _bullet.firstMatch(line);
-      final ordered = _ordered.firstMatch(line);
-      if (bullet != null || ordered != null) {
-        final isOrdered = ordered != null;
-        final items = <ListItem>[];
-        while (i < lines.length) {
-          final m = isOrdered
-              ? (_ordered.firstMatch(lines[i]) ?? _bullet.firstMatch(lines[i]))
-              : _bullet.firstMatch(lines[i]);
-          if (m == null) break;
-          items.add(_listItem(m.group(1)!));
-          i++;
-        }
-        blocks.add(ListBlock(ordered: isOrdered, items: items));
-        continue;
-      }
-
-      // 媒体行：整行 `![alt](url)` → ImageBlock；整行 `[label](url)` 且后缀
-      // 命中白名单 → AudioBlock/VideoBlock（不命中则落回普通段落，不丢内容）
-      final image = _imageLine.firstMatch(line);
-      if (image != null) {
-        blocks.add(ImageBlock(url: image.group(2)!, alt: _unescape(image.group(1)!)));
-        i++;
-        continue;
-      }
-      final link = _linkLine.firstMatch(line);
-      if (link != null) {
-        final url = link.group(2)!;
-        final media = classifyMediaUrl(url);
-        if (media == MediaSuffix.audioPlayable || media == MediaSuffix.audioDegrade) {
-          blocks.add(AudioBlock(url: url, label: _unescape(link.group(1)!)));
-          i++;
-          continue;
-        }
-        if (media == MediaSuffix.video) {
-          blocks.add(VideoBlock(url: url, label: _unescape(link.group(1)!)));
-          i++;
-          continue;
+      final startIndex = reader.index;
+      var matched = false;
+      for (final syntax in _syntaxes) {
+        if (syntax.canParse(reader)) {
+          blocks.add(syntax.parse(reader));
+          matched = true;
+          break;
         }
       }
 
-      // 裸待办行（`[ ] xxx`，不在列表里）——归入单项无序列表，保证可勾选
-      final bareTodo = RegExp(r'^\[([ xX])\]\s+(.*)$').firstMatch(line);
-      if (bareTodo != null) {
-        blocks.add(ListBlock(
-          ordered: false,
-          items: [_listItem(line)],
-        ));
-        i++;
+      // 陷阱 F：死循环护栏（对齐旧版「空 buf 只推进、不产块」的语义）
+      if (!matched) {
+        // 段落恒兜底，此分支实际不可达；真发生也只推进防卡死
+        reader.advance();
         continue;
       }
-
-      if (line.trim().isEmpty) {
-        i++;
-        continue;
+      if (reader.index == startIndex) {
+        // 语法命中却未推进读针：强制前进，不额外产块
+        reader.advance();
       }
-
-      // 段落：连续非空且非块起始的行
-      final buf = <String>[];
-      while (i < lines.length &&
-          lines[i].trim().isNotEmpty &&
-          !_isBlockStart(lines[i]) &&
-          !_isTableStart(lines, i)) {
-        buf.add(lines[i]);
-        i++;
-      }
-      if (buf.isEmpty) {
-        i++; // 兜底防死循环
-        continue;
-      }
-      blocks.add(ParagraphBlock(parseInline(buf.join('\n'))));
     }
-
     return blocks;
   }
 
-  bool _isBlockStart(String line) =>
+  /// 块起始判定（静态化，供 [_ParagraphSyntax] 调用；陷阱 A）。
+  static bool _isBlockStart(String line) =>
       _fence.hasMatch(line) ||
       _divider.hasMatch(line) ||
       _heading.hasMatch(line) ||
@@ -1093,22 +1011,32 @@ class MarkdownSubsetParser implements RichTextParser {
     return (TableBlock(header: header, rows: rows, align: align), j - i);
   }
 
-  ListItem _listItem(String content) {
+  /// 列表项构造（静态化，供 [_ListSyntax] 调用；陷阱 A）。
+  ///
+  /// [content] 口径严格沿用旧版，两种调用不可混：
+  /// - 列表项：传 `_bullet`/`_ordered` 抓出的**剥离前缀后**文本；
+  /// - 裸待办行：传**原始行**（`[ ] xxx`），由 [_todo] 再剥一层。
+  static ListItem _listItemImpl(String content) {
     final todo = _todo.firstMatch(content);
     if (todo != null) {
       final mark = todo.group(1)!;
-      return ListItem(parseInline(todo.group(2)!), done: mark != ' ');
+      return ListItem(_parseInlineImpl(todo.group(2)!), done: mark != ' ');
     }
-    return ListItem(parseInline(content));
+    return ListItem(_parseInlineImpl(content));
   }
 
-  /// 行内解析：转义 / 粗体 / 斜体 / 行内码 / 链接，其余为纯文本。
+  /// 行内解析实现（静态化，供块语法责任链调用；陷阱 A）。
   ///
   /// 匹配顺序即优先级：`\X` 转义最先（serialize 的字面出口），`**` 先于 `*`，
   /// 避免 `**粗**` 被拆成两个斜体。返回前合并相邻纯文本节点（规范形，
   /// 保证 parse→serialize→parse 块树逐节点相等）。
+  ///
+  /// 静态化仅为让嵌套的 [_BlockSyntax] 能调用，逻辑与旧版逐行等价。
   @override
-  List<InlineNode> parseInline(String text) {
+  List<InlineNode> parseInline(String text) => _parseInlineImpl(text);
+
+  /// [parseInline] 的静态实现体（旧版 parseInline 原样搬移）。
+  static List<InlineNode> _parseInlineImpl(String text) {
     if (text.isEmpty) return const <InlineNode>[InlineText('')];
 
     final codeSpans = _extractCode(text);
@@ -1158,3 +1086,228 @@ class MarkdownSubsetParser implements RichTextParser {
   static String _unescape(String s) =>
       s.replaceAllMapped(RegExp(r'\\([\\`*_\[\]])'), (m) => m.group(1)!);
 }
+
+// ---------- 块解析：_LineReader + _BlockSyntax 责任链 ----------
+//
+// 纯架构解耦：仅把原先的下标 while/if-else 换成流式 Reader + 策略注册表。
+// 对外 parse()/parseInline、RichBlock/InlineNode 模型、serialize*/inlineSpansOf
+// 全部零改动。本轮严格「bug-for-bug compatible」：不扩充任何语法（含多行列表），
+// 行为与旧版逐块对齐。
+
+/// 流式行读取器：替代手写 `i++` 下标循环。
+///
+/// 暴露 [lines]/[index] 供表格语法直接复用既有的 [_parseTable]
+/// （陷阱 E：避免重写「单元格数不一致即停止」的边界逻辑）。
+class _LineReader {
+  _LineReader(this.lines);
+
+  final List<String> lines;
+  int index = 0;
+
+  bool get isDone => index >= lines.length;
+
+  /// 向前看 [offset] 行（表格判定需二行前瞻，故必须带 offset）。
+  String? peek([int offset = 0]) {
+    final at = index + offset;
+    return at >= 0 && at < lines.length ? lines[at] : null;
+  }
+
+  String advance() => lines[index++];
+
+  void advanceBy(int count) => index += count;
+}
+
+/// 块语法策略（责任链）：[canParse] 嗅探首行，[parse] 消费并产出 [RichBlock]。
+///
+/// 注册顺序即优先级（特殊在前、段落永远垫底），与旧版 if-else 链严格一致。
+abstract class _BlockSyntax {
+  bool canParse(_LineReader r);
+
+  RichBlock parse(_LineReader r);
+}
+
+/// 代码块：围栏内原样保留，不解析行内。
+class _FenceSyntax implements _BlockSyntax {
+  @override
+  bool canParse(_LineReader r) =>
+      MarkdownSubsetParser._fence.hasMatch(r.peek()!);
+
+  @override
+  RichBlock parse(_LineReader r) {
+    final open = r.advance();
+    final lang = MarkdownSubsetParser._fence.firstMatch(open)!.group(1)!;
+    final buf = <String>[];
+    while (!r.isDone && !MarkdownSubsetParser._fence.hasMatch(r.peek()!)) {
+      buf.add(r.advance());
+    }
+    if (!r.isDone) r.advance(); // 消费闭合围栏（缺失时按到文末，旧版行为）
+    return CodeBlock(code: buf.join('\n'), language: lang.isEmpty ? null : lang);
+  }
+}
+
+/// 分隔线。
+class _DividerSyntax implements _BlockSyntax {
+  @override
+  bool canParse(_LineReader r) =>
+      MarkdownSubsetParser._divider.hasMatch(r.peek()!);
+
+  @override
+  RichBlock parse(_LineReader r) {
+    r.advance();
+    return const DividerBlock();
+  }
+}
+
+/// 表格（GFM）：当前行是表行且下一行是分隔线。
+class _TableSyntax implements _BlockSyntax {
+  @override
+  bool canParse(_LineReader r) =>
+      MarkdownSubsetParser._isTableStart(r.lines, r.index);
+
+  @override
+  RichBlock parse(_LineReader r) {
+    // 复用既有 _parseTable，零重写即零分歧（陷阱 E）
+    final (block, consumed) =
+        MarkdownSubsetParser._parseTable(r.lines, r.index);
+    r.advanceBy(consumed);
+    return block;
+  }
+}
+
+/// 标题。
+class _HeadingSyntax implements _BlockSyntax {
+  @override
+  bool canParse(_LineReader r) =>
+      MarkdownSubsetParser._heading.hasMatch(r.peek()!);
+
+  @override
+  RichBlock parse(_LineReader r) {
+    final m = MarkdownSubsetParser._heading.firstMatch(r.advance())!;
+    return HeadingBlock(
+      level: m.group(1)!.length,
+      inline: MarkdownSubsetParser._parseInlineImpl(m.group(2)!),
+    );
+  }
+}
+
+/// 引用块：剥离 `>` 后递归走同一个 [_parseBlocks]，保证嵌套结构与行内口径一致（陷阱 G）。
+class _QuoteSyntax implements _BlockSyntax {
+  @override
+  bool canParse(_LineReader r) =>
+      MarkdownSubsetParser._quote.hasMatch(r.peek()!);
+
+  @override
+  RichBlock parse(_LineReader r) {
+    final buf = <String>[];
+    while (!r.isDone && MarkdownSubsetParser._quote.hasMatch(r.peek()!)) {
+      buf.add(r.advance().replaceFirst(MarkdownSubsetParser._quote, ''));
+    }
+    return QuoteBlock(MarkdownSubsetParser._parseBlocks(buf));
+  }
+}
+
+/// 列表（含裸待办行）。
+///
+/// 保留旧版两条特征（陷阱 B——任何「纠正」都会打破往返幂等）：
+/// 1. **有序列表会吸收后续的无序项，无序列表不吸收有序项**；
+/// 2. 裸待办行 `[ ] xxx` 归入单项无序列表，且传**原始行**给 [_listItemImpl]
+///    （由 [_todo] 再剥一层 `[ ] `），与列表项传「剥离后文本」的口径不同。
+class _ListSyntax implements _BlockSyntax {
+  @override
+  bool canParse(_LineReader r) {
+    final line = r.peek()!;
+    return MarkdownSubsetParser._bullet.hasMatch(line) ||
+        MarkdownSubsetParser._ordered.hasMatch(line) ||
+        MarkdownSubsetParser._todo.hasMatch(line); // 裸待办（与 _todo 同型）
+  }
+
+  @override
+  RichBlock parse(_LineReader r) {
+    final isOrdered = MarkdownSubsetParser._ordered.hasMatch(r.peek()!);
+    final items = <ListItem>[];
+    while (!r.isDone) {
+      final line = r.peek()!;
+      final m = isOrdered
+          ? (MarkdownSubsetParser._ordered.firstMatch(line) ??
+              MarkdownSubsetParser._bullet.firstMatch(line))
+          : MarkdownSubsetParser._bullet.firstMatch(line);
+      if (m == null) break;
+      items.add(MarkdownSubsetParser._listItemImpl(m.group(1)!));
+      r.advance();
+    }
+    // 仍为空 ⇒ 是裸待办行（不匹配 bullet/ordered）：传原始行
+    if (items.isEmpty) {
+      items.add(MarkdownSubsetParser._listItemImpl(r.advance()));
+    }
+    return ListBlock(ordered: isOrdered, items: items);
+  }
+}
+
+/// 整行图片 `![alt](url)`。
+class _ImageLineSyntax implements _BlockSyntax {
+  @override
+  bool canParse(_LineReader r) =>
+      MarkdownSubsetParser._imageLine.hasMatch(r.peek()!);
+
+  @override
+  RichBlock parse(_LineReader r) {
+    final m = MarkdownSubsetParser._imageLine.firstMatch(r.advance())!;
+    return ImageBlock(
+      url: m.group(2)!,
+      alt: MarkdownSubsetParser._unescape(m.group(1)!),
+    );
+  }
+}
+
+/// 整行媒体链接 `[label](url)` 且后缀命中白名单；未命中则落回段落（不丢内容）。
+class _MediaLinkSyntax implements _BlockSyntax {
+  @override
+  bool canParse(_LineReader r) {
+    final m = MarkdownSubsetParser._linkLine.firstMatch(r.peek()!);
+    return m != null && classifyMediaUrl(m.group(2)!) != MediaSuffix.unknown;
+  }
+
+  @override
+  RichBlock parse(_LineReader r) {
+    final m = MarkdownSubsetParser._linkLine.firstMatch(r.advance())!;
+    final url = m.group(2)!;
+    final media = classifyMediaUrl(url);
+    if (media == MediaSuffix.audioPlayable || media == MediaSuffix.audioDegrade) {
+      return AudioBlock(
+        url: url,
+        label: MarkdownSubsetParser._unescape(m.group(1)!),
+      );
+    }
+    return VideoBlock(
+      url: url,
+      label: MarkdownSubsetParser._unescape(m.group(1)!),
+    );
+  }
+}
+
+/// 段落：恒兜底（[canParse] 恒 true），连续吃非空且非块起始的行。
+class _ParagraphSyntax implements _BlockSyntax {
+  @override
+  bool canParse(_LineReader r) => true;
+
+  @override
+  RichBlock parse(_LineReader r) {
+    final buf = <String>[];
+    // 首行无条件消费：段落语法的基本前置假设是「首行即段落正文」。
+    // 正常路径下首行必非空且非块起始（主循环已跳过空行、且块起始行必被
+    // 前面的语法认领），故此处与「先判再吃」等价；但若将来 canParse 与
+    // _isBlockStart 出现偏差，可保证仍会推进读针，绝不产出空 ParagraphBlock。
+    buf.add(r.advance());
+    while (!r.isDone) {
+      final line = r.peek()!;
+      if (line.trim().isEmpty) break;
+      if (MarkdownSubsetParser._isBlockStart(line)) break;
+      if (MarkdownSubsetParser._isTableStart(r.lines, r.index)) break;
+      buf.add(r.advance());
+    }
+    return ParagraphBlock(
+      MarkdownSubsetParser._parseInlineImpl(buf.join('\n')),
+    );
+  }
+}
+
