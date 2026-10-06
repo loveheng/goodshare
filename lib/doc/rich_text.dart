@@ -554,6 +554,25 @@ class SpanLevelRun {
   final int level;
 }
 
+/// 列表种类（速记所见即所得的「行列表」维度，2026-10-06 拍板：粘贴/导入 md
+/// 列表 → 无标记列表/待办）：bullet = 无序圆点（`- ` / `* `），
+/// todo = 待办（`- [ ]` / `- [x]`）。与行级标题同源——**行属性**，整行表达，
+/// 恒与实际整行对齐（宿主侧 snap）。
+enum SpanListKind { bullet, todo }
+
+/// 行列表 run：**纯文本坐标** [start, end)，覆盖一整行（不含行尾 `\n`）。
+/// 标题与列表互斥（一行只认一种前缀，标题优先）。
+class SpanListRun {
+  const SpanListRun(this.start, this.end, this.kind, {this.done = false});
+
+  final int start;
+  final int end;
+  final SpanListKind kind;
+
+  /// 待办勾选态（仅 [SpanListKind.todo] 有意义）；渲染侧消费，不改正文。
+  final bool done;
+}
+
 /// 文本变更区间（旧坐标）：最长公共前/后缀夹出「删旧 + 插新」窗口。
 /// 纯函数，供 [adjustRuns] 与会话层随动使用。
 (int, int) spanChangeRange(String oldText, String newText) {

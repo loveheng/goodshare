@@ -16,14 +16,17 @@ class QuickNoteSpans {
     this.plain = '',
     List<InlineRun>? runs,
     List<SpanLevelRun>? levelRuns,
+    List<SpanListRun>? listRuns,
     this.selBase = 0,
     this.selExtent = 0,
   })  : runs = runs ?? <InlineRun>[],
-        levelRuns = levelRuns ?? <SpanLevelRun>[];
+        levelRuns = levelRuns ?? <SpanLevelRun>[],
+        listRuns = listRuns ?? <SpanListRun>[];
 
   String plain;
   List<InlineRun> runs;
   List<SpanLevelRun> levelRuns;
+  List<SpanListRun> listRuns;
 
   /// 选择区（base/extent，与 TextSelection 同义，纯 int 免 Flutter 依赖）。
   int selBase;
@@ -42,17 +45,36 @@ QuickNoteSpans seedQuickNote(String source) {
   final stripped = <String>[];
   final prefixLens = <int>[];
   final hashLens = <int>[];
+  final listInfo = <SpanListRun?>[];
   for (final line in lines0) {
-    final m = _headingRe.firstMatch(line);
-    if (m != null) {
-      stripped.add(line.substring(m.end));
-      prefixLens.add(m.end);
+    var work = line;
+    var removed = 0;
+    // 标题优先：剥 `#{1,6} ` 前缀（与解析器 _heading 同源）
+    final h = _headingRe.firstMatch(work);
+    if (h != null) {
+      work = work.substring(h.end);
+      removed += h.end;
+      hashLens.add(h.group(1)!.length);
+      listInfo.add(null); // 标题与列表互斥：标题行不再认列表
     } else {
-      stripped.add(line);
-      prefixLens.add(0);
+      hashLens.add(0);
+      // 非标题行才认无序列表/待办（`- ` / `* ` / `- [ ]` / `- [x]`）
+      final l = _listRe.firstMatch(work);
+      if (l != null) {
+        final checkbox = l.group(2);
+        work = work.substring(l.end);
+        removed += l.end;
+        final kind =
+            checkbox != null ? SpanListKind.todo : SpanListKind.bullet;
+        final done = checkbox == '[x]' || checkbox == '[X]';
+        // 占位（坐标下方补），保留 kind/done
+        listInfo.add(SpanListRun(0, 0, kind, done: done));
+      } else {
+        listInfo.add(null);
+      }
     }
-    // 档位 = 原 `#` 个数（1-6，与解析器 _heading 同源）
-    hashLens.add(m?.group(1)?.length ?? 0);
+    stripped.add(work);
+    prefixLens.add(removed);
   }
   final plain = stripped.join('\n');
 
@@ -88,14 +110,29 @@ QuickNoteSpans seedQuickNote(String source) {
 
   final levelRuns = <SpanLevelRun>[];
   for (var i = 0; i < lines0.length; i++) {
-    if (prefixLens[i] > 0) {
+    if (hashLens[i] > 0) {
       final s = lineStarts[i];
       final e = s + stripped[i].length;
       levelRuns.add(SpanLevelRun(s, e, hashLens[i].clamp(1, 6)));
     }
   }
 
-  return QuickNoteSpans(plain: plain, runs: runs, levelRuns: levelRuns);
+  final listRuns = <SpanListRun>[];
+  for (var i = 0; i < lines0.length; i++) {
+    final info = listInfo[i];
+    if (info != null) {
+      final s = lineStarts[i];
+      final e = s + stripped[i].length;
+      listRuns.add(SpanListRun(s, e, info.kind, done: info.done));
+    }
+  }
+
+  return QuickNoteSpans(
+    plain: plain,
+    runs: runs,
+    levelRuns: levelRuns,
+    listRuns: listRuns,
+  );
 }
 
 /// 光标所在行当前档位（0 正文 / 1 一级 / 2 二级）——胶囊「格式 · 二级标题」依据。
@@ -145,6 +182,7 @@ void applyQuickNoteSpansInput(
     }
   }
   s.levelRuns = adjustQuickNoteLevelRuns(s.levelRuns, s.plain, newText);
+  s.listRuns = adjustQuickNoteListRuns(s.listRuns, s.plain, newText);
   s.plain = newText;
 }
 
@@ -213,6 +251,60 @@ List<SpanLevelRun> adjustQuickNoteLevelRuns(
   return out;
 }
 
+/// 列表 runs 随动（与 [adjustQuickNoteLevelRuns] 同款按行重 snap；2026-10-06）：
+/// 列表是行属性，处置关系完全一致，仅保留 kind/done。
+List<SpanListRun> adjustQuickNoteListRuns(
+  List<SpanListRun> runs,
+  String oldText,
+  String newText,
+) {
+  if (runs.isEmpty) return const [];
+  final (start, oldEnd) = spanChangeRange(oldText, newText);
+  final insertLen = newText.length - oldText.length + (oldEnd - start);
+  final winEnd = start + insertLen;
+  final delta = insertLen - (oldEnd - start);
+  final oldLines = _lineRanges(oldText);
+  final newLines = _lineRanges(newText);
+
+  final out = <SpanListRun>[];
+  for (final r in runs) {
+    int li = -1;
+    for (var i = 0; i < oldLines.length; i++) {
+      if (r.start >= oldLines[i].start && r.start <= oldLines[i].end) {
+        li = i;
+        break;
+      }
+    }
+    if (li < 0) continue;
+    final L = oldLines[li];
+
+    if (winEnd < L.start || (winEnd == L.start && delta >= 0)) {
+      final d = (L.start >= oldEnd) ? delta : 0;
+      out.add(SpanListRun(L.start + d, L.end + d, r.kind, done: r.done));
+      continue;
+    }
+    if (start > L.end) {
+      out.add(r);
+      continue;
+    }
+    if (start <= L.start && L.end <= oldEnd) {
+      continue;
+    }
+    final anchor = L.start >= start ? winEnd : L.start;
+    int li2 = -1;
+    for (var i = 0; i < newLines.length; i++) {
+      if (anchor >= newLines[i].start && anchor <= newLines[i].end) {
+        li2 = i;
+        break;
+      }
+    }
+    if (li2 < 0) continue;
+    out.add(SpanListRun(newLines[li2].start, newLines[li2].end, r.kind,
+        done: r.done));
+  }
+  return out;
+}
+
 /// 在 [offset] 拆段（媒体插入用）：runs/levels 按区间分配到两侧。
 /// 行级 run 被拆时：档位留**上侧**（与回车语义一致）；offset 恰在行首 → 档位
 /// 随原行（下侧）走。
@@ -233,6 +325,21 @@ List<SpanLevelRun> adjustQuickNoteLevelRuns(
       rightLevels.add(SpanLevelRun(r.start - offset, r.end - offset, r.level));
     }
   }
+  final leftLists = <SpanListRun>[];
+  final rightLists = <SpanListRun>[];
+  for (final r in s.listRuns) {
+    if (offset >= r.start && offset < r.end) {
+      if (offset > r.start) {
+        leftLists.add(SpanListRun(r.start, offset, r.kind, done: r.done));
+      }
+    } else if (offset >= r.end) {
+      leftLists.add(r);
+    } else {
+      rightLists.add(
+        SpanListRun(r.start - offset, r.end - offset, r.kind, done: r.done),
+      );
+    }
+  }
   final left = QuickNoteSpans(
     plain: s.plain.substring(0, offset),
     runs: [
@@ -241,6 +348,7 @@ List<SpanLevelRun> adjustQuickNoteLevelRuns(
           InlineRun(r.start, r.end < offset ? r.end : offset, r.mark, url: r.url),
     ],
     levelRuns: leftLevels,
+    listRuns: leftLists,
     selBase: 0,
     selExtent: 0,
   );
@@ -257,13 +365,14 @@ List<SpanLevelRun> adjustQuickNoteLevelRuns(
           ),
     ],
     levelRuns: rightLevels,
+    listRuns: rightLists,
     selBase: 0,
     selExtent: 0,
   );
   return (left, right);
 }
 
-/// 相邻文本段拼接（删媒体合并用）：[b] 追加进 [a]，runs/levels 平移 b 侧坐标。
+/// 相邻文本段拼接（删媒体合并用）：[b] 追加进 [a]，runs/levels/lists 平移 b 侧坐标。
 void mergeQuickNoteSpansInto(QuickNoteSpans a, QuickNoteSpans b) {
   final d = a.plain.length;
   a.plain += b.plain;
@@ -273,6 +382,50 @@ void mergeQuickNoteSpansInto(QuickNoteSpans a, QuickNoteSpans b) {
   a.levelRuns.addAll([
     for (final r in b.levelRuns) SpanLevelRun(r.start + d, r.end + d, r.level),
   ]);
+  a.listRuns.addAll([
+    for (final r in b.listRuns)
+      SpanListRun(r.start + d, r.end + d, r.kind, done: r.done),
+  ]);
+}
+
+/// 把已解析的片段 [frag] 插入 [target]（替换 [at, replaceEnd) 区间），全维度合并
+/// runs/levels/lists 坐标——「导入 md」弹框专用：剪贴板文本 → [seedQuickNote]
+/// → 插入当前段光标处（或替换选区）。
+void insertSeededSpans(
+  QuickNoteSpans target,
+  QuickNoteSpans frag,
+  int at, {
+  int replaceEnd = -1,
+}) {
+  replaceEnd = (replaceEnd < 0 ? at : replaceEnd).clamp(at, target.plain.length);
+  final insertLen = frag.plain.length;
+  final newPlain = target.plain.replaceRange(at, replaceEnd, frag.plain);
+
+  // 既有行内 runs 按窗 [at, replaceEnd) 随动（删窗内 / 移其后 / 交叠裁剪）
+  final shiftedExisting = adjustRuns(target.runs, at, replaceEnd, insertLen);
+  // 片段行内 runs 平移 at 后并入（落在插入区，不与既有重叠）
+  final fragRuns = [
+    for (final r in frag.runs)
+      InlineRun(r.start + at, r.end + at, r.mark, url: r.url),
+  ];
+  target.runs = [...shiftedExisting, ...fragRuns];
+
+  // 行级/列表 runs 直接按 old→new 文本全量重 snap（与 applyQuickNoteSpansInput 同口径）
+  final existingLevels =
+      adjustQuickNoteLevelRuns(target.levelRuns, target.plain, newPlain);
+  final existingLists =
+      adjustQuickNoteListRuns(target.listRuns, target.plain, newPlain);
+  target.levelRuns = [
+    ...existingLevels,
+    for (final r in frag.levelRuns)
+      SpanLevelRun(r.start + at, r.end + at, r.level),
+  ];
+  target.listRuns = [
+    ...existingLists,
+    for (final r in frag.listRuns)
+      SpanListRun(r.start + at, r.end + at, r.kind, done: r.done),
+  ];
+  target.plain = newPlain;
 }
 
 /// 保存/草稿序列化：plain + runs + 行级 runs → human_md（行首标题前缀 +
@@ -303,8 +456,26 @@ String serializeQuickNoteSpans(QuickNoteSpans s) {
           ),
     ];
     final body = serializeInline(inlineNodesOf(line, sub));
-    // 无档位行必须走 body（含行内标记序列化）——输出原始 line 会丢 **/*/<u>
-    out.add(level > 0 && line.isNotEmpty ? '${'#' * level} $body' : body);
+    // 列表/待办行优先认列表前缀（与标题互斥）；其次认标题；否则裸 body。
+    SpanListRun? lr;
+    for (final r in s.listRuns) {
+      if (r.start <= lineStart && lineStart < r.end) {
+        lr = r;
+        break;
+      }
+    }
+    if (lr != null) {
+      final marker = switch (lr.kind) {
+        SpanListKind.todo => lr.done ? '- [x] ' : '- [ ] ',
+        SpanListKind.bullet => '- ',
+      };
+      out.add('$marker$body');
+    } else if (level > 0 && line.isNotEmpty) {
+      // 无档位行必须走 body（含行内标记序列化）——输出原始 line 会丢 **/*/<u>
+      out.add('${'#' * level} $body');
+    } else {
+      out.add(body);
+    }
     pos = lineEnd + 1;
   }
   return out.join('\n');
@@ -312,6 +483,10 @@ String serializeQuickNoteSpans(QuickNoteSpans s) {
 
 /// 与解析器 `_heading`（`^(#{1,6})\s+(.*)$`）同源：捕获组 1 = `#` 串（档位）。
 final RegExp _headingRe = RegExp(r'^(#{1,6})\s+');
+
+/// 无序列表/待办前缀（2026-10-06 拍板）：`[-*] ` 起手 + 可选 `[ ]`/`[x]`/`[X]`。
+/// 仅作用于非标题行（标题优先，互斥）。匹配止于内容起点，便于剥前缀取纯文本。
+final RegExp _listRe = RegExp(r'^\s*([-*])\s+(\[[ xX]\])?\s*');
 
 class _LineRange {
   const _LineRange(this.start, this.end);

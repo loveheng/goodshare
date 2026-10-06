@@ -90,7 +90,9 @@ class _AnnotatedImageState extends State<AnnotatedImage> {
     if (widget.aspectRatio != null) return; // 显式比例优先，免探测
     final key = _cacheKey;
     if (_ratioCache.containsKey(key)) return;
-    final provider = _isLocal
+    // 显式标注类型：FileImage/NetworkImage 的公共超类型是 ImageProvider<Object>，
+    // 让 var 推断成 Object 会丢掉 resolve
+    final ImageProvider<Object> provider = _isLocal
         ? FileImage(widget.file!)
         : NetworkImage(widget.networkUrl!);
     final stream = provider.resolve(createLocalImageConfiguration(context));

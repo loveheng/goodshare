@@ -201,4 +201,67 @@ void main() {
       expect(serializeQuickNoteSpans(left), serializeQuickNoteSpans(s));
     });
   });
+
+  group('列表/待办（2026-10-06）', () {
+    test('无序列表与待办：剥前缀 → 无标记 plain + listRuns', () {
+      final s = seedQuickNote('- 项目一\n- [ ] 待办\n- [x] 已完成');
+      expect(s.plain, '项目一\n待办\n已完成');
+      expect(s.listRuns.length, 3);
+      expect(s.listRuns[0].kind, SpanListKind.bullet);
+      expect(s.listRuns[0].done, false);
+      expect(s.listRuns[1].kind, SpanListKind.todo);
+      expect(s.listRuns[1].done, false);
+      expect(s.listRuns[2].kind, SpanListKind.todo);
+      expect(s.listRuns[2].done, true);
+    });
+
+    test('列表序列化回写 - / - [ ] / - [x]（往返幂等）', () {
+      final s = seedQuickNote('- 项目一\n- [ ] 待办\n- [x] 已完成');
+      expect(
+        serializeQuickNoteSpans(s),
+        '- 项目一\n- [ ] 待办\n- [x] 已完成',
+      );
+      final s2 = seedQuickNote(serializeQuickNoteSpans(s));
+      expect(s2.plain, s.plain);
+      expect(s2.listRuns.length, s.listRuns.length);
+    });
+
+    test('标题与列表互斥：# 行不认列表', () {
+      final s = seedQuickNote('# 标题\n- 列表项');
+      expect(s.plain, '标题\n列表项');
+      expect(s.levelRuns.length, 1);
+      expect(s.levelRuns.single.level, 1);
+      expect(s.listRuns.length, 1);
+      expect(s.listRuns.single.kind, SpanListKind.bullet);
+    });
+
+    test('列表行内标记仍解析（列表 + 行内共存）', () {
+      final s = seedQuickNote('- **粗**项');
+      expect(s.plain, '粗项');
+      expect(s.listRuns.single.kind, SpanListKind.bullet);
+      expect(s.runs.single.mark, InlineMark.bold);
+      expect(s.runs.single.start, 0);
+      expect(s.runs.single.end, 1); // 粗 = 单字（**粗** 铺 Mark 覆盖 [0,1)）
+    });
+
+    test('编辑列表行内文字：listRuns 随行重 snap 不错位', () {
+      final s = seedQuickNote('- 项目一\n- 项目二');
+      // 行首插 X（plain 无标记，作用于去前缀后的文本）
+      applyQuickNoteSpansInput(s, 'X项目一\n项目二', active: {});
+      expect(s.plain, 'X项目一\n项目二');
+      expect(s.listRuns.length, 2);
+      expect(s.listRuns[0].start, 0);
+      expect(s.listRuns[1].start, s.plain.indexOf('项目二'));
+    });
+
+    test('insertSeededSpans：片段插入光标处并合并全维度', () {
+      final target = seedQuickNote('开头\n');
+      final frag = seedQuickNote('- 甲\n- [ ] 乙');
+      insertSeededSpans(target, frag, target.plain.length); // 文末插入
+      expect(target.plain, '开头\n甲\n乙');
+      expect(target.listRuns.length, 2);
+      expect(target.listRuns[0].kind, SpanListKind.bullet);
+      expect(target.listRuns[1].kind, SpanListKind.todo);
+    });
+  });
 }

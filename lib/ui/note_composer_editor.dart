@@ -13,7 +13,13 @@ import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../doc/rich_text.dart'
-    show InlineMark, MediaSuffix, classifyMediaUrl, spanChangeRange;
+    show
+        InlineMark,
+        MediaSuffix,
+        SpanListKind,
+        SpanListRun,
+        classifyMediaUrl,
+        spanChangeRange;
 import '../share/attachments.dart'
     show MediaTrashSession, copyToAppDir, resolveLocalMediaSrc, toLocalMediaUrl;
 import '../share/note_composer.dart'
@@ -157,6 +163,10 @@ enum _VideoSource { album, camera }
 /// ——悬浮球迁顶层 Stack 全域拖动，不再占常驻行位）。作曲层滚动视口底边
 /// 按它上移让位——改这里必须同步考虑光标让位。
 const double kComposerToolLayerHeight = 48;
+
+/// 列表凹槽宽（文本段左侧画 • / 待办勾选框的留白）。**只有含列表行的文本段**
+/// 才启用（无列表段直接返回原 TextField，保持既有排版逐像素不变）。
+const double kListGutterWidth = 28;
 
 /// 撤销文字连击合并窗（连续输入合并为一步）与快照栈深上限。
 const Duration kUndoCoalesce = Duration(milliseconds: 800);
@@ -1417,7 +1427,7 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     // 焦点链冒泡必经此处；软键盘删无可删时 Android 嵌入层转发 KEYCODE_DEL
     // 平台键事件，硬件键盘同路。挂节点自身 onKeyEvent 会被 TextField 内部
     // 焦点处理覆盖/绕过——真机与测试双双实证）。
-    return Focus(
+    final field = Focus(
       canRequestFocus: false,
       skipTraversal: true,
       onKeyEvent: (node, event) => _segKeyGate(seg, event),
@@ -1448,6 +1458,131 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
         style: Theme.of(context).textTheme.bodyLarge,
       ),
     );
+    // 列表/待办行才加左侧凹槽（无列表段直接原样返回，排版零变化）。
+    return _withListGutter(seg, field);
+  }
+
+  /// 列表凹槽：一行是一个列表项，标记必须**逐行对齐正文**——单个 TextField
+  /// 无法内嵌可点勾选框（`buildSpanTextSpan` 加字形会让光标几何错位），故
+  /// 用左侧凹槽 + 镜像 `TextPainter` 量出每行 Y 后画 • / 勾选框。
+  ///
+  /// ⚠️ 校平依赖：凹槽 Y = 镜像 TextPainter 的行顶 + 文本框 `contentPadding`
+  /// 纵向值（Insets.xs）。换行较宽的行若插入宽度与真实输入框存在水平余量差，
+  /// 行 Y 会漂移——需真机验证（本机无设备），详见 epic devlog。
+  Widget _withListGutter(NoteTextSeg seg, Widget field) {
+    if (seg.spans.listRuns.isEmpty) return field;
+    return LayoutBuilder(
+      builder: (context, cons) {
+        if (!cons.maxWidth.isFinite) return field;
+        final fieldW = (cons.maxWidth - kListGutterWidth).clamp(0.0, double.maxFinite);
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: kListGutterWidth,
+              child: ListenableBuilder(
+                listenable: seg.ctrl,
+                builder: (context, _) => _listMarkers(seg, fieldW),
+              ),
+            ),
+            Expanded(child: field),
+          ],
+        );
+      },
+    );
+  }
+
+  /// 凹槽内标记列：按 [fieldW] 镜像排版，逐行定位 • / 待办勾选框。
+  Widget _listMarkers(NoteTextSeg seg, double fieldW) {
+    final scheme = Theme.of(context).colorScheme;
+    final base = Theme.of(context).textTheme.bodyLarge;
+    final plain = seg.ctrl.text;
+    final painter = TextPainter(
+      text: TextSpan(text: plain, style: base),
+      textDirection: Directionality.of(context),
+      maxLines: null,
+    )..layout(maxWidth: fieldW);
+    final metrics = painter.computeLineMetrics();
+    if (metrics.isEmpty) return const SizedBox.shrink();
+    // 逐**逻辑行**单独排版：本 Flutter 版 LineMetrics 无 start/end 偏移
+    //（只有 hardBreak/height/baseline…），故按整段量出的视觉行拿不到行号映射。
+    // 改为逐层单独的 TextPainter：每行行顶=之前各行高累加，行高=该行 p.height
+    //（内含其所有软换行视觉行）。同风格下行高一致，与输入框整体排版等价。
+    final lines = plain.split('\n');
+    final tops = <double>[]; // 每个逻辑行的行顶
+    final heights = <double>[]; // 该逻辑行总高（含软换行）
+    final dir = Directionality.of(context);
+    var probe = 0.0;
+    for (final l in lines) {
+      final p = TextPainter(
+        text: TextSpan(text: l, style: base),
+        textDirection: dir,
+        maxLines: null,
+      )..layout(maxWidth: fieldW);
+      tops.add(probe);
+      heights.add(p.height);
+      probe += p.height;
+    }
+    final totalHeight = probe;
+    return SizedBox(
+      width: kListGutterWidth,
+      height: totalHeight,
+      child: Stack(
+        children: [
+          for (final r in seg.spans.listRuns)
+            () {
+              final safeStart = r.start.clamp(0, plain.length);
+              final logical = '\n'.allMatches(plain.substring(0, safeStart)).length;
+              if (logical >= tops.length) return const SizedBox.shrink();
+              return Positioned(
+                left: 0,
+                right: 0,
+                // 行盒内垂直居中：占位高=该逻辑行行高
+                height: heights[logical],
+                top: tops[logical] + Insets.xs,
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: r.kind == SpanListKind.todo
+                      ? IconButton(
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          iconSize: 20,
+                          onPressed: () => _toggleTodo(seg, r),
+                          icon: Icon(
+                            r.done
+                                ? Icons.check_box
+                                : Icons.check_box_outline_blank,
+                            color: r.done ? scheme.primary : scheme.onSurfaceVariant,
+                          ),
+                          tooltip: r.done ? '标记未完成' : '标记完成',
+                        )
+                      : Icon(
+                          Icons.fiber_manual_record,
+                          size: 8,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                ),
+              );
+            }(),
+        ],
+      ),
+    );
+  }
+
+  /// 待办勾选切换：只翻 [listRuns] 的 done（结构随 Tag 走），不动正文——
+  /// 序列化时落成 `- [x]` / `- [ ]`，与详情页阅读态同一口径。
+  void _toggleTodo(NoteTextSeg seg, SpanListRun target) {
+    final runs = seg.spans.listRuns;
+    final i = runs.indexOf(target);
+    if (i < 0) return;
+    final old = runs[i];
+    seg.spans.listRuns = [
+      for (var k = 0; k < runs.length; k++)
+        if (k == i) SpanListRun(old.start, old.end, old.kind, done: !old.done)
+        else runs[k],
+    ];
+    _notifyDirty(track: false);
+    if (mounted) setState(() {});
   }
 
   /// 媒体段卡片：本体预览（与阅读态同源组件）+ 右上角移除按钮。
@@ -1772,6 +1907,49 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     );
   }
 
+  /// 「导入 Markdown」弹框（2026-10-06 拍板）：用户在**受控输入框**里粘贴/输入
+  /// md 片段 → [seedQuickNote] 解析成无标记所见即所得态 → [insertSeededSpans]
+  /// 插入当前段光标处。选此口而非钩粘贴的目的：绕开 `EditableText` 粘贴链路
+  ///（键盘 Ctrl+V 与移动端长按菜单两条路径、`TextInputFormatter` 只拿纯文本
+  /// 拿不到 runs 结构），转换时机由用户显式触发，桌面/移动行为完全一致。
+  Future<void> _openMdImport() async {
+    final text = await showDialog<String>(
+      context: context,
+      // 独立 widget 自持控制器：退场动画期间 TextField 仍可达控制器，故生命
+      // 周期必须跟 dialog 自身（挂在这里 dispose 会「use after disposed」）。
+      builder: (ctx) => const _MdImportDialog(),
+    );
+    final md = text?.trim();
+    if (md == null || md.isEmpty || !mounted) return;
+    _insertSeededFragment(md);
+  }
+
+  /// 把 md 片段解析后插入当前文本段光标处（或替换选区）：全维度坐标合并
+  ///（runs/levelRuns/listRuns 随窗随动）。
+  void _insertSeededFragment(String md) {
+    final seg = _activeText;
+    if (seg == null) return;
+    final frag = seedQuickNote(md);
+    if (frag.plain.isEmpty) return;
+    final sel = seg.ctrl.selection;
+    final len = seg.spans.plain.length;
+    final at = (sel.isValid ? sel.start : len).clamp(0, len);
+    final replaceEnd = (sel.isValid ? sel.end : at).clamp(at, len);
+    _beginStructuralStep(); // 导入=结构变更，记一步撤销
+    // ⚠️ 顺序红线：先整整更新段状态（spans），再写控制器文本——
+    // [_onSegChanged] 以 `oldPlain = seg.spans.plain` 判插入新行，若先写 ctrl
+    // 会让多行片段被误判为「敲进来的换行」而逐行拆成独立段。
+    insertSeededSpans(seg.spans, frag, at, replaceEnd: replaceEnd);
+    final caret = (at + frag.plain.length).clamp(0, seg.spans.plain.length);
+    seg.ctrl
+      ..text = seg.spans.plain
+      ..selection = TextSelection.collapsed(offset: caret);
+    seg.spans.selBase = caret;
+    seg.spans.selExtent = caret;
+    _notifyDirty(track: false);
+    if (mounted) setState(() {});
+  }
+
   /// 动作行：拍照 / 相册 / 录音 / 视频（/ 标签——速记条启用）。
   /// 拍照与相册是**就地插图**；视频入口收敛为二选一面板（相册首位）。
   Widget _actionRow(ColorScheme scheme) {
@@ -1811,6 +1989,11 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
             icon: const Icon(Icons.movie_creation_outlined),
             tooltip: '视频插入',
           ),
+          IconButton(
+            onPressed: _sending ? null : _openMdImport,
+            icon: const Icon(Icons.note_add_outlined),
+            tooltip: '导入 Markdown 片段',
+          ),
           if (showTags)
             IconButton(
               onPressed: _sending ? null : _pickTags,
@@ -1839,6 +2022,67 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
             const Spacer(),
         ],
       ),
+    );
+  }
+}
+
+/// 「导入 Markdown」弹框本体（2026-10-06 拍板）：自持 TextEditingController，
+/// 生命周期跟随 dialog 自身——避免在宿主侧 dispose 后、退场动画仍在读数导致
+/// 「used after being disposed」。
+///
+/// 受控输入框是**刻意的**（不钩系统粘贴）：md 片段走 [seedQuickNote] 显式
+/// 解析，桌面/移动两条粘贴链路（Ctrl+V / 长按菜单）语义统一，零歧义。
+class _MdImportDialog extends StatefulWidget {
+  const _MdImportDialog();
+
+  @override
+  State<_MdImportDialog> createState() => _MdImportDialogState();
+}
+
+class _MdImportDialogState extends State<_MdImportDialog> {
+  late final TextEditingController _ctl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctl = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _ctl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('导入 Markdown'),
+      content: TextField(
+        controller: _ctl,
+        autofocus: true,
+        minLines: 4,
+        maxLines: 10,
+        keyboardType: TextInputType.multiline,
+        textAlignVertical: TextAlignVertical.top,
+        decoration: const InputDecoration(
+          border: OutlineInputBorder(),
+          alignLabelWithHint: true,
+          hintText:
+              '粘贴或输入 Markdown 片段…\n'
+              '支持 # 标题、**粗体**、- 列表、- [ ] 待办',
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context, _ctl.text),
+          child: const Text('导入'),
+        ),
+      ],
     );
   }
 }
