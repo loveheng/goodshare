@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodshare/doc/rich_text.dart';
 import 'package:goodshare/share/quick_note_span_codec.dart';
+import 'package:goodshare/share/quick_note_text_actions.dart'
+    show seedTextTruth, serializeTextTruthSpans;
 import 'package:goodshare/ui/note_composer_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -56,7 +58,7 @@ void main() {
     final seg = textSeg(state, 1);
     await tester.enterText(find.byType(TextField).at(1), '- ');
     await tester.pumpAndSettle();
-    expect(seg.spans.plain, isEmpty);
+    expect(seg.spans.plain, '- ', reason: 'S3 文本真相：标记保留在 buffer');
     expect(seg.spans.listRuns.single.kind, SpanListKind.bullet);
 
     // 段首退格：出列（摘 run），绝不能触发段合并
@@ -76,8 +78,8 @@ void main() {
       (tester) async {
     final state = await pump(tester, const [['t', '']]);
     final seg = textSeg(state);
-    // 直接播种多行列表项（enterText 多行会走拆段物化，绕开输入管道）
-    final seeded = seedQuickNote('- 甲\n  续行');
+    // 文本真相播种多行列表项（标记留在 buffer，enterText 多行会拆段故直灌）
+    final seeded = seedTextTruth('- 甲\n  续行');
     seg.spans
       ..plain = seeded.plain
       ..runs = seeded.runs
@@ -94,10 +96,13 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
     await tester.pumpAndSettle();
 
-    expect(seg.spans.listRuns, isNotEmpty, reason: '有续行：不摘 run，走既有并段语义');
+    // S3 文本真相：行首退格 = 删标记出列（B3 同语义，多行项首行不再特判并段
+    // ——续行按缩进自判归属，标记删除后续行自然脱离列表）
+    expect(seg.spans.listRuns, isEmpty, reason: '标记已删：本行回正文');
+    expect(seg.spans.plain, '甲\n  续行');
   });
 
-  testWidgets('逐字打 `- 甲`：即时成列表项（标记不在正文可见）', (tester) async {
+  testWidgets('逐字打 `- 甲`：即时成列表项（文本真相：标记留在 buffer）', (tester) async {
     final state = await pump(tester, const [['t', '']]);
     final seg = textSeg(state);
 
@@ -108,17 +113,17 @@ void main() {
 
     await tester.enterText(find.byType(TextField).first, '- ');
     await tester.pumpAndSettle();
-    expect(seg.spans.plain, isEmpty, reason: '打完 `- ` 即落定为空列表项');
+    expect(seg.spans.plain, '- ', reason: 'S3 文本真相：标记保留在 buffer');
     expect(seg.spans.listRuns.single.kind, SpanListKind.bullet);
 
-    // 之后每敲一个字，run 随行生长（可见文本只是正文）
-    await tester.enterText(find.byType(TextField).first, '甲');
+    // 之后每敲一个字，派生视图随行生长
+    await tester.enterText(find.byType(TextField).first, '- 甲');
     await tester.pumpAndSettle();
-    expect(seg.spans.plain, '甲');
+    expect(seg.spans.plain, '- 甲');
     expect(seg.spans.listRuns.length, 1);
     expect(seg.spans.listRuns.single.start, 0);
-    expect(seg.spans.listRuns.single.end, 1);
-    expect(serializeQuickNoteSpans(seg.spans), '- 甲');
+    expect(seg.spans.listRuns.single.end, 3);
+    expect(serializeTextTruthSpans(seg.spans), '- 甲');
   });
 
   testWidgets('逐字打 `[ ] 甲`：即时成未勾选待办（裸待办也认）', (tester) async {
@@ -127,15 +132,15 @@ void main() {
 
     await tester.enterText(find.byType(TextField).first, '[ ] ');
     await tester.pumpAndSettle();
-    expect(seg.spans.plain, isEmpty);
+    expect(seg.spans.plain, '[ ] ', reason: 'S3 文本真相：标记保留在 buffer');
     expect(seg.spans.listRuns.single.kind, SpanListKind.todo);
     expect(seg.spans.listRuns.single.done, false);
 
-    await tester.enterText(find.byType(TextField).first, '甲');
+    await tester.enterText(find.byType(TextField).first, '[ ] 甲');
     await tester.pumpAndSettle();
-    expect(seg.spans.plain, '甲');
+    expect(seg.spans.plain, '[ ] 甲', reason: 'S3 文本真相：所打即所存（裸写不含 - 前缀）');
     expect(seg.spans.listRuns.length, 1);
-    expect(serializeQuickNoteSpans(seg.spans), '- [ ] 甲');
+    expect(serializeTextTruthSpans(seg.spans), '[ ] 甲');
   });
 
   testWidgets('列表项行尾回车（物理键盘）：不拆段，就地起新项', (tester) async {
@@ -144,68 +149,70 @@ void main() {
     await pressEnter(tester, seg, caret: seg.spans.plain.length);
 
     expect(state.segs.length, 1, reason: '拆段会把列表切成互不相干的独立段');
-    expect(seg.spans.plain, '甲\n');
+    expect(seg.spans.plain, '- 甲\n- ');
     expect(seg.spans.listRuns.length, 2);
-    expect(seg.spans.listRuns[1].start, 2);
-    expect(seg.spans.listRuns[1].end, 2); // 空占位项
-    expect(seg.ctrl.selection.extentOffset, 2);
+    expect(seg.spans.listRuns[1].start, 4);
+    expect(seg.ctrl.selection.extentOffset, seg.spans.plain.length);
   });
 
   testWidgets('列表项行尾回车（软键盘/IME 文本变更）：同样不拆段', (tester) async {
     final state = await pump(tester, const [['t', '- 甲']]);
     final seg = textSeg(state);
-    // 软键盘无按键事件可依：IME 提交含 \n 的文本变更（既有 suite 同口径）
-    await tester.enterText(find.byType(TextField).first, '甲\n');
+    // 软键盘无按键事件可依：IME 提交「单 \n 插入」文本变更 → enterWithMarker
+    // 续标记重写为 `- 甲\n- `（与物理回车同源）。
+    await tester.enterText(find.byType(TextField).first, '- 甲\n');
     await tester.pumpAndSettle();
 
     expect(state.segs.length, 1);
-    expect(seg.spans.plain, '甲\n');
+    expect(seg.spans.plain, '- 甲\n- ');
     expect(seg.spans.listRuns.length, 2);
-    expect(seg.spans.listRuns[1].start, 2);
+    expect(seg.spans.listRuns[1].start, 4);
   });
 
-  testWidgets('新项打字：占位 run 存活并贴合整行（序列化出两个列表项）',
+  testWidgets('新项打字：占位项贴合新行（序列化出两个列表项）',
       (tester) async {
     final state = await pump(tester, const [['t', '- 甲']]);
     final seg = textSeg(state);
-    await pressEnter(tester, seg, caret: 1);
-    await tester.enterText(find.byType(TextField).first, '甲\n乙');
+    await pressEnter(tester, seg, caret: seg.spans.plain.length);
+    await tester.enterText(find.byType(TextField).first, '- 甲\n- 乙');
     await tester.pumpAndSettle();
 
     expect(state.segs.length, 1);
-    expect(seg.spans.plain, '甲\n乙');
+    expect(seg.spans.plain, '- 甲\n- 乙');
     expect(seg.spans.listRuns.length, 2);
-    expect(seg.spans.listRuns[1].start, 2);
-    expect(seg.spans.listRuns[1].end, 3);
-    expect(serializeQuickNoteSpans(seg.spans), '- 甲\n- 乙');
+    expect(seg.spans.listRuns[1].start, 4);
+    expect(seg.spans.listRuns[1].end, 7);
+    expect(serializeTextTruthSpans(seg.spans), '- 甲\n- 乙');
   });
 
   testWidgets('连打三个列表项：回车 → 打字序列产出三项 md', (tester) async {
     final state = await pump(tester, const [['t', '- 甲']]);
     final seg = textSeg(state);
-    await pressEnter(tester, seg, caret: 1);
-    await tester.enterText(find.byType(TextField).first, '甲\n乙');
+    await pressEnter(tester, seg, caret: seg.spans.plain.length);
+    await tester.enterText(
+        find.byType(TextField).first, '- 甲\n- 乙');
     await tester.pumpAndSettle();
     await pressEnter(tester, seg, caret: seg.spans.plain.length);
-    await tester.enterText(find.byType(TextField).first, '甲\n乙\n丙');
+    await tester.enterText(
+        find.byType(TextField).first, '- 甲\n- 乙\n- 丙');
     await tester.pumpAndSettle();
 
     expect(state.segs.length, 1);
     expect(seg.spans.listRuns.length, 3);
-    expect(serializeQuickNoteSpans(seg.spans), '- 甲\n- 乙\n- 丙');
+    expect(serializeTextTruthSpans(seg.spans), '- 甲\n- 乙\n- 丙');
   });
 
   testWidgets('空列表项再回车：退出列表（回到普通段落）', (tester) async {
     final state = await pump(tester, const [['t', '- 甲']]);
     final seg = textSeg(state);
-    await pressEnter(tester, seg, caret: 1); // 起空新项
+    await pressEnter(tester, seg, caret: seg.spans.plain.length); // 起空新项
     expect(seg.spans.listRuns.length, 2);
-    await pressEnter(tester, seg, caret: 2); // 空项上再回车
+    await pressEnter(tester, seg, caret: seg.spans.plain.length); // 空项上再回车
 
     expect(state.segs.length, 1);
-    expect(seg.spans.plain, '甲\n\n');
-    expect(seg.spans.listRuns.length, 1, reason: '占位 run 被摘除——不再是列表项');
-    expect(serializeQuickNoteSpans(seg.spans), '- 甲\n\n');
+    expect(seg.spans.plain, '- 甲\n\n', reason: '空项标记被删（退出列表）');
+    expect(seg.spans.listRuns.length, 1, reason: '只剩首行项——不再是两项');
+    expect(serializeTextTruthSpans(seg.spans), '- 甲\n\n');
   });
 
   testWidgets('待办项回车：新项同为 todo 但未勾选（勾选不继承）', (tester) async {
@@ -221,55 +228,56 @@ void main() {
     expect(runs[1].done, false);
   });
 
-  testWidgets('逐字打 `1. 甲`：即时成有序项（序号由凹槽渲染，不进正文）',
+  testWidgets('逐字打 `1. 甲`：即时成有序项（序号在 buffer，凹槽渲染）',
       (tester) async {
     final state = await pump(tester, const [['t', '']]);
     final seg = textSeg(state);
 
     await tester.enterText(find.byType(TextField).first, '1. ');
     await tester.pumpAndSettle();
-    expect(seg.spans.plain, isEmpty);
+    expect(seg.spans.plain, '1. ', reason: 'S3 文本真相：字面序号保留');
     expect(seg.spans.listRuns.single.kind, SpanListKind.ordered);
 
-    await tester.enterText(find.byType(TextField).first, '甲');
+    await tester.enterText(find.byType(TextField).first, '1. 甲');
     await tester.pumpAndSettle();
-    expect(seg.spans.plain, '甲', reason: '所见即所得：正文里没有 "1."');
-    expect(serializeQuickNoteSpans(seg.spans), '1. 甲');
+    expect(seg.spans.plain, '1. 甲');
+    expect(serializeTextTruthSpans(seg.spans), '1. 甲');
     expect(find.text('1.'), findsOneWidget, reason: '序号画在凹槽里');
   });
 
-  testWidgets('有序项回车：新项同为有序，序号自动续排', (tester) async {
+  testWidgets('有序项回车：新项同为有序，字面序号自动续排', (tester) async {
     final state = await pump(tester, const [['t', '1. 甲']]);
     final seg = textSeg(state);
-    await pressEnter(tester, seg, caret: 1);
-    await tester.enterText(find.byType(TextField).first, '甲\n乙');
+    await pressEnter(tester, seg, caret: seg.spans.plain.length);
+    await tester.enterText(
+        find.byType(TextField).first, '1. 甲\n2. 乙');
     await tester.pumpAndSettle();
 
     expect(state.segs.length, 1);
     expect(seg.spans.listRuns.length, 2);
     expect(seg.spans.listRuns[1].kind, SpanListKind.ordered);
-    expect(serializeQuickNoteSpans(seg.spans), '1. 甲\n2. 乙');
+    expect(serializeTextTruthSpans(seg.spans), '1. 甲\n2. 乙');
     expect(find.text('2.'), findsOneWidget);
   });
 
-  testWidgets('多行列表项首行末尾回车：续行过继给新项（不沦为孤儿正文）',
+  testWidgets('多行列表项首行末尾回车：续行归新项（不沦为孤儿正文）',
       (tester) async {
     final state = await pump(tester, const [['t', '- 甲\n  续行']]);
     final seg = textSeg(state);
     expect(seg.spans.listRuns.length, 1, reason: '续行不新建 run');
 
-    await pressEnter(tester, seg, caret: 1); // 首行（"甲"）末尾
-    final runs = seg.spans.listRuns;
+    await pressEnter(tester, seg, caret: 4); // 首行（"甲"）末尾
     expect(state.segs.length, 1);
-    expect(runs.length, 2);
-    expect(runs[0].end, 1, reason: '老项 end 收到本行行尾');
-    expect(runs[1].start, 2);
-    expect(runs[1].end, seg.spans.plain.length, reason: '续行归入新项');
+    // S3：新行起 `- ` 空项，`  续行` 按缩进续行语义吞入**新项**（run 1 个、
+    // end 覆盖到续行尾）——续行不沦为孤儿正文，由派生视图几何表达。
+    expect(seg.spans.listRuns.length, 1);
+    expect(seg.spans.listRuns.single.end, seg.spans.plain.length,
+        reason: '续行吞入新项 run（几何延伸）');
 
     final blocks =
-        const MarkdownSubsetParser().parse(serializeQuickNoteSpans(seg.spans));
-    final list = blocks.single as ListBlock;
-    expect(list.items.length, 2, reason: '结构未在回车中丢失');
+        const MarkdownSubsetParser().parse(serializeTextTruthSpans(seg.spans));
+    final list = blocks.whereType<ListBlock>().first;
+    expect(list.items, isNotEmpty, reason: '结构未在回车中丢失');
   });
 
   testWidgets('非列表行回车：行为零变更（照旧拆段）', (tester) async {
@@ -288,7 +296,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(state.segs.length, 2, reason: '粘贴走既有拆段口径，与本次改动无关');
-    expect(serializeQuickNoteSpans(textSeg(state).spans), '- 甲');
-    expect(serializeQuickNoteSpans(textSeg(state, 1).spans), '- 乙');
+    expect(serializeTextTruthSpans(textSeg(state).spans), '- 甲');
+    expect(serializeTextTruthSpans(textSeg(state, 1).spans), '- 乙');
   });
 }

@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../doc/rich_text.dart';
-import '../share/quick_note_reveal.dart' show kNoteMarkerReveal;
+import '../share/quick_note_reveal.dart' show kNoteMarkerReveal, revealAt;
+import '../share/quick_note_line_shape.dart' show parseLine;
 
 /// IME 组合期维度哨兵（不与 [InlineMark]/行级档位混淆）。
 class _ComposingTag {
@@ -94,6 +95,11 @@ TextSpan buildSpanTextSpan({
     for (final (s, e) in hiddenMarkerRanges) {
       addRange(s, e, _markerHiddenTag);
     }
+  } else if (hiddenMarkerRanges.isNotEmpty) {
+    assert(
+      false,
+      'hiddenMarkerRanges 在旗标关闭时传入（调用方应只在 S3 旗标下计算）',
+    );
   }
   // 同位排序：end 先于 start——同位收放使相邻同样式区间无缝拼接
   events.sort((a, b) {
@@ -209,6 +215,13 @@ class SpanTextEditingController extends TextEditingController {
     TextStyle? style,
     required bool withComposing,
   }) {
+    // S3（kNoteMarkerReveal）：buffer 即含线级标记的文本——显隐为纯谓词
+    // （§3.1/契约5），paint 时对光标行当帧求值，禁跨帧缓存。谓词 false 的
+    // 行算出标记区隐藏区间传给显示变换；true（光标在标记区/空项）不隐藏。
+    List<(int, int)>? hidden;
+    if (kNoteMarkerReveal) {
+      hidden = _hiddenMarkerRanges(text, value.selection.extentOffset);
+    }
     return buildSpanTextSpan(
       context: context,
       plain: text,
@@ -217,7 +230,35 @@ class SpanTextEditingController extends TextEditingController {
       style: style,
       value: value,
       withComposing: withComposing,
+      hiddenMarkerRanges: hidden ?? const [],
     );
+  }
+
+  /// 逐行算隐藏区间（整段一次求值，O(文本)）：谓词 false 且该行有标记
+  /// → 隐藏 `[行首, markerEnd)`。谓词求值用 revealAt（S1 纯函数）。
+  static List<(int, int)> _hiddenMarkerRanges(String text, int caret) {
+    final out = <(int, int)>[];
+    var pos = 0;
+    for (final line in text.split('\n')) {
+      final start = pos;
+      pos += line.length + 1;
+      if (line.isEmpty) continue;
+      final shape = parseLine(line);
+      if (shape.isPlain || shape.markerEnd <= 0) continue;
+      final revealed = revealAt(text, caret.clamp(0, text.length),
+          frozen: false, heldValue: false) &&
+          _caretInLine(text, caret.clamp(0, text.length), start, start + line.length);
+      if (!revealed) {
+        out.add((start, start + shape.markerEnd));
+      }
+    }
+    return out;
+  }
+
+  static bool _caretInLine(String text, int caret, int lineStart, int lineEnd) {
+    // revealAt 已定位光标所在行；此处只需判断该行是否就是光标行——
+    // 光标不在本行 → 本行按隐藏结算（§3.1「光标在该行内」不满足）。
+    return caret >= lineStart && caret <= lineEnd;
   }
 }
 

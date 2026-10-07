@@ -15,9 +15,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../doc/rich_text.dart'
     show
         InlineMark,
+        InlineRun,
         MediaSuffix,
         SpanListKind,
         SpanListRun,
+        adjustRuns,
         classifyMediaUrl,
         spanChangeRange;
 import '../share/attachments.dart'
@@ -32,7 +34,15 @@ import '../share/note_composer.dart'
 import '../share/note_video_policy.dart';
 import '../share/quick_note_span_codec.dart';
 import '../share/quick_note_text_actions.dart'
-    show backspaceOutdent, enterWithMarker, toggleTodo;
+    show
+        TextActionResult,
+        backspaceOutdent,
+        deriveLineRuns,
+        enterWithMarker,
+        seedTextTruth,
+        serializeTextTruthSpans,
+        setLineLevel,
+        toggleTodo;
 import '../share/quick_note_reveal.dart' show kNoteMarkerReveal;
 import 'audio_playback_service.dart';
 import 'audio_record_sheet.dart';
@@ -110,7 +120,8 @@ class NoteComposerEditor extends StatefulWidget {
 sealed class NoteSeg {}
 
 class NoteTextSeg extends NoteSeg {
-  NoteTextSeg([String text = '']) : spans = seedQuickNote(text) {
+  NoteTextSeg([String text = ''])
+    : spans = kNoteMarkerReveal ? seedTextTruth(text) : seedQuickNote(text) {
     // 活引用：排版时取 spans 最新 runs/levelRuns（拆分时替换 spans 对象，
     // 闭包自动跟随——无陈旧窗口，与详情页同一机制）
     ctrl = SpanTextEditingController(
@@ -120,11 +131,11 @@ class NoteTextSeg extends NoteSeg {
     );
   }
 
-  /// 所见即所得段状态（2026-10-03 速记同源化拍板）：plain = 编辑区唯一文本
-  /// （无 md 标记），runs/levelRuns 纯文本坐标。控制器文本与 [spans.plain]
-  /// 恒同源（变更点成对更新）；序列化出口后移至保存/落草稿时
-  ///（serializeQuickNoteSpans）。媒体插入拆段时整体替换本对象——
-  /// runsProvider 活闭包自动跟随。
+  /// 所见即所得段状态（2026-10-03 速记同源化拍板）：plain = 编辑区唯一文本。
+  /// S3 文本真相下 plain 含线级标记（`- `/`# `），行级身份由 deriveLineRuns
+  /// 派生视图表达（文本变更后重派生）；runs（行内样式）仍坐标模型（§8）。
+  /// 控制器文本与 [spans.plain] 恒同源（变更点成对更新）；序列化出口后移至
+  /// 保存/落草稿时。媒体插入拆段时整体替换本对象——runsProvider 活闭包自动跟随。
   QuickNoteSpans spans;
 
   final FocusNode focus = FocusNode();
@@ -207,7 +218,13 @@ const double _hubSize = 48;
 List<List<String>> noteSegsToDraftRows(List<NoteSeg> segs) => [
   for (final s in segs)
     switch (s) {
-      NoteTextSeg(:final spans) => ['t', serializeQuickNoteSpans(spans)],
+      NoteTextSeg(:final spans) => [
+        't',
+        // S3 文本真相：序列化 = 恒等 + 有序规整；旧路径走 run 重建
+        kNoteMarkerReveal
+            ? serializeTextTruthSpans(spans)
+            : serializeQuickNoteSpans(spans),
+      ],
       NoteMediaSeg(:final url, :final label, kind: NoteMediaKind.image) =>
         label.isEmpty ? ['i', url] : ['i', url, label],
       NoteMediaSeg(:final url, :final label, kind: NoteMediaKind.audio) =>
@@ -223,7 +240,9 @@ List<NoteSegment> noteSegsToNoteSegments(List<NoteSeg> segs) => [
   for (final s in segs)
     switch (s) {
       NoteTextSeg(:final spans) => NoteTextSegment(
-        serializeQuickNoteSpans(spans),
+        kNoteMarkerReveal
+            ? serializeTextTruthSpans(spans)
+            : serializeQuickNoteSpans(spans),
       ),
       NoteMediaSeg(:final url, :final label, kind: NoteMediaKind.image) =>
         NoteImageSegment(url, alt: label),
@@ -808,9 +827,9 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
       return KeyEventResult.ignored;
     }
     // 段首退格落在**空列表项**（B3 拍板 2026-10-07）：出列摘圆点回普通段落，
-    // 不并入上一段——用户想删的是标记，不是把两段拼一起。旗标无关（旧模型
-    // 的 run 摘除，文本真相版由 backspaceOutdent 承接同语义）。
-    if (v.selection.extentOffset == 0 && _exitEmptyListItem(seg)) {
+    // 不并入上一段——用户想删的是标记，不是把两段拼一起。旧模型走 run 摘除；
+    // 文本真相下标记在文本里，由下方 backspaceOutdent 分支删前缀承接同语义。
+    if (!kNoteMarkerReveal && v.selection.extentOffset == 0 && _exitEmptyListItem(seg)) {
       return KeyEventResult.handled;
     }
     // S3 旗标门控（§6）：行首退格出列/退挡——光标塌缩在标记行行首（前一字符
@@ -829,6 +848,7 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
             ..plain = r.text
             ..selBase = r.caret
             ..selExtent = r.caret;
+          deriveLineRuns(seg.spans);
           _notifyDirty(track: false);
           if (mounted) setState(() {});
           return KeyEventResult.handled;
@@ -876,6 +896,7 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
           ..plain = r.text
           ..selBase = r.caret
           ..selExtent = r.caret;
+        deriveLineRuns(seg.spans);
         _notifyDirty(track: false);
         if (mounted) setState(() {});
         return KeyEventResult.handled;
@@ -1015,6 +1036,26 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
         inserted == '\n' &&
         !(value.composing.isValid && !value.composing.isCollapsed) &&
         _isListLineAt(seg, start)) {
+      if (kNoteMarkerReveal) {
+        // S3 文本真相：与物理回车同源——去掉 IME 已插入的 \n，交给
+        // enterWithMarker 统一决定（续标记/空项退出），再写回。
+        _beginStructuralStep(asTextEdit: true);
+        final base = value.text.replaceRange(start, start + 1, '');
+        final r = enterWithMarker(base, start);
+        final result = r ?? TextActionResult(value.text, start + 1);
+        seg.ctrl
+          ..text = result.text
+          ..selection = TextSelection.collapsed(offset: result.caret);
+        seg.spans
+          ..plain = result.text
+          ..selBase = result.caret
+          ..selExtent = result.caret;
+        deriveLineRuns(seg.spans);
+        if (_activeMarks.isNotEmpty) _activeMarks.clear();
+        _notifyDirty(track: false);
+        setState(() {});
+        return;
+      }
       _applyListEnter(seg, caret: start, text: value.text);
       if (_activeMarks.isNotEmpty) _activeMarks.clear();
       _notifyDirty(track: false);
@@ -1036,6 +1077,31 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     }
     // 换行熄灭：本次变更新插入换行 → 行内 mark 自动清空、新行回正文
     // 防下一段无意继承粗体（先选后打状态机：mark 生命周期止于本行）。
+    if (kNoteMarkerReveal) {
+      // S3 文本真相输入路径：行内 runs 字符级随动（plain 含线级标记，runs
+      // 同坐标系），行级身份由派生视图重算——level/list 坐标随动层退役。
+      final (s0, e0) = spanChangeRange(oldPlain, value.text);
+      final insLen = value.text.length - oldPlain.length + (e0 - s0);
+      seg.spans.runs = adjustRuns(
+        seg.spans.runs,
+        s0,
+        e0,
+        insLen,
+      );
+      if (insLen > 0) {
+        for (final m in _activeMarks) {
+          seg.spans.runs.add(InlineRun(s0, s0 + insLen, m));
+        }
+      }
+      seg.spans.plain = value.text;
+      deriveLineRuns(seg.spans);
+      seg.spans.selBase = value.selection.baseOffset;
+      seg.spans.selExtent = value.selection.extentOffset;
+      // 文本真相下「打字落定」由派生视图自动表达（`- ` 留在文本里即列表项
+      // ——convert/extend 两枚 retrofit 无对象，退役）。
+      _notifyDirty(textEdit: true, changedSeg: seg);
+      return;
+    }
     applyQuickNoteSpansInput(seg.spans, value.text, active: _activeMarks);
     seg.spans.selBase = value.selection.baseOffset;
     seg.spans.selExtent = value.selection.extentOffset;
@@ -1095,6 +1161,12 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
       tail.ctrl
         ..text = r.plain
         ..selection = const TextSelection.collapsed(offset: 0);
+      // S3 文本真相：拆段后的段级 run 视图来自整段派生坐标的机械拆分，
+      // 重派生保证与各自 plain 逐行贴合（标记留在所在行，不跨段失真）。
+      if (kNoteMarkerReveal) {
+        deriveLineRuns(cur.spans);
+        deriveLineRuns(tail.spans);
+      }
       final idx = _segs.indexOf(cur);
       _segs.insert(idx + 1, tail);
       base = k + 1;
@@ -1334,6 +1406,26 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     final seg = _activeText?.spans;
     if (seg == null) return;
     _beginStructuralStep();
+    // S3 旗标门控（§6）：文本真相——行首写/删 `# ` 前缀；旧路径走 run 换挡。
+    if (kNoteMarkerReveal) {
+      final caret = seg.selExtent;
+      final r = setLineLevel(seg.plain, caret, level);
+      if (r != null) {
+        final active = _activeText!;
+        active.ctrl
+          ..text = r.text
+          ..selection = TextSelection.collapsed(offset: r.caret);
+        seg
+          ..plain = r.text
+          ..selBase = r.caret
+          ..selExtent = r.caret;
+        deriveLineRuns(seg);
+      }
+      _activeText?.focus.requestFocus();
+      _notifyDirty(track: false);
+      if (mounted) setState(() {});
+      return;
+    }
     setState(() => setQuickNoteLevel(seg, level, caret: seg.selExtent));
     _activeText?.focus.requestFocus();
     _notifyDirty(track: false);
@@ -1788,6 +1880,7 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
           ..plain = r.text
           ..selBase = r.caret
           ..selExtent = r.caret;
+        deriveLineRuns(seg.spans);
         _notifyDirty(track: false);
         if (mounted) setState(() {});
         return;

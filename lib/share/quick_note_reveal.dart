@@ -7,9 +7,11 @@ import 'quick_note_line_shape.dart';
 /// ⚠️ S1 阶段 buffer 尚无标记（S3 才切文本真相），本模块先行落地机制 +
 /// 单测钉住 §3.3 全场景表；行为激活点 = S3（[kNoteMarkerReveal] 旗标）。
 
-/// S3 切换旗标：false = 旧渲染路径（现状，标记永不进 buffer）；true = 文本
-/// 真相 + 标记显隐。S1–S2 期间恒 false，S3 翻转（唯一不可逆点，见 §6）。
-const bool kNoteMarkerReveal = false;
+/// S3 切换旗标：**已翻转（2026-10-07，唯一不可逆点 §6）**——buffer 即含线级
+/// 标记的文本，输入端坐标随动退役（convert/extend/adjust* 家族无对象），
+/// 行级身份走 deriveLineRuns 派生视图，显隐判据激活。翻转前门禁：S0–S2
+/// 全量测试零回归 + 机制单测就位（已达成）；翻转后真机 dogfood 验收 §7。
+const bool kNoteMarkerReveal = true;
 
 /// 冻结 latch（§3.2 稳定态结算）：连续手势期间显隐沿用**进入前状态**，
 /// 抬手/静止后才按谓词重新结算。有界：只有两个可变字段，手势结束即复位，

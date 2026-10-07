@@ -170,8 +170,8 @@ void main() {
       expect(a, b);
     });
 
-    test('S3 旗标现状关闭（S1–S2 零行为变更门禁）', () {
-      expect(kNoteMarkerReveal, isFalse);
+    test('S3 旗标已翻转（唯一不可逆点已过，显隐判据激活）', () {
+      expect(kNoteMarkerReveal, isTrue);
     });
 
     test('markerEnd 与 LineShape 同源（判据消费单次解析）', () {

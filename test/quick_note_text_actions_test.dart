@@ -26,9 +26,9 @@ void main() {
       expect(r.text, '3. 甲\n4. ');
     });
 
-    test('空列表项回车：退出列表（删标记，新行正文）', () {
+    test('空列表项回车：退出列表（标记换成换行，新行正文）', () {
       final r = enterWithMarker('- \n- 乙', 2)!;
-      expect(r.text, '\n- 乙');
+      expect(r.text, '\n\n- 乙');
       expect(r.caret, 0);
     });
 
@@ -147,9 +147,74 @@ void main() {
     });
   });
 
+  group('S3 文本真相三件套（seedTextTruth/deriveLineRuns/serializeTextTruthSpans）', () {
+    group('派生视图与旧 run 等价（deriveLineRuns vs seedQuickNote）', () {
+      test('派生 run 语义序列与旧播种一致；坐标贴合含标记 plain 的行边界', () {
+        const samples = [
+          '# 甲\n正文\n- 乙\n  续\n- [x] 丙\n2. 丁\n',
+          '甲\n# 一级\n## 二级\n',
+          '- 甲\n- 乙\n\n- 丙\n',
+        ];
+        for (final md in samples) {
+          final old = seedQuickNote(md);
+          final neu = seedTextTruth(md);
+          // 语义序列：kind/done/level 逐 run 一致（坐标系统不同，几何不比）
+          expect(neu.levelRuns.map((r) => r.level),
+              old.levelRuns.map((r) => r.level), reason: md);
+          expect(neu.listRuns.map((r) => (r.kind, r.done)),
+              old.listRuns.map((r) => (r.kind, r.done)), reason: md);
+          // 几何：每个派生 run 贴合含标记 plain 的某一行边界（start=行首）
+          final lines = neu.plain.split('\n');
+          var pos = 0;
+          final starts = <int>{};
+          for (final l in lines) {
+            starts.add(pos);
+            pos += l.length + 1;
+          }
+          for (final r in neu.levelRuns) {
+            expect(starts.contains(r.start), isTrue, reason: md);
+          }
+          for (final r in neu.listRuns) {
+            expect(starts.contains(r.start), isTrue, reason: md);
+          }
+          // 续行吞入口径：listRun.end ≥ 首行正文尾（多行项时覆盖续行）
+          expect(neu.listRuns.length, old.listRuns.length, reason: md);
+        }
+      });
+
+      test('seed 后 plain = 原文剥行内标记、保留线级标记', () {
+        expect(seedTextTruth('- **甲**\n# 乙').plain, '- 甲\n# 乙');
+      });
+    });
+
+    group('序列化字节等价（serializeTextTruthSpans vs 旧出口，存量口径）', () {
+      String oldPath(String md) => serializeQuickNoteSpans(seedQuickNote(md));
+
+      test('存量草稿样本：新序列化（恒等+规整）== 旧序列化', () {
+        const samples = [
+          '# 甲\n正文 **粗**\n',
+          '- 甲\n- 乙\n',
+          '- [ ] 待办\n- [x] 已办\n',
+          '1. 甲\n2. 乙\n- 丙\n5. 丁\n',
+          '- 甲\n  续行\n2. 乙\n',
+          '普通行\n',
+        ];
+        for (final md in samples) {
+          final neu = serializeTextTruthSpans(seedTextTruth(md));
+          expect(neu, oldPath(md), reason: '字节等价失败：$md');
+        }
+      });
+
+      test('行内样式：粗体 run 在含标记文本上往返不变形', () {
+        final s = seedTextTruth('- **甲乙**\n');
+        expect(serializeTextTruthSpans(s), '- **甲乙**\n');
+      });
+    });
+  });
+
   group('normalizeOrderedNumbers 细节', () {
-    test('S2 门禁：S3 旗标仍关闭（编辑器默认走旧路径，§6 只加不改）', () {
-      expect(kNoteMarkerReveal, isFalse);
+    test('S3 门禁：旗标已翻转（文本真相生效，旧路径退役）', () {
+      expect(kNoteMarkerReveal, isTrue);
     });
 
     test('断组归零：非列表行隔开两组各自从 1 起', () {
