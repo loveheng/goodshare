@@ -8,7 +8,7 @@ import '../doc/rich_text.dart'
         inlineSpansOf,
         serializeInline;
 import 'quick_note_line_shape.dart';
-import 'quick_note_span_codec.dart' show QuickNoteSpans;
+import 'quick_note_span_codec.dart' show QuickNoteSpans, SpanCodeRun;
 
 /// S2 L1 结构动作·文本真相版（note-editor-source-of-truth.md §4.2 / §6）：
 /// 回车续标记 / 行首退格出列 / 勾选翻转——**一律写真实文本**（标记本就在
@@ -210,12 +210,27 @@ void deriveLineRuns(QuickNoteSpans s) {
   final lines = s.plain.split('\n');
   final levels = <SpanLevelRun>[];
   final lists = <SpanListRun>[];
+  final codes = <SpanCodeRun>[];
   var pos = 0;
+  var fenceStart = -1; // 开栏行首偏移；-1 = 不在围栏内
   for (final line in lines) {
     final start = pos;
     final end = pos + line.length;
     pos = end + 1;
     final shape = parseLine(line);
+    // 围栏状态机优先（与解析器 _FenceSyntax 同语义：栏内一切行都是代码，
+    // 不再认标题/列表/引用；合栏行收区域）
+    if (fenceStart >= 0) {
+      if (shape.isFence) {
+        codes.add(SpanCodeRun(fenceStart, end)); // 合栏行含入区域
+        fenceStart = -1;
+      }
+      continue;
+    }
+    if (shape.isFence) {
+      fenceStart = start; // 开栏行含入区域
+      continue;
+    }
     if (shape.isHeading) {
       levels.add(SpanLevelRun(start, end, shape.level));
     } else if (shape.isList) {
@@ -227,8 +242,13 @@ void deriveLineRuns(QuickNoteSpans s) {
           SpanListRun(last.start, end, last.kind, done: last.done);
     }
   }
+  // 未合栏：区域延伸到文本末（与解析器「未闭合按到文末」同口径）
+  if (fenceStart >= 0) {
+    codes.add(SpanCodeRun(fenceStart, s.plain.length));
+  }
   s.levelRuns = levels;
   s.listRuns = lists;
+  s.codeRuns = codes;
 }
 
 /// 序列化·文本真相版：QuickNoteSpans → md。线级标记本就在 plain 里，

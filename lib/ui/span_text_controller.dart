@@ -28,6 +28,20 @@ class _LevelTag {
   String toString() => 'level:$level';
 }
 
+/// 围栏代码块哨兵（S4，与 buildSpanTextSpan 的 codeRuns 配套）：等宽 + 底色，
+/// 与阅读态代码块同质感（surfaceContainerHighest）。
+class _CodeTag {
+  const _CodeTag();
+  @override
+  bool operator ==(Object other) => other is _CodeTag;
+  @override
+  int get hashCode => 0;
+  @override
+  String toString() => 'code';
+}
+
+const Object _codeTag = _CodeTag();
+
 /// 标记区隐藏哨兵（S1 显示变换，[kNoteMarkerReveal] 激活）：隐藏态下标记区
 /// 字符零宽渲染——buffer 坐标不变（契约：单坐标系，§4.5），仅显示收起。
 class _MarkerHiddenTag {
@@ -57,6 +71,7 @@ TextSpan buildSpanTextSpan({
   required TextEditingValue value,
   required bool withComposing,
   List<(int, int)> hiddenMarkerRanges = const [],
+  List<(int, int)> codeRanges = const [],
 }) {
   final base = style ?? const TextStyle();
   if (plain.isEmpty) return TextSpan(text: plain, style: base);
@@ -100,6 +115,10 @@ TextSpan buildSpanTextSpan({
       false,
       'hiddenMarkerRanges 在旗标关闭时传入（调用方应只在 S3 旗标下计算）',
     );
+  }
+  // S4 围栏代码块区域：等宽 + 底色（区间由调用方传派生视图，本函数不解析）
+  for (final (s, e) in codeRanges) {
+    addRange(s, e, _codeTag);
   }
   // 同位排序：end 先于 start——同位收放使相邻同样式区间无缝拼接
   events.sort((a, b) {
@@ -152,6 +171,12 @@ TextSpan buildSpanTextSpan({
         );
       } else if (identical(m, _composingTag)) {
         seg = seg.copyWith(decoration: TextDecoration.underline);
+      } else if (identical(m, _codeTag)) {
+        // 围栏代码块（S4）：等宽 + 底色容器质感，与阅读态同源（rich_text_view）。
+        seg = seg.copyWith(
+          fontFamily: 'monospace',
+          backgroundColor: scheme.surfaceContainerHighest,
+        );
       } else if (identical(m, _markerHiddenTag)) {
         // 标记区隐藏（§4.5）：S1 机制阶段取「占宽隐藏」回退方案——纯透明
         // 渲染、保留宽度（R7：不动字号）；零宽版是否必要留 S3 真机定夺。
@@ -201,6 +226,7 @@ class SpanTextEditingController extends TextEditingController {
     required String text,
     required this.runsProvider,
     this.levelRunsProvider,
+    this.codeRangesProvider,
   }) : super(text: text);
 
   /// 行内样式 runs 供给（纯文本坐标）。
@@ -208,6 +234,9 @@ class SpanTextEditingController extends TextEditingController {
 
   /// 行级档位 runs 供给（速记行标题用；详情页块级标题走 base style，不用）。
   final List<SpanLevelRun> Function()? levelRunsProvider;
+
+  /// 围栏代码块区域供给（S4 派生视图；null = 不渲染代码块样式）。
+  final List<(int, int)> Function()? codeRangesProvider;
 
   @override
   TextSpan buildTextSpan({
@@ -231,6 +260,7 @@ class SpanTextEditingController extends TextEditingController {
       value: value,
       withComposing: withComposing,
       hiddenMarkerRanges: hidden ?? const [],
+      codeRanges: codeRangesProvider?.call() ?? const [],
     );
   }
 

@@ -99,7 +99,7 @@ void main() {
 
   group('非标记行与边界', () {
     test('普通正文、空串、缩进正文 → plain，markerEnd=0', () {
-      for (final line in ['甲乙丙', '', '  甲', '> 引用', '---', '```dart']) {
+      for (final line in ['甲乙丙', '', '  甲', '---']) {
         final s = parseLine(line);
         expect(s.isPlain, isTrue, reason: '"$line" 应为 plain');
         expect(s.markerEnd, 0);
@@ -107,10 +107,15 @@ void main() {
       }
     });
 
-    test('引用/代码块/分隔线本版不认（S4 扩 kind），落 plain', () {
-      expect(parseLine('> 甲').isPlain, isTrue);
-      expect(parseLine('```').isPlain, isTrue);
-      expect(parseLine('***').isPlain, isTrue);
+    test('S4 起：引用/围栏行识别（与解析器 _quote/_fence 同源）；分隔线仍 plain', () {
+      final q = parseLine('> 甲');
+      expect(q.isQuote, isTrue);
+      expect(q.markerEnd, 2);
+      final f = parseLine('```dart');
+      expect(f.isFence, isTrue);
+      expect(f.markerEnd, 7);
+      expect(parseLine('```').isFence, isTrue);
+      expect(parseLine('***').isPlain, isTrue, reason: '分隔线是块级语法，行内不认');
     });
 
     test('标题与列表互斥：标题优先（# 后带 - 前缀内容仍归标题）', () {

@@ -16,6 +16,15 @@ import '../doc/rich_text.dart' show SpanListKind;
 /// 自 `quick_note_span_codec.dart` 迁入（S0 纯搬迁，正则文本未改）。
 final RegExp headingRe = RegExp(r'^(#{1,6})\s+');
 
+/// 引用标记（与解析器 `_quote` `^\s*>\s?` 同源）：捕获标记区含尾随一个可选
+/// 空格，正文起点 = end。
+final RegExp quoteRe = RegExp(r'^\s*>\s?');
+
+/// 围栏行（与解析器 `_fence` `^```(\w*)\s*$` 同源）：开栏/合栏同一正则，
+/// 围栏状态机在 [parseLine] 的消费方（deriveLineRuns）维护。语言标注属
+/// 标记区一部分（凹槽/显隐不显示它，正文渲染按围栏样式）。
+final RegExp fenceRe = RegExp(r'^```(\w*)\s*$');
+
 /// 行首列表标记（与解析器 `_bullet` / `_ordered` / `_todo` **同源**）：
 /// - 无序：`[-*] ` 起手；
 /// - 有序：`<数字>[.)] ` 起手——读刮与详情页同一 grammar（`N. ` / `N) `）；
@@ -42,7 +51,6 @@ class ListMarker {
 }
 
 /// 剥骨架：[listRe] → 语义化标记；无标记返回 null。
-///
 /// ⚠️ `done` 只能来自**尚未转换的行文本**（此时勾选框还在文本里）；一旦转换
 /// 完成，`done` 便只存活于上层状态——重扫必须自既有状态继承，禁止再从文本反推。
 /// 自 `quick_note_span_codec.dart` 迁入（S0 纯搬迁，逻辑未改）。
@@ -63,7 +71,7 @@ ListMarker? listMarkerOf(String line) {
 }
 
 /// 单行形状种类。
-enum LineKind { plain, heading, list }
+enum LineKind { plain, heading, list, quote, fence }
 
 /// 单行解析结果（纯值对象）：一行只有一种身份（标题 ⊻ 列表 ⊻ 正文），
 /// 类型层面即互斥——旧模型「levelRuns/listRuns 平行列表 + 注释声明互斥」的
@@ -85,6 +93,18 @@ class LineShape {
     : kind = LineKind.list,
       level = 0;
 
+  const LineShape.quote(this.markerEnd)
+    : kind = LineKind.quote,
+      level = 0,
+      listKind = null,
+      done = false;
+
+  const LineShape.fence(this.markerEnd)
+    : kind = LineKind.fence,
+      level = 0,
+      listKind = null,
+      done = false;
+
   final LineKind kind;
 
   /// 标题档位（1–6）；仅 [LineKind.heading] 有意义。
@@ -103,6 +123,8 @@ class LineShape {
   bool get isPlain => kind == LineKind.plain;
   bool get isHeading => kind == LineKind.heading;
   bool get isList => kind == LineKind.list;
+  bool get isQuote => kind == LineKind.quote;
+  bool get isFence => kind == LineKind.fence;
 
   /// 正文片段（标记区之后的内容）；纯文本行即整行。
   String bodyOf(String line) => markerEnd <= 0
@@ -125,6 +147,14 @@ LineShape parseLine(String line) {
   final mk = listMarkerOf(line);
   if (mk != null) {
     return LineShape.list(mk.kind, mk.done, mk.end);
+  }
+  final q = quoteRe.firstMatch(line);
+  if (q != null) {
+    return LineShape.quote(q.end);
+  }
+  final f = fenceRe.firstMatch(line);
+  if (f != null) {
+    return LineShape.fence(f.end);
   }
   return const LineShape.plain();
 }

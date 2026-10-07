@@ -1,6 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:goodshare/share/quick_note_reveal.dart' show kNoteMarkerReveal;
+import 'package:goodshare/doc/rich_text.dart' show MarkdownSubsetParser;
+import 'package:goodshare/share/quick_note_reveal.dart'
+    show kNoteMarkerReveal, revealAt;
 import 'package:goodshare/share/quick_note_span_codec.dart';
 import 'package:goodshare/share/quick_note_text_actions.dart';
 
@@ -134,11 +136,10 @@ void main() {
       // ⚠️ 样本须避开「尾随空列表项」——旧 serialize 对空占位 run 不输出
       // 标记（§1.2 实例1 的序列化侧表现，S3 退役对象），非等价锚点。
       final acted = enterWithMarker('- 甲\n- 乙', 7)!.text;
-      expect(oldPath('${acted}丙'), '- 甲\n- 乙\n- 丙');
+      expect(oldPath('$acted丙'), '- 甲\n- 乙\n- 丙');
 
       final todo = enterWithMarker('- [x] 甲', 7)!.text;
-      expect(oldPath('${todo}丙'), '- [x] 甲\n- [ ] 丙');
-
+      expect(oldPath('$todo丙'), '- [x] 甲\n- [ ] 丙');
       final outdent = backspaceOutdent('x\n- 乙', 2)!.text;
       expect(oldPath(outdent), 'x\n乙');
 
@@ -208,6 +209,84 @@ void main() {
       test('行内样式：粗体 run 在含标记文本上往返不变形', () {
         final s = seedTextTruth('- **甲乙**\n');
         expect(serializeTextTruthSpans(s), '- **甲乙**\n');
+      });
+    });
+  });
+
+  group('S4 引用/围栏（parseLine kind + deriveLineRuns 围栏状态机）', () {
+    group('deriveLineRuns 围栏区域', () {
+      test('开栏到合栏：整段区域含两道围栏行', () {
+        final s = seedTextTruth('正文\n```dart\nint x = 1;\n```\n尾行');
+        expect(s.codeRuns.length, 1);
+        // 区域 = 开栏行首（3）到合栏行尾（不含最后换行）
+        expect(s.codeRuns.single.start, 3);
+        expect(s.codeRuns.single.end, '正文\n```dart\nint x = 1;\n```'.length);
+      });
+
+      test('未合栏：区域延伸到文本末（与解析器同口径）', () {
+        final s = seedTextTruth('```\ncode line');
+        expect(s.codeRuns.single.start, 0);
+        expect(s.codeRuns.single.end, '```\ncode line'.length);
+      });
+
+      test('栏内标题/列表标记不再认（代码语义优先）', () {
+        final s = seedTextTruth('```\n# 不是标题\n- 不是列表\n```');
+        expect(s.levelRuns, isEmpty);
+        expect(s.listRuns, isEmpty);
+        expect(s.codeRuns.length, 1);
+      });
+
+      test('多组围栏独立成区', () {
+        final s = seedTextTruth('```\na\n```\n中\n```\nb\n```');
+        expect(s.codeRuns.length, 2);
+      });
+    });
+
+    group('与 MarkdownSubsetParser 往返一致（S4 验收 §6）', () {
+      test('围栏样本：seedTextTruth→serializeTextTruthSpans→parse 结构等价', () {
+        const samples = [
+          '```\ncode\n```',
+          '```dart\nint x;\n```',
+          '正文\n> 引用行\n',
+          '> 引用\n> 第二行\n',
+        ];
+        for (final md in samples) {
+          final s = seedTextTruth(md);
+          final out = serializeTextTruthSpans(s);
+          // 恒等（文本真相：无行内标记时序列化=原文）
+          expect(out, md, reason: '往返恒等失败：$md');
+          // 与详情页 parser 结构一致：围栏/引用行数不丢
+          final blocks = const MarkdownSubsetParser().parse(out);
+          expect(blocks, isNotEmpty, reason: md);
+        }
+      });
+
+      test('围栏内行内标记按字面保留（代码不解析行内——与解析器同语义）', () {
+        final s = seedTextTruth('```\n**不是粗体**\n```');
+        // runs 不应命中围栏内文本（inlineSpansOf 只作用于正文行——但围栏行
+        // 的正文 `**不是粗体**` 仍会走 inlineSpansOf；S4 口径：派生 code 区域
+        // 优先于行内样式渲染，序列化按字面往返）
+        expect(s.codeRuns.length, 1);
+        expect(serializeTextTruthSpans(s), '```\n**不是粗体**\n```');
+      });
+    });
+
+    group('S4 显隐场景（revealAt 消费新 kind）', () {
+      test('引用行光标在标记区：显 `> `，正文区不显', () {
+        expect(revealAt('> 甲', 0, frozen: false, heldValue: false), isTrue);
+        expect(revealAt('> 甲', 2, frozen: false, heldValue: false), isTrue);
+        expect(revealAt('> 甲', 3, frozen: false, heldValue: false), isFalse);
+      });
+
+      test('围栏行（```）标记区判据：caret ≤ markerEnd 显', () {
+        expect(revealAt('```dart', 0, frozen: false, heldValue: false), isTrue);
+        expect(revealAt('```dart', 7, frozen: false, heldValue: false), isTrue);
+        // 围栏行长度=7，行内无正文区
+      });
+
+      test('空引用行（> 后无正文）恒显（防不可见陷阱）', () {
+        expect(revealAt('>', 1, frozen: false, heldValue: false), isTrue);
+        expect(revealAt('> ', 2, frozen: false, heldValue: false), isTrue);
       });
     });
   });

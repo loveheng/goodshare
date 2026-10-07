@@ -19,20 +19,35 @@ class QuickNoteSpans {
     List<InlineRun>? runs,
     List<SpanLevelRun>? levelRuns,
     List<SpanListRun>? listRuns,
+    List<SpanCodeRun>? codeRuns,
     this.selBase = 0,
     this.selExtent = 0,
   })  : runs = runs ?? <InlineRun>[],
         levelRuns = levelRuns ?? <SpanLevelRun>[],
-        listRuns = listRuns ?? <SpanListRun>[];
+        listRuns = listRuns ?? <SpanListRun>[],
+        codeRuns = codeRuns ?? <SpanCodeRun>[];
 
   String plain;
   List<InlineRun> runs;
   List<SpanLevelRun> levelRuns;
   List<SpanListRun> listRuns;
 
+  /// 围栏代码块区域（S4 派生视图，deriveLineRuns 维护）：`​```​` 开栏到合栏
+  /// （含两道围栏行）的整段区间——渲染等宽+底色，文本真相下不参与任何随动。
+  List<SpanCodeRun> codeRuns;
+
   /// 选择区（base/extent，与 TextSelection 同义，纯 int 免 Flutter 依赖）。
   int selBase;
   int selExtent;
+}
+
+/// 围栏代码块区域 run（S4）：[start, end) 覆盖开栏行首到合栏行尾（含围栏行
+/// 本体；未合栏则到文本末）。派生视图，坐标随文本派生，永不手写。
+class SpanCodeRun {
+  const SpanCodeRun(this.start, this.end);
+
+  final int start;
+  final int end;
 }
 
 /// 播种：md 原文（旧草稿 / 粘贴源）→ plain + runs + 行级 runs（所见即所得态）。

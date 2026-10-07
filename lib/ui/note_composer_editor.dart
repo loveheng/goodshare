@@ -128,6 +128,9 @@ class NoteTextSeg extends NoteSeg {
       text: spans.plain,
       runsProvider: () => spans.runs,
       levelRunsProvider: () => spans.levelRuns,
+      codeRangesProvider: () => [
+        for (final c in spans.codeRuns) (c.start, c.end),
+      ],
     );
   }
 
