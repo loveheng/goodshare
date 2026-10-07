@@ -47,6 +47,56 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  testWidgets('B3：空列表项段首退格 = 出列摘圆点，不并入上一段', (tester) async {
+    // 两段：前段有正文，后段是空列表项（用户敲完 `- ` 还没打字）
+    final state = await pump(tester, const [
+      ['t', '前一段'],
+      ['t', ''],
+    ]);
+    final seg = textSeg(state, 1);
+    await tester.enterText(find.byType(TextField).at(1), '- ');
+    await tester.pumpAndSettle();
+    expect(seg.spans.plain, isEmpty);
+    expect(seg.spans.listRuns.single.kind, SpanListKind.bullet);
+
+    // 段首退格：出列（摘 run），绝不能触发段合并
+    seg.focus.requestFocus();
+    seg.ctrl.selection = const TextSelection.collapsed(offset: 0);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+    await tester.pumpAndSettle();
+
+    expect(state.segs.length, 2, reason: '不并段：段数不变');
+    expect((state.segs[0] as NoteTextSeg).spans.plain, '前一段',
+        reason: '前段内容不被吞并');
+    expect(seg.spans.listRuns, isEmpty, reason: '占位 run 已摘除');
+  });
+
+  testWidgets('B3：多行项首行段首退格不走出列（有续行，保持并段语义）',
+      (tester) async {
+    final state = await pump(tester, const [['t', '']]);
+    final seg = textSeg(state);
+    // 直接播种多行列表项（enterText 多行会走拆段物化，绕开输入管道）
+    final seeded = seedQuickNote('- 甲\n  续行');
+    seg.spans
+      ..plain = seeded.plain
+      ..runs = seeded.runs
+      ..levelRuns = seeded.levelRuns
+      ..listRuns = seeded.listRuns;
+    seg.ctrl.text = seeded.plain;
+    await tester.pumpAndSettle();
+    expect(seg.spans.listRuns.single.end, greaterThan(2),
+        reason: '续行被吞入同一 run');
+
+    seg.focus.requestFocus();
+    seg.ctrl.selection = const TextSelection.collapsed(offset: 0);
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+    await tester.pumpAndSettle();
+
+    expect(seg.spans.listRuns, isNotEmpty, reason: '有续行：不摘 run，走既有并段语义');
+  });
+
   testWidgets('逐字打 `- 甲`：即时成列表项（标记不在正文可见）', (tester) async {
     final state = await pump(tester, const [['t', '']]);
     final seg = textSeg(state);

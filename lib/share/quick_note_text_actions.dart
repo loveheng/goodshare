@@ -80,12 +80,13 @@ TextActionResult? enterWithMarker(String text, int caret) {
 
 /// 行首退格（文本真相版，对应旧「行首退格出列/退挡」）：
 ///
-/// - 光标塌缩在**标记行行首**：删掉本行标记（出列回正文），`\n` 不动；
+/// - 光标塌缩在**标记行行首**（[caret]==0 即文本首行行首，或前一字符为 `\n`）：
+///   删掉本行标记（出列回正文），`\n` 不动；
 /// - 否则返回 null（并行/删字符归既有文本变更路径）。
 TextActionResult? backspaceOutdent(String text, int caret) {
-  if (caret <= 0 || caret > text.length) return null;
-  // 行首判定：caret 前一个字符是 \n（或 caret 是文本首——首行行首无列可出）
-  if (text.codeUnitAt(caret - 1) != 0x0A) return null;
+  if (caret < 0 || caret > text.length) return null;
+  // 行首判定：caret 是文本首（首行行首）或前一个字符是 \n
+  if (caret != 0 && text.codeUnitAt(caret - 1) != 0x0A) return null;
   final range = _lineRangeAt(text, caret);
   if (range == null) return null;
   final (start, end) = range;

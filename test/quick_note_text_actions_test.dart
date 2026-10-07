@@ -68,6 +68,16 @@ void main() {
     test('纯文本行行首退格：null', () {
       expect(backspaceOutdent('甲\n乙', 2), isNull);
     });
+
+    test('文本首行行首退格（caret==0）：删标记出列', () {
+      final r = backspaceOutdent('- 甲', 0)!;
+      expect(r.text, '甲');
+      expect(r.caret, 0);
+    });
+
+    test('caret==0 但首行是纯文本：null（首行无列可出）', () {
+      expect(backspaceOutdent('甲\n- 乙', 0), isNull);
+    });
   });
 
   group('toggleTodo（勾选翻转）', () {

@@ -807,6 +807,12 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     if (!v.selection.isCollapsed || v.composing.isValid && !v.composing.isCollapsed) {
       return KeyEventResult.ignored;
     }
+    // 段首退格落在**空列表项**（B3 拍板 2026-10-07）：出列摘圆点回普通段落，
+    // 不并入上一段——用户想删的是标记，不是把两段拼一起。旗标无关（旧模型
+    // 的 run 摘除，文本真相版由 backspaceOutdent 承接同语义）。
+    if (v.selection.extentOffset == 0 && _exitEmptyListItem(seg)) {
+      return KeyEventResult.handled;
+    }
     // S3 旗标门控（§6）：行首退格出列/退挡——光标塌缩在标记行行首（前一字符
     // 为 \n）时删标记回正文；否则放行既有逻辑（段首合并/原生删字符）。
     if (kNoteMarkerReveal) {
@@ -891,6 +897,27 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
   bool _isListLineAt(NoteTextSeg seg, int caret) {
     final line = quickNoteLineRangeAt(seg.spans, caret);
     return line != null && quickNoteListRunAt(seg.spans, line.$1) != null;
+  }
+
+  /// 段首退格落在**空列表项**：出列——摘掉本行占位 run 回普通段落，不并段
+  /// （B3 拍板 2026-10-07：用户想删的是标记，不是把两段拼一起）。
+  ///
+  /// 判据：光标塌缩段首（=0）∧ 本行是列表首行 ∧ 该 run 只覆盖本行（无续行
+  /// ——有续行说明是「多行项首行」，退格应走既有并段续接语义，不摘）。
+  /// 返回是否已消费该退格。
+  bool _exitEmptyListItem(NoteTextSeg seg) {
+    final line = quickNoteLineRangeAt(seg.spans, 0);
+    if (line == null) return false;
+    final run = quickNoteListRunAt(seg.spans, line.$1);
+    if (run == null || run.end > line.$2) return false; // 非空项/有续行
+    _beginStructuralStep(asTextEdit: true);
+    seg.spans.listRuns = [
+      for (final r in seg.spans.listRuns)
+        if (!identical(r, run)) r,
+    ];
+    _notifyDirty(track: false);
+    if (mounted) setState(() {});
+    return true;
   }
 
   /// 列表回车的统一实现（物理键盘与软键盘两条入口共用）：[text] 已含新插入的
