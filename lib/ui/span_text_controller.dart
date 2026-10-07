@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../doc/rich_text.dart';
+import '../share/quick_note_reveal.dart' show kNoteMarkerReveal;
 
 /// IME 组合期维度哨兵（不与 [InlineMark]/行级档位混淆）。
 class _ComposingTag {
@@ -26,6 +27,16 @@ class _LevelTag {
   String toString() => 'level:$level';
 }
 
+/// 标记区隐藏哨兵（S1 显示变换，[kNoteMarkerReveal] 激活）：隐藏态下标记区
+/// 字符零宽渲染——buffer 坐标不变（契约：单坐标系，§4.5），仅显示收起。
+class _MarkerHiddenTag {
+  const _MarkerHiddenTag();
+  @override
+  String toString() => 'markerHidden';
+}
+
+const Object _markerHiddenTag = _MarkerHiddenTag();
+
 /// span 样式渲染（原生单控件派核心）：由纯文本 + 样式维度构建带样式的
 /// TextSpan 树，注入 TextField 自身渲染管线——文字、光标、选择柄、换行
 /// **同一次排版**，结构性消灭叠层位移（英文粗体字宽差不再累积偏移）。
@@ -44,6 +55,7 @@ TextSpan buildSpanTextSpan({
   TextStyle? style,
   required TextEditingValue value,
   required bool withComposing,
+  List<(int, int)> hiddenMarkerRanges = const [],
 }) {
   final base = style ?? const TextStyle();
   if (plain.isEmpty) return TextSpan(text: plain, style: base);
@@ -74,6 +86,13 @@ TextSpan buildSpanTextSpan({
     final c = value.composing;
     if (c.isValid && !c.isCollapsed) {
       addRange(c.start, c.end, _composingTag);
+    }
+  }
+  // S1 显示变换（kNoteMarkerReveal 旗标门控，S3 激活）：隐藏态标记区零宽
+  // 渲染——区间由调用方（L1 显隐判据）传入，本函数不做解析（性能红线）。
+  if (kNoteMarkerReveal) {
+    for (final (s, e) in hiddenMarkerRanges) {
+      addRange(s, e, _markerHiddenTag);
     }
   }
   // 同位排序：end 先于 start——同位收放使相邻同样式区间无缝拼接
@@ -127,6 +146,14 @@ TextSpan buildSpanTextSpan({
         );
       } else if (identical(m, _composingTag)) {
         seg = seg.copyWith(decoration: TextDecoration.underline);
+      } else if (identical(m, _markerHiddenTag)) {
+        // 标记区隐藏（§4.5）：S1 机制阶段取「占宽隐藏」回退方案——纯透明
+        // 渲染、保留宽度（R7：不动字号）；零宽版是否必要留 S3 真机定夺。
+        seg = seg.copyWith(
+          color: const Color(0x00000000),
+          decoration: TextDecoration.none,
+          backgroundColor: const Color(0x00000000),
+        );
       }
     }
     return seg;
