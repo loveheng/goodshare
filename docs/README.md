@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-03
+updated: 2026-10-07
 ---
 
 # docs/ 结构索引
@@ -32,6 +32,7 @@ updated: 2026-10-03
 - [rich-text-gfm.md](design/rich-text-gfm.md) — 富文本 GFM 渲染收编与 AI 写入原则设计稿（draft 待拍板）：AI 写入三层处理链（引导/映射/R1 告知）、格式全量镜像对照表（与 rich_text.dart 同源）、GFM 收编语法实现契约（粗斜体/删除线/高亮/表格/自动链接/行内码防回溯方案）与渲染标准；自 quick-note-format-dial.md §3-§4 拆出。
 - [ai-writeback-revert.md](design/ai-writeback-revert.md) — AI 写回可逆与用户接管设计稿（active 2026-10-04）：单基线快照三件套（`human_md_baseline` 锚点 + `doc_meta_json.ai_session_state` 短枚举 + `ai_revisions` 有界日志表）、AI_PENDING/RESTORED/CLOSED 状态机、1.5s settle 接管判定（生命周期强制 flush + 显式按钮取消计时器的竞态防护）、只读 Inline Diff 与接管 Toast / 极简历史面板。与 rich-text-gfm.md 互补——那稿管「写入质量」，本稿管「写入后的可控性」。
 - [note-editor-unification.md](design/note-editor-unification.md) — 编辑器统一（active 2026-10-03）：详情编辑切换到速记作曲器形态（NoteComposerEditor 唯一编辑器）、human_md→草稿行转换（noteMdToDraftRows 字面保留裁决）、媒体替换钩子与 EditSession/FormatToolbar 废弃口径。
+- [note-editor-source-of-truth.md](design/note-editor-source-of-truth.md) — 速记行级结构迁移方案（draft，线级结构裁决覆盖 note-editor-unification §2.1）：把「文本 + 坐标双真相、靠手写同步」的根因收敛为「文本即 md 单一真相源」（退役 seed/adjust/split/merge/serialize 同步层、持久化零迁移）、有序重排归属（L2 推导不进 buffer §2.4）、标记显隐策略（前缀邻近判据 + 稳定态结算、buffer 单坐标系 §4.5、含回删跨行不露场景表）、L1 活跃行即时层 / L2 全局渲染层契约（显隐=纯谓词+有界 latch）、B/N 两组风险与 S0–S4 迁移阶段门禁。
 - [quick-note-draft.md](design/quick-note-draft.md) — 速记条草稿持久化方案蓝本（draft 未实现）：QuickNoteBar 接入既有 drafts 表/DraftController 基建（防抖+退后台 flush+结构变更即写），static 内存草稿退役，进程被杀重开原样恢复（含媒体段）。
 - [detail-visual-hierarchy.md](design/detail-visual-hierarchy.md) — 详情页视觉层级方案蓝本（draft 未实现）：灵感区分区头统一换 SectionLegendCard 骑框签（消两套分区语言）、区块间距调档、便签标题槽显示规则（无标题显创建时间绝对格式、用户标题优先、不回写 human_title）；水平留白丢失 bug 已修复（空 SliverPadding 死代码）。
 - [detail-two-zone.md](design/detail-two-zone.md) — 详情页两区改版与区块能力平台设计：公共区/灵感区分工、区块能力分发（ContentCapability 自声明 + CapabilityChain 任务链）、单卡链式能力卡（不嵌套）、分享分流（截图 PNG / PDF 兜底）。
