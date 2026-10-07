@@ -419,7 +419,29 @@ Widget _buildListItem(
 ) {
   final theme = Theme.of(context);
   final scheme = theme.colorScheme;
-  final text = inlineToPlain(item.inline);
+  final style = _bodyStyle(theme, serif);
+  final text = item.lines.map(inlineToPlain).join('\n');
+
+  Widget buildLine(List<InlineNode> lineNodes, {bool strike = false}) =>
+      Text.rich(
+        _spans(
+          context,
+          lineNodes,
+          style.copyWith(
+            decoration: strike ? TextDecoration.lineThrough : null,
+            color: strike ? scheme.onSurfaceVariant : null,
+          ),
+        ),
+      );
+
+  final children = <Widget>[
+    buildLine(item.lines.first),
+    for (final line in item.lines.skip(1))
+      Padding(
+        padding: const EdgeInsets.only(left: 8),
+        child: buildLine(line),
+      ),
+  ];
 
   if (item.done != null) {
     final done = todoDone?.call(text) ?? (item.done ?? false);
@@ -442,18 +464,7 @@ Widget _buildListItem(
               visualDensity: VisualDensity.compact,
             ),
             const SizedBox(width: Insets.sm),
-            Expanded(
-              child: Text.rich(
-                _spans(
-                  context,
-                  item.inline,
-                  _bodyStyle(theme, serif).copyWith(
-                    decoration: done ? TextDecoration.lineThrough : null,
-                    color: done ? scheme.onSurfaceVariant : null,
-                  ),
-                ),
-              ),
-            ),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: children)),
           ],
         ),
       ),
@@ -467,17 +478,10 @@ Widget _buildListItem(
         width: 20,
         child: Text(
           marker,
-          style: _bodyStyle(
-            theme,
-            serif,
-          ).copyWith(color: scheme.onSurfaceVariant),
+          style: style.copyWith(color: scheme.onSurfaceVariant),
         ),
       ),
-      Expanded(
-        child: Text.rich(
-          _spans(context, item.inline, _bodyStyle(theme, serif)),
-        ),
-      ),
+      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: children)),
     ],
   );
 }

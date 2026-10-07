@@ -23,7 +23,7 @@ String blockEditText(RichBlock block) => switch (block) {
       QuoteBlock(:final children) => serializeBlocks(children),
       CodeBlock(:final code) => code,
       ListBlock() when block.items.length == 1 =>
-        serializeInline(block.items.first.inline),
+        _editTextOfItem(block.items.first),
       ListBlock() => serializeBlock(block),
       DividerBlock() => '',
       // 媒体块编辑的是 alt/label（url 不可改），rich-text-media.md §4
@@ -32,6 +32,18 @@ String blockEditText(RichBlock block) => switch (block) {
       VideoBlock(:final label) => label,
       TableBlock() => serializeBlock(block),
     };
+
+/// 单项列表的编辑文本：首行内容 + 续行（**保留** ≥2 空格缩进）。
+///
+/// 缩进必须保留：续行缩进是「这一行属于上一项」的唯一载体，拍掉后重解析
+/// 会把续行当成独立项/段落，多行列表项被静默拍平（数据退化）。
+String _editTextOfItem(ListItem item) => item.lines
+    .asMap()
+    .entries
+    .map((e) => e.key == 0
+        ? serializeInline(e.value)
+        : '  ${serializeInline(e.value)}')
+    .join('\n');
 
 /// 编辑文本 → 新块（保存回写）。
 ///
@@ -59,11 +71,18 @@ RichBlock? rebuildBlock(
     case ListBlock() when original.items.length == 1:
       final wasTodo = original.items.first.done != null;
       if (editedText.trim().isEmpty) return null;
+      // 多行项：首行 + 续行分别解析（续行先剥缩进，避免缩进被算进正文
+      // 导致回写时缩进翻倍），**不** join 成单行。
+      final ls = editedText.split('\n');
       return ListBlock(
         ordered: original.ordered,
         items: [
           ListItem(
-            parser.parseInline(editedText),
+            [
+              for (var i = 0; i < ls.length; i++)
+                parser.parseInline(
+                    i == 0 ? ls[i] : ls[i].replaceFirst(RegExp(r'^ +'), '')),
+            ],
             done: wasTodo ? (todoDone ?? false) : null,
           ),
         ],
@@ -107,21 +126,28 @@ ListBlock? reparseList(
         RegExp(r'^\s*(?:[-*+]\s+|\d+[.)]\s+)?\[([ xX])\]\s+(.*)$').firstMatch(l);
     if (todo != null) {
       sawTodo = true;
-      items.add(
-          ListItem(parser.parseInline(todo.group(2)!), done: todo.group(1) != ' '));
+      items.add(ListItem([parser.parseInline(todo.group(2)!)],
+          done: todo.group(1) != ' '));
       continue;
     }
     final bullet = RegExp(r'^\s*[-*+]\s+(.*)$').firstMatch(l);
     if (bullet != null) {
-      items.add(ListItem(parser.parseInline(bullet.group(1)!)));
+      items.add(ListItem([parser.parseInline(bullet.group(1)!)]));
       continue;
     }
     final ordered = RegExp(r'^\s*\d+[.)]\s+(.*)$').firstMatch(l);
     if (ordered != null) {
-      items.add(ListItem(parser.parseInline(ordered.group(1)!)));
+      items.add(ListItem([parser.parseInline(ordered.group(1)!)]));
       continue;
     }
-    items.add(ListItem(parser.parseInline(l)));
+    // 续行（≥2 空格缩进、且不带列表/待办标记）并入前序项：保住多行列表项
+    // 不被逐行拍成多个单项（缩进剥掉后入正文，避免回写时缩进翻倍）。
+    if (items.isNotEmpty && l.startsWith('  ')) {
+      items.last.lines
+          .add(parser.parseInline(l.replaceFirst(RegExp(r'^ +'), '')));
+      continue;
+    }
+    items.add(ListItem([parser.parseInline(l)]));
   }
   if (items.isEmpty) return null;
   return ListBlock(ordered: sawTodo ? false : original.ordered, items: items);

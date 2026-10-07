@@ -791,6 +791,11 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
       _notifyDirty(textEdit: true);
       return KeyEventResult.handled;
     }
+    // 无修饰回车（Shift 分支已在上方处理）：落在列表行 → 就地起新项 / 空项
+    // 退出列表；非列表行原样放行，走既有拆段。
+    if (event.logicalKey == LogicalKeyboardKey.enter && event is! KeyUpEvent) {
+      return _enterOnListLine(seg);
+    }
     if (event.logicalKey != LogicalKeyboardKey.backspace) {
       return KeyEventResult.ignored;
     }
@@ -808,6 +813,87 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     if (prev is! NoteTextSeg) return KeyEventResult.ignored;
     _mergeIntoPrev(seg, prev);
     return KeyEventResult.handled;
+  }
+
+  /// 回车落在列表行（2026-10-07 拍板「列表要能一路敲下去」）：**不拆段**，就地
+  /// 起新项——拆段会把列表切成互不相干的独立段，多行项与续行都无从谈起。
+  ///
+  /// - 普通项：插 `\n`，新行成为**同类型**新项（勾选不继承，新待办恒未完成）；
+  /// - 续行上回车：不加 run——既由随动天然覆盖（老项 end 跨行，插入 `\n` 仍在
+  ///   其区间内），新行继续属于原项；
+  /// - 空项再回车：**退出列表**——摘掉本行占位 run，回到普通段落（与普通空行
+  ///   回车同语义）。
+  ///
+  /// 组字期与选区一概放行：改文本会打断 IME，选区替换走既有文本变更路径。
+  KeyEventResult _enterOnListLine(NoteTextSeg seg) {
+    final v = seg.ctrl.value;
+    if (v.composing.isValid && !v.composing.isCollapsed) {
+      return KeyEventResult.ignored;
+    }
+    if (!v.selection.isCollapsed) return KeyEventResult.ignored;
+    final caret = v.selection.extentOffset;
+    if (!_isListLineAt(seg, caret)) return KeyEventResult.ignored;
+    _applyListEnter(
+      seg,
+      caret: caret,
+      text: v.text.replaceRange(caret, caret, '\n'),
+    );
+    _notifyDirty(track: false);
+    if (mounted) setState(() {});
+    return KeyEventResult.handled;
+  }
+
+  /// 光标所在行是否为**列表首行**（续行被吞入既有 run，行首查不到 run）。
+  bool _isListLineAt(NoteTextSeg seg, int caret) {
+    final line = quickNoteLineRangeAt(seg.spans, caret);
+    return line != null && quickNoteListRunAt(seg.spans, line.$1) != null;
+  }
+
+  /// 列表回车的统一实现（物理键盘与软键盘两条入口共用）：[text] 已含新插入的
+  /// **单个** '\n'，[caret] = 插入点（尚未写回 spans）。
+  void _applyListEnter(
+    NoteTextSeg seg, {
+    required int caret,
+    required String text,
+  }) {
+    final line = quickNoteLineRangeAt(seg.spans, caret);
+    if (line == null) return;
+    final start0 = line.$1;
+    final end0 = line.$2;
+    final run = quickNoteListRunAt(seg.spans, start0);
+    if (run == null) return; // 非列表首行：放行给既有逻辑
+
+    _beginStructuralStep(asTextEdit: true); // 结构变更自记一步撤销
+    applyQuickNoteSpansInput(seg.spans, text, active: _activeMarks);
+    final newStart = caret + 1;
+    if (start0 == end0) {
+      // 空项退出列表：摘掉本行占位 run（随动的空行规则会保留它，故须显式摘除）
+      seg.spans.listRuns = [
+        for (final r in seg.spans.listRuns)
+          if (r.start != start0) r,
+      ];
+    } else {
+      // 新项区间与老项收尾**显式接管**，不依赖随动估算：diff 窗口在同一处插入
+      // 时可能对齐到行首或行尾两个等价位置（`甲\n` 中间插 `\n` 的两种记法），
+      // 一旦判成「变更在本行之后」老项就不会自动收尾，续行将沦为孤儿正文。
+      // - 老项 end 收到拆分后第一行行尾（= caret）；
+      // - 本行之后还有续行（run.end > end0）→ 过继给新项；否则新项贴本行余下部分。
+      final tail = run.end > end0 ? run.end + 1 : end0 + 1;
+      seg.spans.listRuns = [
+        for (final r in seg.spans.listRuns)
+          if (r.start == start0)
+            SpanListRun(start0, caret, r.kind, done: r.done)
+          else
+            r,
+        SpanListRun(newStart, tail, run.kind), // done 恒 false（勾选不继承）
+      ]..sort((a, b) => a.start.compareTo(b.start));
+    }
+    seg.ctrl
+      ..text = seg.spans.plain
+      ..selection = TextSelection.collapsed(offset: newStart);
+    seg.spans
+      ..selBase = newStart
+      ..selExtent = newStart;
   }
 
   /// 把 [seg] 并入上一文本段 [prev]（键事件内立即执行）：spans 平移拼接
@@ -851,6 +937,19 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
         ? value.text.substring(start, start + insertLen)
         : '';
     final newlineAdded = inserted.contains('\n');
+    // 列表行回车（软键盘/IME 与主包同路）：仅插入**单个** '\n' 且光标在列表
+    // 首行 → 就地起新项，与物理键盘同语义。多行粘贴（多个 \n 或带其它文字）
+    // 与非列表行一律照旧走下方拆段。
+    if (newlineAdded &&
+        inserted == '\n' &&
+        !(value.composing.isValid && !value.composing.isCollapsed) &&
+        _isListLineAt(seg, start)) {
+      _applyListEnter(seg, caret: start, text: value.text);
+      if (_activeMarks.isNotEmpty) _activeMarks.clear();
+      _notifyDirty(track: false);
+      setState(() {});
+      return;
+    }
     if (newlineAdded) {
       // 先随动段状态（含 \n 的全文本），再按新插 \n 逐一物化为独立段；
       // undo 记账与打字同窗连击（连打带敲回车=一步）。
@@ -871,6 +970,33 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     seg.spans.selExtent = value.selection.extentOffset;
     if (newlineAdded && _activeMarks.isNotEmpty) {
       setState(() => _activeMarks.clear());
+    }
+    // 行首列表标记落定：须在随动之后（spans.plain 才是最新态），且转换会改
+    // plain/坐标，命中后立刻同步 selection 并单独返回（不与后续记账混跑）。
+    // IME 组字期不动 ctrl 文本——改文本会打断组合，故整段跳过。
+    final composing = value.composing.isValid && !value.composing.isCollapsed;
+    final caretIn = value.selection.extentOffset;
+    final moved = composing
+        ? 0
+        : convertQuickNoteLineMarker(seg.spans, caret: caretIn);
+    // 续行归并：软换行后缩进续写（≥2 空格）→ 并入前序列表项。用**回退后**的
+    // 光标定位，避免刚剥掉前缀造成的行错判。
+    if (!composing) {
+      extendQuickNoteContinuation(seg.spans, caret: caretIn - moved);
+    }
+    if (moved > 0) {
+      final len = seg.spans.plain.length;
+      final base = (value.selection.baseOffset - moved).clamp(0, len);
+      final ext = (value.selection.extentOffset - moved).clamp(0, len);
+      seg.ctrl
+        ..text = seg.spans.plain
+        ..selection = TextSelection(baseOffset: base, extentOffset: ext);
+      seg.spans
+        ..selBase = base
+        ..selExtent = ext;
+      _notifyDirty(textEdit: true, changedSeg: seg);
+      if (mounted) setState(() {});
+      return;
     }
     _notifyDirty(textEdit: true, changedSeg: seg);
   }
@@ -1492,10 +1618,11 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     );
   }
 
-  /// 凹槽内标记列：按 [fieldW] 镜像排版，逐行定位 • / 待办勾选框。
+  /// 凹槽内标记列：按 [fieldW] 镜像排版，逐行定位 • / 有序序号 / 待办勾选框。
   Widget _listMarkers(NoteTextSeg seg, double fieldW) {
     final scheme = Theme.of(context).colorScheme;
     final base = Theme.of(context).textTheme.bodyLarge;
+    final ords = quickNoteOrderedOrdinals(seg.spans.listRuns);
     final plain = seg.ctrl.text;
     final painter = TextPainter(
       text: TextSpan(text: plain, style: base),
@@ -1542,25 +1669,31 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
                 top: tops[logical] + Insets.xs,
                 child: Align(
                   alignment: Alignment.centerRight,
-                  child: r.kind == SpanListKind.todo
-                      ? IconButton(
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(),
-                          iconSize: 20,
-                          onPressed: () => _toggleTodo(seg, r),
-                          icon: Icon(
-                            r.done
-                                ? Icons.check_box
-                                : Icons.check_box_outline_blank,
-                            color: r.done ? scheme.primary : scheme.onSurfaceVariant,
-                          ),
-                          tooltip: r.done ? '标记未完成' : '标记完成',
-                        )
-                      : Icon(
-                          Icons.fiber_manual_record,
-                          size: 8,
-                          color: scheme.onSurfaceVariant,
+                  child: switch (r.kind) {
+                    SpanListKind.todo => IconButton(
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        iconSize: 20,
+                        onPressed: () => _toggleTodo(seg, r),
+                        icon: Icon(
+                          r.done
+                              ? Icons.check_box
+                              : Icons.check_box_outline_blank,
+                          color: r.done ? scheme.primary : scheme.onSurfaceVariant,
                         ),
+                        tooltip: r.done ? '标记未完成' : '标记完成',
+                      ),
+                    // 序号实时取自连续组——增/删中项后自动重排，无需改正文
+                    SpanListKind.ordered => Text(
+                        '${ords[r.start] ?? 1}.',
+                        style: base?.copyWith(color: scheme.onSurfaceVariant),
+                      ),
+                    SpanListKind.bullet => Icon(
+                        Icons.fiber_manual_record,
+                        size: 8,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                  },
                 ),
               );
             }(),

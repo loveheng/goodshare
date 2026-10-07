@@ -210,6 +210,29 @@ void main() {
       expectRoundtrip('1. 第一\n2. 第二 **粗**\n3. 第三');
     });
 
+    test('多行列表项（续行归入同一项，②）', () {
+      final blocks =
+          parser.parse('- 第一项\n  续行一\n  续行二\n- 第二项');
+      final list = blocks.single as ListBlock;
+      expect(list.items, hasLength(2));
+      expect(list.items[0].lines, hasLength(3));
+      expect(list.items[1].lines, hasLength(1));
+      expectRoundtrip('- 第一项\n  续行一\n  续行二\n- 第二项');
+    });
+
+    test('裸待办并入前序无序列表（①）', () {
+      final blocks = parser.parse('- 甲\n- 乙\n[x] 待办丙\n[ ] 待办丁');
+      final list = blocks.single as ListBlock;
+      expect(list.items, hasLength(4));
+      expect(list.items[2].done, isTrue);
+      expect(list.items[3].done, isFalse);
+      expectRoundtrip('- 甲\n- 乙\n[x] 待办丙\n[ ] 待办丁');
+    });
+
+    test('裸待办与续行可叠加（①+②）', () {
+      expectRoundtrip('- 甲\n[ ] 待办\n  待办续行');
+    });
+
     test('引用（多段 + 嵌套列表）', () {
       expectRoundtrip('> 引用第一段\n> 第二行\n>\n> 第二段\n> - 列表甲\n> - 列表乙');
     });

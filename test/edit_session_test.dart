@@ -30,6 +30,35 @@ void main() {
     test('代码块（语言与缩进保留）', () => expectRebuildStable('```dart\nvoid main() {}\n  indent\n```'));
     test('单项待办（勾选态保留）', () => expectRebuildStable('- [ ] 买牛奶'));
     test('单项普通列表', () => expectRebuildStable('- 普通项'));
+
+    test('单项多行列表回写：保留 2 空格缩进，不把续行拍成单行', () {
+      final block = ListBlock(
+        ordered: false,
+        items: [
+          ListItem([
+            parser.parseInline('首行'),
+            parser.parseInline('续行'),
+          ]),
+        ],
+      );
+      final text = blockEditText(block);
+      expect(text, '首行\n  续行'); // 续行缩进必须保留（否则重解析退化）
+      final rebuilt = rebuildBlock(block, text)! as ListBlock;
+      expect(rebuilt.items.single.lines.length, 2);
+      expect(inlineToPlain(rebuilt.items.single.lines[1]), '续行');
+      expect(serializeBlock(rebuilt), '- 首行\n  续行');
+    });
+
+    test('多项列表回写：续行并入前序项，不拍成新项', () {
+      final original = ListBlock(ordered: false, items: [
+        ListItem([parser.parseInline('甲')]),
+        ListItem([parser.parseInline('乙')]),
+      ]);
+      final rebuilt = rebuildBlock(original, '- 甲\n  甲续行\n- 乙')! as ListBlock;
+      expect(rebuilt.items.length, 2);
+      expect(rebuilt.items[0].lines.length, 2);
+      expect(inlineToPlain(rebuilt.items[0].lines[1]), '甲续行');
+    });
     test('多项列表（标记往返）', () => expectRebuildStable('- 甲\n- [ ] 乙\n- [x] 丙'));
     test('有序列表', () => expectRebuildStable('1. 甲\n2. 乙'));
     test('分隔线', () => expectRebuildStable('前段\n\n---\n\n后段'));

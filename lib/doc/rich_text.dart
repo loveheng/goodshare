@@ -129,10 +129,18 @@ class QuoteBlock extends RichBlock {
 }
 
 /// 列表项。`done` 非 null 表示这是待办项（可勾选）。
+///
+/// [lines] 首行为 `- `/`1. `/`- [ ] ` 标记后的内容；后续元素为「续行」
+/// （markdown 中以 ≥2 空格缩进表示，解析层归入同一项）。单行项仅一个元素。
+/// [inline] 为 [lines] 首行的兼容 getter，单行调用可继续用。
 class ListItem {
-  const ListItem(this.inline, {this.done});
+  const ListItem(this.lines, {this.done});
 
-  final List<InlineNode> inline;
+  final List<List<InlineNode>> lines;
+
+  /// 首行内容（兼容旧单行调用；多行项请直接用 [lines]）。
+  List<InlineNode> get inline =>
+      lines.isEmpty ? const [InlineText('')] : lines.first;
 
   /// true = 已完成 `[x]`，false = 未完成 `[ ]`，null = 普通列表项。
   final bool? done;
@@ -362,7 +370,9 @@ List<String> scanTodoTexts(String markdown) {
       switch (b) {
         case ListBlock(:final items):
           for (final it in items) {
-            if (it.done != null) out.add(inlineToPlain(it.inline).trim());
+            if (it.done != null) {
+              out.add(it.lines.map(inlineToPlain).join('\n').trim());
+            }
           }
         case QuoteBlock(:final children):
           walk(children, out);
@@ -382,7 +392,8 @@ String blockToPlain(RichBlock block) => switch (block) {
       HeadingBlock(:final inline) => inlineToPlain(inline),
       ParagraphBlock(:final inline) => inlineToPlain(inline),
       QuoteBlock(:final children) => children.map(blockToPlain).join('\n'),
-      ListBlock(:final items) => items.map((i) => inlineToPlain(i.inline)).join('\n'),
+      ListBlock(:final items) =>
+        items.map((i) => i.lines.map(inlineToPlain).join('\n')).join('\n'),
       CodeBlock(:final code) => code,
       DividerBlock() => '',
       // 媒体块降级（三出口之 blockToPlain，rich-text-media.md §2）
@@ -556,11 +567,15 @@ class SpanLevelRun {
 
 /// 列表种类（速记所见即所得的「行列表」维度，2026-10-06 拍板：粘贴/导入 md
 /// 列表 → 无标记列表/待办）：bullet = 无序圆点（`- ` / `* `），
-/// todo = 待办（`- [ ]` / `- [x]`）。与行级标题同源——**行属性**，整行表达，
-/// 恒与实际整行对齐（宿主侧 snap）。
-enum SpanListKind { bullet, todo }
+/// todo = 待办（`- [ ]` / `- [x]`），ordered = 有序项（`N. ` / `N) `，序号
+/// **不由 run 存储**——始终由所处连续有序组实时推算，保证增删项后自动重排，
+/// 与详情页解析器「每个 ListBlock 从 1 重排」同口径）。
+/// 与行级标题同源——**行属性**，整行表达，恒与实际整行对齐（宿主侧 snap）。
+enum SpanListKind { bullet, todo, ordered }
 
-/// 行列表 run：**纯文本坐标** [start, end)，覆盖一整行（不含行尾 `\n`）。
+/// 行列表 run：**纯文本坐标** [start, end)，覆盖一整行（不含行尾 `\n`）；
+/// 多行列表项时 [end] 会吞入后续「≥2 空格缩进」的续行作几何延伸——仍只算
+/// **一个**列表项（凹槽只按 [start] 所在首行绘制一次，续行留白不重复出标记）。
 /// 标题与列表互斥（一行只认一种前缀，标题优先）。
 class SpanListRun {
   const SpanListRun(this.start, this.end, this.kind, {this.done = false});
@@ -712,10 +727,14 @@ String serializeBlock(RichBlock block) => switch (block) {
           .join('\n>\n'),
       ListBlock(:final ordered, :final items) =>
         items.asMap().entries.map((e) {
-          final text = serializeInline(e.value.inline);
+          final lines = e.value.lines;
+          final first = serializeInline(lines.first);
           final done = e.value.done;
-          if (done != null) return '- [${done ? 'x' : ' '}] $text';
-          return ordered ? '${e.key + 1}. $text' : '- $text';
+          final head = done != null
+              ? '- [${done ? 'x' : ' '}] $first'
+              : (ordered ? '${e.key + 1}. $first' : '- $first');
+          final cont = lines.skip(1).map((l) => '  ${serializeInline(l)}').join('\n');
+          return cont.isEmpty ? head : '$head\n$cont';
         }).join('\n'),
       CodeBlock(:final code, :final language) =>
         '```${language ?? ''}\n$code\n```',
@@ -1020,9 +1039,9 @@ class MarkdownSubsetParser implements RichTextParser {
     final todo = _todo.firstMatch(content);
     if (todo != null) {
       final mark = todo.group(1)!;
-      return ListItem(_parseInlineImpl(todo.group(2)!), done: mark != ' ');
+      return ListItem([_parseInlineImpl(todo.group(2)!)], done: mark != ' ');
     }
-    return ListItem(_parseInlineImpl(content));
+    return ListItem([_parseInlineImpl(content)]);
   }
 
   /// 行内解析实现（静态化，供块语法责任链调用；陷阱 A）。
@@ -1206,12 +1225,15 @@ class _QuoteSyntax implements _BlockSyntax {
   }
 }
 
-/// 列表（含裸待办行）。
+/// 列表（含裸待办行，支持多行项与裸待办并入前序列表）。
 ///
 /// 保留旧版两条特征（陷阱 B——任何「纠正」都会打破往返幂等）：
 /// 1. **有序列表会吸收后续的无序项，无序列表不吸收有序项**；
-/// 2. 裸待办行 `[ ] xxx` 归入单项无序列表，且传**原始行**给 [_listItemImpl]
-///    （由 [_todo] 再剥一层 `[ ] `），与列表项传「剥离后文本」的口径不同。
+/// 2. 裸待办行 `[ ] xxx` 归入列表（① 并入前序列表），且传**原始行**给
+///    [_listItemImpl]（由 [_todo] 再剥一层 `[ ] `），与列表项传「剥离后文本」口径不同。
+///
+/// ② 多行项：列表项吸收益「≥2 空格缩进、非块起始、非新列表项」的续行，归入
+/// 同一 [ListItem.lines]（markdown 中以缩进续行表示）。续行不入段落判决。
 class _ListSyntax implements _BlockSyntax {
   @override
   bool canParse(_LineReader r) {
@@ -1221,23 +1243,49 @@ class _ListSyntax implements _BlockSyntax {
         MarkdownSubsetParser._todo.hasMatch(line); // 裸待办（与 _todo 同型）
   }
 
+  /// 续行判定：≥2 空格缩进、非块起始、非新列表项（含裸待办）才并入前序项。
+  static bool _isContinuation(_LineReader r, String line) {
+    if (line.trim().isEmpty) return false;
+    if (!line.startsWith('  ')) return false; // 必须缩进（≥2 空格）
+    if (MarkdownSubsetParser._isBlockStart(line)) return false; // 标题/引用/表格等
+    if (MarkdownSubsetParser._isTableStart(r.lines, r.index)) return false;
+    if (MarkdownSubsetParser._bullet.hasMatch(line) ||
+        MarkdownSubsetParser._ordered.hasMatch(line) ||
+        MarkdownSubsetParser._todo.hasMatch(line)) {
+      return false; // 新列表项（含裸待办）另起项
+    }
+    return true;
+  }
+
   @override
   RichBlock parse(_LineReader r) {
     final isOrdered = MarkdownSubsetParser._ordered.hasMatch(r.peek()!);
     final items = <ListItem>[];
     while (!r.isDone) {
       final line = r.peek()!;
+      // ② 续行：已有前序项且本行是缩进续行 → 并入当前项
+      if (items.isNotEmpty && _isContinuation(r, line)) {
+        final cont = line.replaceFirst(RegExp(r'^ +'), '');
+        items.last.lines.add(MarkdownSubsetParser._parseInlineImpl(cont));
+        r.advance();
+        continue;
+      }
       final m = isOrdered
           ? (MarkdownSubsetParser._ordered.firstMatch(line) ??
               MarkdownSubsetParser._bullet.firstMatch(line))
           : MarkdownSubsetParser._bullet.firstMatch(line);
-      if (m == null) break;
-      items.add(MarkdownSubsetParser._listItemImpl(m.group(1)!));
-      r.advance();
-    }
-    // 仍为空 ⇒ 是裸待办行（不匹配 bullet/ordered）：传原始行
-    if (items.isEmpty) {
-      items.add(MarkdownSubsetParser._listItemImpl(r.advance()));
+      if (m != null) {
+        items.add(MarkdownSubsetParser._listItemImpl(m.group(1)!));
+        r.advance();
+        continue;
+      }
+      // ① 裸待办并入前序列表：当前行是裸待办（_todo 命中但非 bullet/ordered）
+      if (MarkdownSubsetParser._todo.hasMatch(line)) {
+        items.add(MarkdownSubsetParser._listItemImpl(line)); // 传原始行
+        r.advance();
+        continue;
+      }
+      break;
     }
     return ListBlock(ordered: isOrdered, items: items);
   }
