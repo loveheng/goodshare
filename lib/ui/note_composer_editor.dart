@@ -31,6 +31,9 @@ import '../share/note_composer.dart'
         NoteVideoSegment;
 import '../share/note_video_policy.dart';
 import '../share/quick_note_span_codec.dart';
+import '../share/quick_note_text_actions.dart'
+    show backspaceOutdent, enterWithMarker, toggleTodo;
+import '../share/quick_note_reveal.dart' show kNoteMarkerReveal;
 import 'audio_playback_service.dart';
 import 'audio_record_sheet.dart';
 import 'format_dial.dart';
@@ -801,10 +804,32 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     }
     if (event is KeyUpEvent) return KeyEventResult.ignored;
     final v = seg.ctrl.value;
-    if (!v.selection.isCollapsed || v.selection.extentOffset != 0) {
+    if (!v.selection.isCollapsed || v.composing.isValid && !v.composing.isCollapsed) {
       return KeyEventResult.ignored;
     }
-    if (v.composing.isValid && !v.composing.isCollapsed) {
+    // S3 旗标门控（§6）：行首退格出列/退挡——光标塌缩在标记行行首（前一字符
+    // 为 \n）时删标记回正文；否则放行既有逻辑（段首合并/原生删字符）。
+    if (kNoteMarkerReveal) {
+      final caret = v.selection.extentOffset;
+      final atLineStart = caret == 0 || v.text.codeUnitAt(caret - 1) == 0x0A;
+      if (atLineStart) {
+        final r = backspaceOutdent(v.text, caret);
+        if (r != null) {
+          _beginStructuralStep(asTextEdit: true);
+          seg.ctrl
+            ..text = r.text
+            ..selection = TextSelection.collapsed(offset: r.caret);
+          seg.spans
+            ..plain = r.text
+            ..selBase = r.caret
+            ..selExtent = r.caret;
+          _notifyDirty(track: false);
+          if (mounted) setState(() {});
+          return KeyEventResult.handled;
+        }
+      }
+    }
+    if (v.selection.extentOffset != 0) {
       return KeyEventResult.ignored;
     }
     final i = _segs.indexOf(seg);
@@ -832,6 +857,25 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     }
     if (!v.selection.isCollapsed) return KeyEventResult.ignored;
     final caret = v.selection.extentOffset;
+    // S3 旗标门控（§6）：文本真相路径——L1 动作写真实文本；旗标关闭走旧
+    // run 随动路径（S1–S2 现状不变）。
+    if (kNoteMarkerReveal) {
+      final r = enterWithMarker(v.text, caret);
+      if (r != null) {
+        _beginStructuralStep(asTextEdit: true);
+        seg.ctrl
+          ..text = r.text
+          ..selection = TextSelection.collapsed(offset: r.caret);
+        seg.spans
+          ..plain = r.text
+          ..selBase = r.caret
+          ..selExtent = r.caret;
+        _notifyDirty(track: false);
+        if (mounted) setState(() {});
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    }
     if (!_isListLineAt(seg, caret)) return KeyEventResult.ignored;
     _applyListEnter(
       seg,
@@ -1705,6 +1749,23 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
   /// 待办勾选切换：只翻 [listRuns] 的 done（结构随 Tag 走），不动正文——
   /// 序列化时落成 `- [x]` / `- [ ]`，与详情页阅读态同一口径。
   void _toggleTodo(NoteTextSeg seg, SpanListRun target) {
+    // S3 旗标门控（§6）：文本真相路径——改写 `[ ]`/`[x]` 字面；旗标关闭走
+    // 旧 run.done 路径（S1–S2 现状不变）。
+    if (kNoteMarkerReveal) {
+      final r = toggleTodo(seg.spans.plain, target.start);
+      if (r != null) {
+        seg.ctrl
+          ..text = r.text
+          ..selection = TextSelection.collapsed(offset: r.caret);
+        seg.spans
+          ..plain = r.text
+          ..selBase = r.caret
+          ..selExtent = r.caret;
+        _notifyDirty(track: false);
+        if (mounted) setState(() {});
+        return;
+      }
+    }
     final runs = seg.spans.listRuns;
     final i = runs.indexOf(target);
     if (i < 0) return;

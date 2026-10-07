@@ -1,0 +1,163 @@
+import 'package:flutter_test/flutter_test.dart';
+
+import 'package:goodshare/share/quick_note_reveal.dart' show kNoteMarkerReveal;
+import 'package:goodshare/share/quick_note_span_codec.dart';
+import 'package:goodshare/share/quick_note_text_actions.dart';
+
+/// S2 文本真相动作与序列化单测（note-editor-source-of-truth.md §6 S2）。
+///
+/// 核心验收：**新旧路径字节等价**——同一 md 经「seedQuickNote → 编辑动作 →
+/// serializeQuickNoteSpans」（旧）与「直接文本操作」（新）产出一致。
+void main() {
+  group('enterWithMarker（回车续标记）', () {
+    test('普通列表项行尾回车：新行同类型标记', () {
+      final r = enterWithMarker('- 甲\n- 乙', 7)!;
+      expect(r.text, '- 甲\n- 乙\n- ');
+      expect(r.caret, r.text.length);
+    });
+
+    test('待办项回车：新项 `- [ ] `，勾选不继承', () {
+      final r = enterWithMarker('- [x] 甲', 7)!;
+      expect(r.text, '- [x] 甲\n- [ ] ');
+    });
+
+    test('有序项回车：新行字面序号 = 当前行 + 1', () {
+      final r = enterWithMarker('3. 甲', 4)!;
+      expect(r.text, '3. 甲\n4. ');
+    });
+
+    test('空列表项回车：退出列表（删标记，新行正文）', () {
+      final r = enterWithMarker('- \n- 乙', 2)!;
+      expect(r.text, '\n- 乙');
+      expect(r.caret, 0);
+    });
+
+    test('光标在标记区内回车：只插换行不续标记', () {
+      final r = enterWithMarker('- 甲', 1)!;
+      expect(r.text, '-\n 甲');
+    });
+
+    test('标题行回车：新行回正文（档位止于本行）', () {
+      final r = enterWithMarker('# 甲', 3)!;
+      expect(r.text, '# 甲\n');
+    });
+
+    test('纯文本行回车：只插换行', () {
+      final r = enterWithMarker('甲乙', 2)!;
+      expect(r.text, '甲乙\n');
+    });
+  });
+
+  group('backspaceOutdent（行首退格出列）', () {
+    test('列表行行首退格：删标记出列', () {
+      // 行首 = '\n' 之后（index 2），非首字符处
+      final r = backspaceOutdent('甲\n- 乙', 2)!;
+      expect(r.text, '甲\n乙');
+      expect(r.caret, 2);
+    });
+
+    test('标题行行首退格：删档位标记', () {
+      final r = backspaceOutdent('x\n# 甲', 2)!;
+      expect(r.text, 'x\n甲');
+    });
+
+    test('非行首退格：null（归既有路径）', () {
+      expect(backspaceOutdent('- 甲', 3), isNull);
+    });
+
+    test('纯文本行行首退格：null', () {
+      expect(backspaceOutdent('甲\n乙', 2), isNull);
+    });
+  });
+
+  group('toggleTodo（勾选翻转）', () {
+    test('[ ] → [x]', () {
+      final r = toggleTodo('- [ ] 甲', 0)!;
+      expect(r.text, '- [x] 甲');
+    });
+
+    test('[x] → [ ]（大小写均归 [x] 翻转）', () {
+      expect(toggleTodo('- [x] 甲', 0)!.text, '- [ ] 甲');
+      expect(toggleTodo('- [X] 甲', 0)!.text, '- [ ] 甲');
+    });
+
+    test('裸勾选框行翻转', () {
+      final r = toggleTodo('[ ] 甲', 0)!;
+      expect(r.text, '[x] 甲');
+    });
+
+    test('非待办行：null', () {
+      expect(toggleTodo('- 甲', 0), isNull);
+      expect(toggleTodo('# 甲', 0), isNull);
+    });
+  });
+
+  group('新旧路径字节等价（§7.5 存量口径）', () {
+    /// 旧路径：md → seed → 逐行 serialize。
+    String oldPath(String md) => serializeQuickNoteSpans(seedQuickNote(md));
+
+    test('恒等样本：播种后立即序列化 = 原文（新模型下恒等）', () {
+      const samples = [
+        '# 甲\n',
+        '- 甲\n- 乙\n',
+        '- [ ] 待办\n- [x] 已办\n',
+        '1. 甲\n2. 乙\n',
+        '正文行\n',
+        '- 甲\n  续行\n',
+      ];
+      for (final md in samples) {
+        expect(oldPath(md), md, reason: 'seed→serialize 应恒等：$md');
+      }
+    });
+
+    test('有序规整：normalizeOrderedNumbers 与旧序列化序号口径一致', () {
+      // 旧：seed 保留字面，序列化时按组重排
+      final old = oldPath('2. 甲\n3. 乙\n- 丙\n5. 丁\n');
+      // 新：buffer 字面保留，出口 normalize
+      final neu = normalizeOrderedNumbers('2. 甲\n3. 乙\n- 丙\n5. 丁\n');
+      expect(neu, old);
+      expect(neu, '1. 甲\n2. 乙\n- 丙\n1. 丁\n');
+    });
+
+    test('回车续标记后新旧落盘等价：新文本经 seed→serialize 恒等', () {
+      // 锚点：新动作产出的文本经旧 seed→serialize 往返无损（往返单测口径）。
+      // ⚠️ 样本须避开「尾随空列表项」——旧 serialize 对空占位 run 不输出
+      // 标记（§1.2 实例1 的序列化侧表现，S3 退役对象），非等价锚点。
+      final acted = enterWithMarker('- 甲\n- 乙', 7)!.text;
+      expect(oldPath('${acted}丙'), '- 甲\n- 乙\n- 丙');
+
+      final todo = enterWithMarker('- [x] 甲', 7)!.text;
+      expect(oldPath('${todo}丙'), '- [x] 甲\n- [ ] 丙');
+
+      final outdent = backspaceOutdent('x\n- 乙', 2)!.text;
+      expect(oldPath(outdent), 'x\n乙');
+
+      final toggled = toggleTodo('- [ ] 甲', 0)!.text;
+      expect(oldPath(toggled), '- [x] 甲');
+    });
+  });
+
+  group('normalizeOrderedNumbers 细节', () {
+    test('S2 门禁：S3 旗标仍关闭（编辑器默认走旧路径，§6 只加不改）', () {
+      expect(kNoteMarkerReveal, isFalse);
+    });
+
+    test('断组归零：非列表行隔开两组各自从 1 起', () {
+      expect(
+        normalizeOrderedNumbers('3. 甲\n\n4. 乙'),
+        '1. 甲\n\n1. 乙',
+      );
+    });
+
+    test('缩进续行不断组', () {
+      expect(
+        normalizeOrderedNumbers('1. 甲\n  续\n2. 乙'),
+        '1. 甲\n  续\n2. 乙',
+      );
+    });
+
+    test('`)` 分隔统一为 `.`（旧序列化恒输出 `N. `）', () {
+      expect(normalizeOrderedNumbers('1) 甲'), '1. 甲');
+    });
+  });
+}
