@@ -1,4 +1,6 @@
 import '../doc/rich_text.dart';
+import 'quick_note_line_shape.dart'
+    show headingRe, listMarkerOf;
 
 /// 速记所见即所得文本段模型（纯 Dart，可单测；2026-10-03 用户拍板「速记也
 /// 所见即所得，不再出现 md 标记」）。
@@ -53,7 +55,7 @@ QuickNoteSpans seedQuickNote(String source) {
     var work = line;
     var removed = 0;
     // 标题优先：剥 `#{1,6} ` 前缀（与解析器 _heading 同源）
-    final h = _headingRe.firstMatch(work);
+    final h = headingRe.firstMatch(work);
     if (h != null) {
       work = work.substring(h.end);
       removed += h.end;
@@ -64,7 +66,7 @@ QuickNoteSpans seedQuickNote(String source) {
     } else {
       hashLens.add(0);
       // 非标题行才认无序列表/待办（`- ` / `* ` / `- [ ]` / `- [x]`）
-      final mk = _listMarkerOf(work);
+      final mk = listMarkerOf(work);
       if (mk != null) {
         work = work.substring(mk.end);
         removed += mk.end;
@@ -223,7 +225,7 @@ int convertQuickNoteLineMarker(QuickNoteSpans s, {required int caret}) {
   final range = quickNoteLineRangeAt(s, caret);
   if (range == null) return 0;
   final line = _LineRange(range.$1, range.$2);
-  final mk = _listMarkerOf(s.plain.substring(line.start, line.end));
+  final mk = listMarkerOf(s.plain.substring(line.start, line.end));
   // 幂等判据就是「行首还有没有完整标记」：已转换的行不可能再匹配，故无需
   // 额外按 run 判重（那会把「空占位 run 仍在行首」误判成已转换）。
   if (mk == null) return 0;
@@ -671,54 +673,6 @@ String serializeQuickNoteSpans(QuickNoteSpans s) {
     pos = lineEnd + 1;
   }
   return out.join('\n');
-}
-
-/// 与解析器 `_heading`（`^(#{1,6})\s+(.*)$`）同源：捕获组 1 = `#` 串（档位）。
-final RegExp _headingRe = RegExp(r'^(#{1,6})\s+');
-
-/// 行首列表标记（与解析器 `_bullet` / `_ordered` / `_todo` **同源**）：
-/// - 无序：`[-*] ` 起手；
-/// - 有序：`<数字>[.)] ` 起手——读刮与详情页同一 grammar（`N. ` / `N) `）；
-/// - 勾选框：`[ ]` / `[x]` / `[X]`，2026-10-07 起**可裸写**（不强制 `- ` 前缀）。
-///
-/// 三个捕获组 `bullet` / `ord` / `cb` 全部可选（否则「裸勾选框」与「`- [ ]`」
-/// 无法共用一条式），故必须由 [_listMarkerOf] 补做「三者至少命中一个」的
-/// 校验——否则空行也会被零宽匹配。匹配止于内容起点，便于剥前缀取纯文本。
-final RegExp _listRe = RegExp(
-  r'^\s*(?:(?<bullet>[-*])[ \t]+|(?<ord>\d+)[.)][ \t]+)?'
-  r'(?<cb>\[[ xX]\])?[ \t]*',
-);
-
-/// 行首列表标记的解析结果：[end] = 需剥离的前缀长度（含尾随空白）。
-class _ListMarker {
-  const _ListMarker(this.kind, this.done, this.end);
-
-  final SpanListKind kind;
-  final bool done;
-
-  /// 前缀长度（下一切内容起点），用于剥前缀与回退光标。
-  final int end;
-}
-
-/// 剥骨架：[_listRe] → 语义化标记；无标记返回 null。
-///
-/// ⚠️ `done` 只能来自**尚未转换的行文本**（此时勾选框还在 plain 里）；一旦
-/// 转换完成，plain 已剥掉 `[ ]`，`done` 便只存活于 [SpanListRun.done]——重扫
-/// 必须自既有 run 继承，禁止再从文本反推。
-_ListMarker? _listMarkerOf(String line) {
-  final m = _listRe.firstMatch(line);
-  if (m == null) return null;
-  final cb = m.namedGroup('cb');
-  final ord = m.namedGroup('ord');
-  final bullet = m.namedGroup('bullet');
-  // 三者全空 = 零宽匹配（普通行/空行）→ 不是列表标记
-  if (cb == null && ord == null && bullet == null) return null;
-  // 优先级：勾选框 > 有序 > 无序。理由：`1. [ ] 甲` 这类混合写法在详情页被
-  // 解析成「有序块里的待办项」（item.done 非 null），此处取待办才同源。
-  final kind = cb != null
-      ? SpanListKind.todo
-      : (ord != null ? SpanListKind.ordered : SpanListKind.bullet);
-  return _ListMarker(kind, cb == '[x]' || cb == '[X]', m.end);
 }
 
 class _LineRange {
