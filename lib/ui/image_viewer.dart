@@ -52,7 +52,7 @@ class _FullScreenImagePage extends StatelessWidget {
   Widget build(BuildContext context) {
     final dpr = MediaQuery.devicePixelRatioOf(context);
     final screenW = MediaQuery.sizeOf(context).width;
-    final errorBuilder = (BuildContext _, Object? __, StackTrace? ___) =>
+    Widget errorBuilder(BuildContext _, Object _, StackTrace? _) =>
         const Center(
           child: Text(
             '图片无法读取',

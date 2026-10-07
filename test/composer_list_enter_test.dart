@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodshare/doc/rich_text.dart';
-import 'package:goodshare/share/quick_note_span_codec.dart';
 import 'package:goodshare/share/quick_note_text_actions.dart'
     show seedTextTruth, serializeTextTruthSpans;
 import 'package:goodshare/ui/note_composer_editor.dart';
