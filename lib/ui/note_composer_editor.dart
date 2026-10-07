@@ -13,37 +13,13 @@ import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../doc/rich_text.dart'
-    show
-        InlineMark,
-        InlineRun,
-        MediaSuffix,
-        SpanListKind,
-        SpanListRun,
-        adjustRuns,
-        classifyMediaUrl,
-        spanChangeRange;
+    show InlineMark, MediaSuffix, SpanListKind, SpanListRun, classifyMediaUrl;
 import '../share/attachments.dart'
-    show MediaTrashSession, copyToAppDir, resolveLocalMediaSrc, toLocalMediaUrl;
-import '../share/note_composer.dart'
-    show
-        NoteAudioSegment,
-        NoteImageSegment,
-        NoteSegment,
-        NoteTextSegment,
-        NoteVideoSegment;
+    show copyToAppDir, resolveLocalMediaSrc, toLocalMediaUrl;
+import '../share/note_composer.dart' show NoteSegment;
 import '../share/note_video_policy.dart';
 import '../share/quick_note_span_codec.dart';
-import '../share/quick_note_text_actions.dart'
-    show
-        TextActionResult,
-        backspaceOutdent,
-        deriveLineRuns,
-        enterWithMarker,
-        seedTextTruth,
-        serializeTextTruthSpans,
-        setLineLevel,
-        toggleTodo;
-import '../share/quick_note_reveal.dart' show kNoteMarkerReveal;
+import '../share/quick_note_text_actions.dart' show deriveLineRuns, seedTextTruth;
 import 'audio_playback_service.dart';
 import 'audio_record_sheet.dart';
 import 'format_dial.dart';
@@ -53,6 +29,13 @@ import 'confirm_dialog.dart';
 import 'media_blocks.dart';
 import 'note_video_capture_page.dart';
 import 'span_text_controller.dart';
+import '../share/note_seg.dart';
+import 'composer_doc.dart';
+
+/// 段模型（[NoteSeg]/[NoteTextSeg]/[NoteMediaSeg]/[NoteMediaKind]）与段↔草稿行
+/// 序列化（[noteSegsToDraftRows]）原定义于本文件，拆解 P1b 迁至 [note_seg]；
+/// 此处按需再导出，保持既有 widget 测试「import 本文件即用」零改动（段结构不变）。
+export '../share/note_seg.dart';
 import 'tag_editor_sheet.dart';
 import 'tokens.dart';
 import 'video_cover.dart';
@@ -116,62 +99,7 @@ class NoteComposerEditor extends StatefulWidget {
   State<NoteComposerEditor> createState() => NoteComposerEditorState();
 }
 
-/// 段：文本或行内媒体（作曲器的最小单元）。
-sealed class NoteSeg {}
 
-class NoteTextSeg extends NoteSeg {
-  NoteTextSeg([String text = ''])
-    : spans = kNoteMarkerReveal ? seedTextTruth(text) : seedQuickNote(text) {
-    // 活引用：排版时取 spans 最新 runs/levelRuns（拆分时替换 spans 对象，
-    // 闭包自动跟随——无陈旧窗口，与详情页同一机制）
-    ctrl = SpanTextEditingController(
-      text: spans.plain,
-      runsProvider: () => spans.runs,
-      levelRunsProvider: () => spans.levelRuns,
-      codeRangesProvider: () => [
-        for (final c in spans.codeRuns) (c.start, c.end),
-      ],
-    );
-  }
-
-  /// 所见即所得段状态（2026-10-03 速记同源化拍板）：plain = 编辑区唯一文本。
-  /// S3 文本真相下 plain 含线级标记（`- `/`# `），行级身份由 deriveLineRuns
-  /// 派生视图表达（文本变更后重派生）；runs（行内样式）仍坐标模型（§8）。
-  /// 控制器文本与 [spans.plain] 恒同源（变更点成对更新）；序列化出口后移至
-  /// 保存/落草稿时。媒体插入拆段时整体替换本对象——runsProvider 活闭包自动跟随。
-  QuickNoteSpans spans;
-
-  final FocusNode focus = FocusNode();
-  final GlobalKey key = GlobalKey();
-
-  late final SpanTextEditingController ctrl;
-
-  void dispose() {
-    ctrl.dispose();
-    focus.dispose();
-  }
-}
-
-class NoteMediaSeg extends NoteSeg {
-  NoteMediaSeg(this.url, {required this.kind, this.label = ''});
-
-  /// 行内媒体 url（`local://` 相对标记，SSOT：rich-text-media.md §2——
-  /// 绝不写绝对路径，iOS 沙盒路径会变；IO/渲染经 [resolveLocalMediaSrc] 解析）。
-  /// 非 final：媒体替换钩子（长按换文件/音频重录）就地改写。
-  String url;
-
-  /// 媒体类别：图片 / 录音 / 视频（便签内嵌视频附件态，2026-10-01 拍板）。
-  final NoteMediaKind kind;
-
-  /// 媒体说明：图=alt、音/视频=label（详情已有条目携带的自定义说明；
-  /// 空串=默认文案，序列化时按 kind 取默认）。
-  String label;
-
-  /// 本体文件（渲染预览与删除清理共用同一解析口）。
-  File get file => File(resolveLocalMediaSrc(url));
-}
-
-enum NoteMediaKind { image, audio, video }
 
 /// 视频来源二选一（note-video.md §1）。
 enum _VideoSource { album, camera }
@@ -185,21 +113,12 @@ const double kComposerToolLayerHeight = 48;
 /// 才启用（无列表段直接返回原 TextField，保持既有排版逐像素不变）。
 const double kListGutterWidth = 28;
 
-/// 撤销文字连击合并窗（连续输入合并为一步）与快照栈深上限。
-const Duration kUndoCoalesce = Duration(milliseconds: 800);
-const int kUndoCap = 100;
+
 
 /// 悬浮球打字退隐后的恢复停顿（停笔多久渐显回来）。
 const Duration kHubDimRestoreDelay = Duration(milliseconds: 1500);
 
-/// 撤销快照：整编辑器草稿行 + 焦点段下标 + 光标偏移（快照制 undo/redo）。
-class _UndoEntry {
-  const _UndoEntry(this.rows, this.focusIndex, this.caret);
 
-  final List<List<String>> rows;
-  final int focusIndex;
-  final int caret;
-}
 
 /// 硬件键盘撤销/重做意图（挂编辑器顶层 Shortcuts，见 build）。
 class _UndoIntent extends Intent {
@@ -216,49 +135,12 @@ enum _DockEdge { left, right, top, bottom }
 /// 悬浮球边长（MD 最小触控 48dp；SmartFloatingHub.size 同值）。
 const double _hubSize = 48;
 
-/// 草稿行快照：段序列 → 行编码（与 QuickNoteDraft/静态缓存同源；
-/// 媒体段第 3 位携带 alt/label，空省略）。
-List<List<String>> noteSegsToDraftRows(List<NoteSeg> segs) => [
-  for (final s in segs)
-    switch (s) {
-      NoteTextSeg(:final spans) => [
-        't',
-        // S3 文本真相：序列化 = 恒等 + 有序规整；旧路径走 run 重建
-        kNoteMarkerReveal
-            ? serializeTextTruthSpans(spans)
-            : serializeQuickNoteSpans(spans),
-      ],
-      NoteMediaSeg(:final url, :final label, kind: NoteMediaKind.image) =>
-        label.isEmpty ? ['i', url] : ['i', url, label],
-      NoteMediaSeg(:final url, :final label, kind: NoteMediaKind.audio) =>
-        label.isEmpty ? ['a', url] : ['a', url, label],
-      NoteMediaSeg(:final url, :final label, kind: NoteMediaKind.video) =>
-        label.isEmpty ? ['v', url] : ['v', url, label],
-    },
-];
 
-/// 段序列 → 保存用 NoteSegment（序列化出口后移的唯一收口；媒体说明空值
-/// 按默认回填，与 serializeNoteMd 的默认口径一致）。
-List<NoteSegment> noteSegsToNoteSegments(List<NoteSeg> segs) => [
-  for (final s in segs)
-    switch (s) {
-      NoteTextSeg(:final spans) => NoteTextSegment(
-        kNoteMarkerReveal
-            ? serializeTextTruthSpans(spans)
-            : serializeQuickNoteSpans(spans),
-      ),
-      NoteMediaSeg(:final url, :final label, kind: NoteMediaKind.image) =>
-        NoteImageSegment(url, alt: label),
-      NoteMediaSeg(:final url, :final label, kind: NoteMediaKind.audio) =>
-        NoteAudioSegment(url, label: label.isEmpty ? '录音' : label),
-      NoteMediaSeg(:final url, :final label, kind: NoteMediaKind.video) =>
-        NoteVideoSegment(url, label: label.isEmpty ? '视频' : label),
-    },
-];
 
 class NoteComposerEditorState extends State<NoteComposerEditor> {
-  /// 作曲器段序列（首段恒为文本；媒体段之后恒有文本段，保证可继续书写）。
-  final List<NoteSeg> _segs = [NoteTextSeg()];
+  /// 内容引擎（拆解 P1b）：段序列 + 撤销栈 + 文本/结构编辑纯逻辑；State
+  /// 只负责挂载/焦点/重建/落盘，经 [ComposerDoc] 反射 [EditOutcome]。
+  late final ComposerDoc _doc;
 
   /// 切后台回来自动收盘（④）；统一订阅 AppLifecycleManager 广播（R6）。
   StreamSubscription<AppLifecycleState>? _lifecycleSub;
@@ -320,18 +202,23 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
       if (s == AppLifecycleState.resumed) _closeFormatDial();
     }); // ④ 切后台回来自动收盘
     unawaited(_restoreDialDock());
-    _rebuildSegs(widget.initialRows);
-    _ensureTrailingText();
-    _present = _snapshot(); // 撤销基线=初始装载态（首步变更可回到装载前）
+    _doc = ComposerDoc(widget.initialRows); // 引擎构造即重建段序列 + 设撤销基线
     // 失焦自动闭合转盘：全局焦点变化 → 全场无焦点即武装延时器（期间回焦撤销）
     WidgetsBinding.instance.focusManager.addListener(_onFocusChanged);
   }
 
   /// 全场焦点扫描：任一文本段持有焦点=true（转盘手势/系统弹层不触发）。
   bool _anyTextFocused() =>
-      _segs.any((s) => s is NoteTextSeg && s.focus.hasFocus);
+      _doc.segs.any((s) => s is NoteTextSeg && s.focus.hasFocus);
 
   void _onFocusChanged() {
+    // 记录当前焦点段 id（活跃段真相源）；无焦点段时不改写，保留上次值。
+    for (final s in _doc.segs) {
+      if (s is NoteTextSeg && s.focus.hasFocus) {
+        _doc.activeSegId = s.id;
+        break;
+      }
+    }
     if (!_anyTextFocused()) _undimHub(); // 焦点离场：球恢复常显
     if (!_formatSheetOpen) return;
     if (_anyTextFocused()) {
@@ -366,40 +253,36 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     _hubPos.dispose();
     _hubDimTimer?.cancel();
     _dialBlurTimer?.cancel();
-    for (final s in _segs) {
-      if (s is NoteTextSeg) s.dispose();
-    }
+    _doc.disposeAll();
     _ownAudioCtl?.dispose();
-    _mediaTrash.purge(); // 撤销随编辑器生命周期终结，桶清空=删除
     super.dispose();
   }
 
   // ---------- 宿主接口 ----------
 
   /// 当前段序列（宿主保存时读取；勿持有跨帧引用）。
-  List<NoteSeg> get segs => _segs;
+  List<NoteSeg> get segs => _doc.segs;
 
   /// 段层面是否「有东西」（媒体或非空文本；标签/待办等宿主级状态由宿主并）。
-  bool get hasContent => _segs.any(
+  bool get hasContent => _doc.segs.any(
     (s) =>
         s is NoteMediaSeg ||
         (s is NoteTextSeg && s.spans.plain.trim().isNotEmpty),
   );
 
   /// 保存用段模型（序列化出口后移：此刻才落 human_md 文本）。
-  List<NoteSegment> toNoteSegments() => noteSegsToNoteSegments(_segs);
+  List<NoteSegment> toNoteSegments() => noteSegsToNoteSegments(_doc.segs);
 
   /// 草稿行快照重建段序列（宿主草稿恢复/保存后清空用；旧段全部释放，
   /// 不触发脏通知——装载不是用户变更）。
+  /// 草稿行快照重建段序列（宿主草稿恢复/保存后清空用；旧段全部释放，
+  /// 不触发脏通知——装载不是用户变更）。
   void loadRows(List<List<String>> rows) {
-    setState(() {
-      for (final s in _segs) {
-        if (s is NoteTextSeg) s.dispose();
-      }
-      _rebuildSegs(rows);
-      _ensureTrailingText();
-      _segRowsCache.clear();
-    });
+    for (final s in _doc.segs) {
+      if (s is NoteTextSeg) s.dispose();
+    }
+    _doc.loadRows(rows); // 引擎重建段序列
+    if (mounted) setState(() {});
   }
 
   /// 程序化整篇替换（AI 还原 / 恢复 AI 改动，ai-writeback-revert §8.4）：
@@ -411,355 +294,98 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
   /// 做法；代价见设计稿 §8.4「已知产品折损」——AI 操作之前的原生打字历史
   /// 一并丢弃，MVP 接受（Roadmap 改插自定义 Undo Boundary 保留历史）。
   void replaceAll(List<List<String>> rows) {
-    loadRows(rows);
-    _undoStack.clear();
-    _redoStack.clear();
-    _present = _snapshot();
-    _presentAt = DateTime.now();
-    _presentWasTextEdit = false;
-    setState(() {}); // 撤销/重做钮禁用态翻转
+    for (final s in _doc.segs) {
+      if (s is NoteTextSeg) s.dispose();
+    }
+    _doc.replaceAll(rows); // 引擎清栈 + 重建
+    if (mounted) setState(() {});
   }
 
   /// 焦点拉回写作区（无焦点段时落最后一段文本——宿主展开面板等场景）。
   void requestFocusFirst() {
-    _activeText?.focus.requestFocus();
+    _doc.activeText?.focus.requestFocus();
   }
 
   // ---------- 内部：段序列管理 ----------
 
-  /// 草稿行 → 段序列（初始/恢复共用）：`['t',md]` 文本段播种为无标记态
-  ///（seedQuickNote 剥行内标记与行首标题前缀），媒体段第 3 位说明随段。
-  void _rebuildSegs(List<List<String>> rows) {
-    _segs
-      ..clear()
-      ..addAll([
-        for (final row in rows)
-          switch (row.first) {
-            'i' => NoteMediaSeg(
-              row[1],
-              kind: NoteMediaKind.image,
-              label: row.length > 2 ? row[2] : '',
-            ),
-            'a' => NoteMediaSeg(
-              row[1],
-              kind: NoteMediaKind.audio,
-              label: row.length > 2 ? row[2] : '',
-            ),
-            'v' => NoteMediaSeg(
-              row[1],
-              kind: NoteMediaKind.video,
-              label: row.length > 2 ? row[2] : '',
-            ),
-            _ => NoteTextSeg(row.length > 1 ? row[1] : ''),
-          },
-      ]);
-  }
-
-  /// 不变量：媒体段之后恒有文本段（用户在媒体后继续书写）。
-  void _ensureTrailingText() {
-    if (_segs.isEmpty || _segs.last is NoteMediaSeg) _segs.add(NoteTextSeg());
-  }
-
-  void _notifyDirty({
-    bool textEdit = false,
-    bool track = true,
-    NoteTextSeg? changedSeg,
-  }) {
-    // 输入阻碍审计 P3-2（悬浮球压正文）：本函数是所有**文字编辑**路径的
-    // 唯一收口（逐键输入 / Shift+Enter 软换行 / 多行粘贴都经这里），退隐
-    // 挂此最省且不漏路径；结构变更（插删媒体、换档）不退隐——那时没在打字。
-    if (textEdit) _dimHubWhileTyping();
-    if (track) {
-      _trackUndo(textEdit: textEdit);
-    } else {
-      // 结构步已在变更前经 _beginStructuralStep 记账，这里只刷新 present
-      _present = _snapshot();
-    }
-    widget.onDirty?.call(_draftRows(changedSeg));
-    widget.onChanged?.call();
-  }
-
-  /// 草稿行快照（段级 memo，P2 性能防线）：文字连击只重序列化变更段，
-  /// 未动段复用缓存——速记宿主每击键 onDirty 的全段序列化开销收窄为
-  /// O(变更段)。行编码形状仍走 noteSegsToDraftRows 单段调用（SSOT 不复制）。
-  final Map<NoteSeg, List<String>> _segRowsCache = {};
-
-  List<List<String>> _draftRows(NoteTextSeg? changedSeg) {
-    if (changedSeg == null) _segRowsCache.clear();
-    return [
-      for (final s in _segs)
-        if (identical(s, changedSeg))
-          _segRowsCache[s] = noteSegsToDraftRows([s]).single
-        else
-          _segRowsCache[s] ??= noteSegsToDraftRows([s]).single,
-    ];
-  }
-
-  // ---------- 撤销/重做（快照制，输入阻碍审计 P1-2，2026-10-04） ----------
-
-  /// 撤销/重做：快照粒度=整编辑器（草稿行 + 焦点段/光标），覆盖文字、
-  /// 退格合并、媒体增删、换档、替换媒体全量操作。文字连击在 [kUndoCoalesce]
-  /// 窗口内合并为一步（否则每击键一步没法用），结构操作恒独立一步。栈上限
-  /// [kUndoCap]。
-  final List<_UndoEntry> _undoStack = [];
-  final List<_UndoEntry> _redoStack = [];
-  _UndoEntry? _present;
-  DateTime _presentAt = DateTime.fromMillisecondsSinceEpoch(0);
-  bool _presentWasTextEdit = false;
-
-  /// 媒体回收站会话（移除媒体=入桶延迟删除，撤销移除还原文件）：桶按
-  /// 媒体父目录各自建立，dispose 清本会话桶；账目=原绝对路径→回收站路径。
-  final MediaTrashSession _mediaTrash = MediaTrashSession();
-  final Map<String, String> _mediaTrashByPath = {};
 
   /// 悬浮球打字退隐（输入阻碍审计 P3：球停在文字边缘会盖字/压选择手柄）：
   /// 打字期间降透明度让位正文，停顿 [kHubDimRestoreDelay] 渐显回来。
   bool _hubDimmed = false;
   Timer? _hubDimTimer;
 
-  _UndoEntry _snapshot() {
-    var focusIndex = -1;
-    var fallback = -1;
-    var caret = 0;
-    for (var i = 0; i < _segs.length; i++) {
-      final s = _segs[i];
-      if (s is! NoteTextSeg) continue;
-      if (fallback < 0) fallback = i;
-      if (s.focus.hasFocus) {
-        focusIndex = i;
-        final sel = s.ctrl.selection;
-        caret = sel.isCollapsed
-            ? sel.extentOffset.clamp(0, s.spans.plain.length)
-            : 0;
-        break;
-      }
-    }
-    if (focusIndex < 0) focusIndex = fallback;
-    return _UndoEntry(noteSegsToDraftRows(_segs), focusIndex, caret);
+
+
+
+
+  void _undo() {
+    _doc.undo();
+    _applyOutcome(_doc.consumeOutcome());
   }
 
-  /// 变更点记账（[_notifyDirty] 内调用）：textEdit=文字连击（可合并），
-  /// 否则结构步（恒独立入栈）。撤销/重做恢复不经此（直接摆栈位）。
-  void _trackUndo({required bool textEdit}) {
-    final now = DateTime.now();
-    final coalesce =
-        textEdit &&
-        _present != null &&
-        _presentWasTextEdit &&
-        now.difference(_presentAt) < kUndoCoalesce;
-    final wasUndoEmpty = _undoStack.isEmpty;
-    final wasRedoEmpty = _redoStack.isEmpty;
-    if (!coalesce) {
-      final present = _present;
-      if (present != null) {
-        _undoStack.add(present);
-        if (_undoStack.length > kUndoCap) _undoStack.removeAt(0);
-        _redoStack.clear();
-      }
-    }
-    _present = _snapshot();
-    _presentAt = now;
-    _presentWasTextEdit = textEdit;
-    // 文字编辑不走 setState（文本经控制器直通），按钮禁用态翻转时才补
-    // 重建——不给每击键加整页重建（输入阻碍审计 P2 口径）。
-    if (_undoStack.isEmpty != wasUndoEmpty ||
-        _redoStack.isEmpty != wasRedoEmpty) {
-      setState(() {});
-    }
-  }
-
-  /// 结构操作（媒体增删/段合并/换档/替换媒体）在**变更前**调用：把当前
-  /// 活态（含真实焦点/光标）压入撤销栈。文字路径不能用它——文字变更点
-  /// （_notifyDirty）时变更已应用，活态快照=变更后；而结构步的焦点段可能
-  /// 随变更离场（段首退格合并），必须趁其在场时取快照。退格在段首无文字
-  /// 变更、不触发 _notifyDirty，若靠栈里旧 _present 会恢复到 initState 态。
-  void _beginStructuralStep({bool asTextEdit = false}) {
-    final now = DateTime.now();
-    // 回车拆段并入打字连击窗：连打带敲回车=一步撤销（asTextEdit 且窗口内）
-    final coalesce =
-        asTextEdit &&
-        _present != null &&
-        _presentWasTextEdit &&
-        now.difference(_presentAt) < kUndoCoalesce;
-    if (!coalesce) {
-      final wasUndoEmpty = _undoStack.isEmpty;
-      final wasRedoEmpty = _redoStack.isEmpty;
-      _undoStack.add(_snapshot());
-      if (_undoStack.length > kUndoCap) _undoStack.removeAt(0);
-      _redoStack.clear();
-      if (_undoStack.isEmpty != wasUndoEmpty ||
-          _redoStack.isEmpty != wasRedoEmpty) {
-        setState(() {}); // 按钮禁用态翻转（同 _trackUndo 口径）
-      }
-    }
-    _present = _snapshot(); // 此刻尚未变更，present=变更前活态
-    _presentAt = now;
-    _presentWasTextEdit = asTextEdit; // 连击链延续
-  }
-
-  void _undo() => _applyFrom(_undoStack, _redoStack);
-  void _redo() => _applyFrom(_redoStack, _undoStack);
-
-  void _applyFrom(List<_UndoEntry> from, List<_UndoEntry> to) {
-    final present = _present;
-    if (from.isEmpty || present == null) return;
-    final entry = from.removeLast();
-    to.add(present);
-    _present = entry;
-    _presentAt = DateTime.now();
-    _presentWasTextEdit = false; // 恢复后下一次输入恒开新步
-    final beforePaths = {
-      for (final s in _segs)
-        if (s is NoteMediaSeg) s.file.path,
-    };
-    loadRows(entry.rows);
-    _syncMediaFiles(beforePaths); // 媒体文件对账（撤销移除还原/重做移除入桶）
-    final i = entry.focusIndex;
-    if (i >= 0 && i < _segs.length) {
-      final s = _segs[i];
-      if (s is NoteTextSeg) {
-        final caret = entry.caret.clamp(0, s.spans.plain.length);
-        s.spans
-          ..selBase = caret
-          ..selExtent = caret;
-        _focusSeg(s, offset: caret);
-      }
-    }
-    widget.onDirty?.call(noteSegsToDraftRows(_segs)); // 恢复也是内容变更
-    widget.onChanged?.call();
-    setState(() {});
+  void _redo() {
+    _doc.redo();
+    _applyOutcome(_doc.consumeOutcome());
   }
 
   /// 焦点所在文本段；无焦点回退最后一段文本（拍完照回来焦点归零的常态）。
-  NoteTextSeg? get _activeText {
-    var idx = _segs.indexWhere((s) => s is NoteTextSeg && s.focus.hasFocus);
-    if (idx < 0) {
-      idx = _segs.lastIndexWhere((s) => s is NoteTextSeg);
-      if (idx < 0) return null;
+  /// 当前活跃文本段 id：焦点变化由 [_onFocusChanged] 写入，替代 `hasFocus`
+  /// 轮询——撤销快照与活跃段查表以此为唯一真相源（编辑器拆解 P1a）。
+  NoteTextSeg? get _activeText => _doc.activeText;
+
+  /// 段 id → 段对象（焦点反射按 id 定位，引擎不持有 FocusNode，拆解 P1b 边界）。
+  NoteSeg? _segById(String id) {
+    for (final s in _doc.segs) {
+      if (s is NoteTextSeg && s.id == id) return s;
     }
-    return _segs[idx] as NoteTextSeg;
+    return null;
   }
 
-  /// 把媒体插入到光标处：焦点文本段按光标位拆成两段，媒体卡居中。
-  /// 无焦点则挂到末尾。插入后焦点落到媒体后的文本段（光标在段首，
-  /// 「录一句、写一句注解」的连续书写流）。
+  /// 把引擎 [EditOutcome] 反射为 UI 副作用：悬浮球退隐（打字）、重建（结构
+  /// 变更/撤销钮翻转）、焦点（经 segId 定位，绝不持有 FocusNode）、帧尾释放
+  /// 被并段、落盘/保存回调。引擎只认 id/offset（拆解 P1b 边界）。
+  void _applyOutcome(EditOutcome? out, {bool textEdited = false}) {
+    if (out == null) return;
+    if (textEdited || out.textEdited) _dimHubWhileTyping();
+    if (out.clearActiveMarks) _activeMarks.clear();
+    final rebuild = out.needsRebuild || out.undoRedoChanged;
+    if (rebuild && mounted) setState(() {});
+    final focusSegId = out.focusSegId;
+    if (focusSegId != null) {
+      final seg = _segById(focusSegId);
+      if (seg is NoteTextSeg) _focusSeg(seg, offset: out.focusCaret);
+    }
+    if (out.removedSegs.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        for (final s in out.removedSegs) {
+          if (s is NoteTextSeg) s.dispose();
+        }
+      });
+    }
+    widget.onDirty?.call(_doc.toRows());
+    widget.onChanged?.call();
+  }
+
+  /// 媒体插入（光标处拆段）：纯逻辑委托 [_doc]，引擎算段序列变更 +
+  /// 焦点反射（媒体后文本段段首），State 据 [EditOutcome] 落焦/重建/落盘。
   void _insertMedia(
     String url, {
     required NoteMediaKind kind,
     String label = '',
   }) {
-    final active = _activeText;
-    final media = NoteMediaSeg(url, kind: kind, label: label);
-    if (active == null) {
-      _segs.add(media);
-      _ensureTrailingText();
-      _focusSeg(_segs.whereType<NoteTextSeg>().last);
-    } else {
-      final idx = _segs.indexOf(active);
-      final sel = active.ctrl.selection;
-      final offset =
-          (sel.isValid ? sel.extentOffset : active.spans.plain.length).clamp(
-            0,
-            active.spans.plain.length,
-          );
-      // 段状态按光标位拆分：runs 截断到各自侧、行级档位留上侧（与回车语义
-      // 一致），媒体两侧文本各自成段、所见即所得态零丢失。
-      final (left, right) = splitQuickNoteSpansAt(active.spans, offset);
-      active.spans = left;
-      active.ctrl
-        ..text = left.plain
-        ..selection = TextSelection.collapsed(offset: left.plain.length);
-      _segs.insert(idx + 1, media);
-      final tail = NoteTextSeg()..spans = right;
-      tail.ctrl
-        ..text = right.plain
-        ..selection = TextSelection.collapsed(offset: 0);
-      _segs.insert(idx + 2, tail);
-      _focusSeg(tail);
-    }
-    _notifyDirty(track: false);
-    setState(() {});
+    _doc.insertMedia(url, kind: kind, label: label);
+    _applyOutcome(_doc.consumeOutcome());
   }
 
-  /// 移除媒体段：文件**入回收站而非删除**（延迟删除，2026-10-04 拍板——
-  /// 撤销移除可还原文件；编辑器 dispose 时清桶，语义收敛回删除；回收站入桶
-  /// 失败则文件保原位，宁滞留不丢数据）。相邻文本段合并回一体，**光标自动
-  /// 定位到合并点**（原媒体位置），不丢焦点（2026-10-03 拍板「移除后光标
-  /// 还能自动定位」）。
+  /// 移除媒体段：文件入回收站、相邻文本段合并、光标自动定位（引擎内部
+  /// 完成段序列变更与撤消记账，焦点经 [EditOutcome] 反射）。
   void _removeMedia(NoteMediaSeg m) {
-    final i = _segs.indexOf(m);
-    if (i < 0) return;
-    _beginStructuralStep();
-    _segs.removeAt(i);
-    NoteTextSeg? caretSeg;
-    var caretOffset = 0;
-    if (i > 0 && i < _segs.length) {
-      final a = _segs[i - 1];
-      final b = _segs[i];
-      if (a is NoteTextSeg && b is NoteTextSeg) {
-        // 两侧段状态合并（b 侧 runs/levels 平移拼接），所见即所得态零丢失；
-        // 光标落合并点（= 合并后左段末尾，原媒体所在处，续写直觉位）
-        mergeQuickNoteSpansInto(a.spans, b.spans);
-        a.ctrl.text = a.spans.plain;
-        caretOffset = a.spans.plain.length;
-        b.dispose();
-        _segs.removeAt(i);
-        caretSeg = a;
-      }
-    }
-    _ensureTrailingText();
-    caretSeg ??= _segs.whereType<NoteTextSeg>().firstOrNull;
-    final f = m.file;
-    if (f.existsSync()) {
-      final stashed = _mediaTrash.stash(f);
-      if (stashed != null) {
-        _mediaTrashByPath[f.path] = stashed;
-      } else {
-        // 入桶失败：文件保持原位成孤儿（可观测，不丢数据）
-        debugPrint(
-          '[DEGRADE] note_media_trash_unavailable url=${m.url} path=${f.path}',
-        );
-      }
-    }
-    if (caretSeg != null) _focusSeg(caretSeg, offset: caretOffset);
-    _notifyDirty(track: false);
-    setState(() {});
+    _doc.removeMedia(m);
+    _applyOutcome(_doc.consumeOutcome());
   }
 
-  /// 撤销/重做后的媒体文件对账（同步 IO，完成即渲染）：
-  /// - 行内**恢复**的媒体（撤销移除）：回收站有账且原位缺失 → 还原；
-  /// - 行内**消失**的媒体（重做移除）：原位文件还在且无账 → 入回收站
-  ///   （与撤销移除对称，防「重做后文件滞留原位成孤儿」）。
-  void _syncMediaFiles(Set<String> beforePaths) {
-    final afterPaths = {
-      for (final s in _segs)
-        if (s is NoteMediaSeg) s.file.path,
-    };
-    var changed = false;
-    for (final p in afterPaths) {
-      final trashed = _mediaTrashByPath[p];
-      if (trashed == null) continue;
-      if (File(p).existsSync()) {
-        _mediaTrashByPath.remove(p); // 原位已在，账目作废
-        continue;
-      }
-      if (_mediaTrash.restore(trashed, p)) {
-        _mediaTrashByPath.remove(p);
-        changed = true;
-      }
-    }
-    for (final p in beforePaths.difference(afterPaths)) {
-      if (_mediaTrashByPath.containsKey(p)) continue;
-      final f = File(p);
-      if (!f.existsSync()) continue;
-      final stashed = _mediaTrash.stash(f);
-      if (stashed != null) {
-        _mediaTrashByPath[p] = stashed;
-        changed = true;
-      }
-    }
-    if (changed) setState(() {});
-  }
+
 
   void _focusSeg(NoteTextSeg seg, {int offset = -1}) {
     if (offset >= 0) {
@@ -802,24 +428,16 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
         return KeyEventResult.ignored;
       }
       if (!v.selection.isCollapsed) return KeyEventResult.ignored;
-      final p = v.selection.extentOffset;
-      seg.ctrl.value = TextEditingValue(
-        text: v.text.replaceRange(p, p, '\n'),
-        selection: TextSelection.collapsed(offset: p + 1),
-      );
-      // 程序化赋值不触发 onChanged（Flutter 只对用户编辑触发）——随动在此
-      // 直接完成；若平台差异仍回调，diff 为空是无操作，双跑安全。
-      applyQuickNoteSpansInput(seg.spans, seg.ctrl.text, active: _activeMarks);
-      seg.spans
-        ..selBase = seg.ctrl.selection.baseOffset
-        ..selExtent = seg.ctrl.selection.extentOffset;
-      _notifyDirty(textEdit: true);
+      _doc.shiftEnter(seg);
+      _applyOutcome(_doc.consumeOutcome(), textEdited: true);
       return KeyEventResult.handled;
     }
     // 无修饰回车（Shift 分支已在上方处理）：落在列表行 → 就地起新项 / 空项
     // 退出列表；非列表行原样放行，走既有拆段。
     if (event.logicalKey == LogicalKeyboardKey.enter && event is! KeyUpEvent) {
-      return _enterOnListLine(seg);
+      final r = _doc.enterOnListLine(seg);
+      if (r == KeyEventResult.handled) _applyOutcome(_doc.consumeOutcome());
+      return r;
     }
     if (event.logicalKey != LogicalKeyboardKey.backspace) {
       return KeyEventResult.ignored;
@@ -829,354 +447,40 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     if (!v.selection.isCollapsed || v.composing.isValid && !v.composing.isCollapsed) {
       return KeyEventResult.ignored;
     }
-    // 段首退格落在**空列表项**（B3 拍板 2026-10-07）：出列摘圆点回普通段落，
-    // 不并入上一段——用户想删的是标记，不是把两段拼一起。旧模型走 run 摘除；
-    // 文本真相下标记在文本里，由下方 backspaceOutdent 分支删前缀承接同语义。
-    if (!kNoteMarkerReveal && v.selection.extentOffset == 0 && _exitEmptyListItem(seg)) {
-      return KeyEventResult.handled;
-    }
-    // S3 旗标门控（§6）：行首退格出列/退挡——光标塌缩在标记行行首（前一字符
-    // 为 \n）时删标记回正文；否则放行既有逻辑（段首合并/原生删字符）。
-    if (kNoteMarkerReveal) {
-      final caret = v.selection.extentOffset;
-      final atLineStart = caret == 0 || v.text.codeUnitAt(caret - 1) == 0x0A;
-      if (atLineStart) {
-        final r = backspaceOutdent(v.text, caret);
-        if (r != null) {
-          _beginStructuralStep(asTextEdit: true);
-          seg.ctrl
-            ..text = r.text
-            ..selection = TextSelection.collapsed(offset: r.caret);
-          seg.spans
-            ..plain = r.text
-            ..selBase = r.caret
-            ..selExtent = r.caret;
-          deriveLineRuns(seg.spans);
-          _notifyDirty(track: false);
-          if (mounted) setState(() {});
-          return KeyEventResult.handled;
-        }
+    // 行首退格出列/退挡（B3 语义，文本真相）：光标塌缩在标记行行首（前一字符
+    // 为 \n 或文本首）时删标记回正文；否则放行既有逻辑（段首合并/原生删字符）。
+    final caret = v.selection.extentOffset;
+    final atLineStart = caret == 0 || v.text.codeUnitAt(caret - 1) == 0x0A;
+    if (atLineStart) {
+      if (_doc.backspaceOutdentAt(seg, caret)) {
+        _applyOutcome(_doc.consumeOutcome());
+        return KeyEventResult.handled;
       }
     }
     if (v.selection.extentOffset != 0) {
       return KeyEventResult.ignored;
     }
-    final i = _segs.indexOf(seg);
+    final i = _doc.segs.indexOf(seg);
     if (i <= 0) return KeyEventResult.ignored; // 首段无处可并
-    final prev = _segs[i - 1];
+    final prev = _doc.segs[i - 1];
     if (prev is! NoteTextSeg) return KeyEventResult.ignored;
-    _mergeIntoPrev(seg, prev);
+    _doc.mergeIntoPrev(seg, prev);
+    _applyOutcome(_doc.consumeOutcome());
     return KeyEventResult.handled;
   }
 
-  /// 回车落在列表行（2026-10-07 拍板「列表要能一路敲下去」）：**不拆段**，就地
-  /// 起新项——拆段会把列表切成互不相干的独立段，多行项与续行都无从谈起。
-  ///
-  /// - 普通项：插 `\n`，新行成为**同类型**新项（勾选不继承，新待办恒未完成）；
-  /// - 续行上回车：不加 run——既由随动天然覆盖（老项 end 跨行，插入 `\n` 仍在
-  ///   其区间内），新行继续属于原项；
-  /// - 空项再回车：**退出列表**——摘掉本行占位 run，回到普通段落（与普通空行
-  ///   回车同语义）。
-  ///
-  /// 组字期与选区一概放行：改文本会打断 IME，选区替换走既有文本变更路径。
-  KeyEventResult _enterOnListLine(NoteTextSeg seg) {
-    final v = seg.ctrl.value;
-    if (v.composing.isValid && !v.composing.isCollapsed) {
-      return KeyEventResult.ignored;
-    }
-    if (!v.selection.isCollapsed) return KeyEventResult.ignored;
-    final caret = v.selection.extentOffset;
-    // S3 旗标门控（§6）：文本真相路径——L1 动作写真实文本；旗标关闭走旧
-    // run 随动路径（S1–S2 现状不变）。
-    if (kNoteMarkerReveal) {
-      final r = enterWithMarker(v.text, caret);
-      if (r != null) {
-        _beginStructuralStep(asTextEdit: true);
-        seg.ctrl
-          ..text = r.text
-          ..selection = TextSelection.collapsed(offset: r.caret);
-        seg.spans
-          ..plain = r.text
-          ..selBase = r.caret
-          ..selExtent = r.caret;
-        deriveLineRuns(seg.spans);
-        _notifyDirty(track: false);
-        if (mounted) setState(() {});
-        return KeyEventResult.handled;
-      }
-      return KeyEventResult.ignored;
-    }
-    if (!_isListLineAt(seg, caret)) return KeyEventResult.ignored;
-    _applyListEnter(
-      seg,
-      caret: caret,
-      text: v.text.replaceRange(caret, caret, '\n'),
-    );
-    _notifyDirty(track: false);
-    if (mounted) setState(() {});
-    return KeyEventResult.handled;
-  }
 
-  /// 光标所在行是否为**列表首行**（续行被吞入既有 run，行首查不到 run）。
-  bool _isListLineAt(NoteTextSeg seg, int caret) {
-    final line = quickNoteLineRangeAt(seg.spans, caret);
-    return line != null && quickNoteListRunAt(seg.spans, line.$1) != null;
-  }
 
-  /// 段首退格落在**空列表项**：出列——摘掉本行占位 run 回普通段落，不并段
-  /// （B3 拍板 2026-10-07：用户想删的是标记，不是把两段拼一起）。
-  ///
-  /// 判据：光标塌缩段首（=0）∧ 本行是列表首行 ∧ 该 run 只覆盖本行（无续行
-  /// ——有续行说明是「多行项首行」，退格应走既有并段续接语义，不摘）。
-  /// 返回是否已消费该退格。
-  bool _exitEmptyListItem(NoteTextSeg seg) {
-    final line = quickNoteLineRangeAt(seg.spans, 0);
-    if (line == null) return false;
-    final run = quickNoteListRunAt(seg.spans, line.$1);
-    if (run == null || run.end > line.$2) return false; // 非空项/有续行
-    _beginStructuralStep(asTextEdit: true);
-    seg.spans.listRuns = [
-      for (final r in seg.spans.listRuns)
-        if (!identical(r, run)) r,
-    ];
-    _notifyDirty(track: false);
-    if (mounted) setState(() {});
-    return true;
-  }
-
-  /// 列表回车的统一实现（物理键盘与软键盘两条入口共用）：[text] 已含新插入的
-  /// **单个** '\n'，[caret] = 插入点（尚未写回 spans）。
-  void _applyListEnter(
-    NoteTextSeg seg, {
-    required int caret,
-    required String text,
-  }) {
-    final line = quickNoteLineRangeAt(seg.spans, caret);
-    if (line == null) return;
-    final start0 = line.$1;
-    final end0 = line.$2;
-    final run = quickNoteListRunAt(seg.spans, start0);
-    if (run == null) return; // 非列表首行：放行给既有逻辑
-
-    _beginStructuralStep(asTextEdit: true); // 结构变更自记一步撤销
-    applyQuickNoteSpansInput(seg.spans, text, active: _activeMarks);
-    final newStart = caret + 1;
-    if (start0 == end0) {
-      // 空项退出列表：摘掉本行占位 run（随动的空行规则会保留它，故须显式摘除）
-      seg.spans.listRuns = [
-        for (final r in seg.spans.listRuns)
-          if (r.start != start0) r,
-      ];
-    } else {
-      // 新项区间与老项收尾**显式接管**，不依赖随动估算：diff 窗口在同一处插入
-      // 时可能对齐到行首或行尾两个等价位置（`甲\n` 中间插 `\n` 的两种记法），
-      // 一旦判成「变更在本行之后」老项就不会自动收尾，续行将沦为孤儿正文。
-      // - 老项 end 收到拆分后第一行行尾（= caret）；
-      // - 本行之后还有续行（run.end > end0）→ 过继给新项；否则新项贴本行余下部分。
-      final tail = run.end > end0 ? run.end + 1 : end0 + 1;
-      seg.spans.listRuns = [
-        for (final r in seg.spans.listRuns)
-          if (r.start == start0)
-            SpanListRun(start0, caret, r.kind, done: r.done)
-          else
-            r,
-        SpanListRun(newStart, tail, run.kind), // done 恒 false（勾选不继承）
-      ]..sort((a, b) => a.start.compareTo(b.start));
-    }
-    seg.ctrl
-      ..text = seg.spans.plain
-      ..selection = TextSelection.collapsed(offset: newStart);
-    seg.spans
-      ..selBase = newStart
-      ..selExtent = newStart;
-  }
-
-  /// 把 [seg] 并入上一文本段 [prev]（键事件内立即执行）：spans 平移拼接
-  ///（runs/levels 零丢失），光标落合并点=prev 文末。被并段的 dispose 延到
-  /// 帧尾——须等 TextField 随重建卸载（EditableText.dispose 先摘控制器
-  /// 监听）再回收，dispose 顺序不能倒；帧尾回查 mounted 防拆页竞态。
-  void _mergeIntoPrev(NoteTextSeg seg, NoteTextSeg prev) {
-    final i = _segs.indexOf(seg);
-    if (i <= 0 || _segs[i - 1] != prev) return;
-    _beginStructuralStep(); // 趁被并段仍在场取快照（焦点语义）
-    mergeQuickNoteSpansInto(prev.spans, seg.spans);
-    prev.spans
-      ..selBase = prev.spans.plain.length
-      ..selExtent = prev.spans.plain.length;
-    prev.ctrl
-      ..text = prev.spans.plain
-      ..selection = TextSelection.collapsed(offset: prev.spans.plain.length);
-    _segs.removeAt(i);
-    _ensureTrailingText();
-    _notifyDirty();
-    setState(() {});
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      seg.dispose();
-      _focusSeg(prev, offset: prev.spans.plain.length);
-    });
-  }
-
-  /// 文字变更点：控制器文本 → 段状态随动（行内 runs 字符级 + 激活 mark 落
-  /// 插入段 + 行级档位按行重 snap，纯 Dart 在 codec 内完成），选择区同源
-  /// 记账，脏通知交宿主。
+  /// 文字变更点：把控制器最新值交给引擎，引擎算 plan、改段状态、记账，
+  /// 结果经 [EditOutcome] 由 [_applyOutcome] 反射（焦点/重建/落盘）。
   void _onSegChanged(NoteTextSeg seg) {
-    final value = seg.ctrl.value;
-    final oldPlain = seg.spans.plain;
-    // 换行检测：本次**插入**的文本含 `\n`（软键盘回车/多行粘贴）→ 拆段
-    // 物化（回车拆块拍板，2026-10-04）。软键盘无 shift 语义、粘贴无按键
-    // 事件，故只能从文本变更侧判据，物理无修饰回车同路收敛。
-    final (start, oldEnd) = spanChangeRange(oldPlain, value.text);
-    final insertLen = value.text.length - oldPlain.length + (oldEnd - start);
-    final inserted = insertLen > 0
-        ? value.text.substring(start, start + insertLen)
-        : '';
-    final newlineAdded = inserted.contains('\n');
-    // 列表行回车（软键盘/IME 与主包同路）：仅插入**单个** '\n' 且光标在列表
-    // 首行 → 就地起新项，与物理键盘同语义。多行粘贴（多个 \n 或带其它文字）
-    // 与非列表行一律照旧走下方拆段。
-    if (newlineAdded &&
-        inserted == '\n' &&
-        !(value.composing.isValid && !value.composing.isCollapsed) &&
-        _isListLineAt(seg, start)) {
-      if (kNoteMarkerReveal) {
-        // S3 文本真相：与物理回车同源——去掉 IME 已插入的 \n，交给
-        // enterWithMarker 统一决定（续标记/空项退出），再写回。
-        _beginStructuralStep(asTextEdit: true);
-        final base = value.text.replaceRange(start, start + 1, '');
-        final r = enterWithMarker(base, start);
-        final result = r ?? TextActionResult(value.text, start + 1);
-        seg.ctrl
-          ..text = result.text
-          ..selection = TextSelection.collapsed(offset: result.caret);
-        seg.spans
-          ..plain = result.text
-          ..selBase = result.caret
-          ..selExtent = result.caret;
-        deriveLineRuns(seg.spans);
-        if (_activeMarks.isNotEmpty) _activeMarks.clear();
-        _notifyDirty(track: false);
-        setState(() {});
-        return;
-      }
-      _applyListEnter(seg, caret: start, text: value.text);
-      if (_activeMarks.isNotEmpty) _activeMarks.clear();
-      _notifyDirty(track: false);
-      setState(() {});
-      return;
-    }
-    if (newlineAdded) {
-      // 先随动段状态（含 \n 的全文本），再按新插 \n 逐一物化为独立段；
-      // undo 记账与打字同窗连击（连打带敲回车=一步）。
-      applyQuickNoteSpansInput(seg.spans, value.text, active: _activeMarks);
-      seg.spans.selBase = value.selection.baseOffset;
-      seg.spans.selExtent = value.selection.extentOffset;
-      _beginStructuralStep(asTextEdit: true);
-      _materializeNewlines(seg, start, inserted);
-      if (_activeMarks.isNotEmpty) _activeMarks.clear();
-      _notifyDirty(track: false); // 结构变化：全段重序列化（低频）
-      setState(() {});
-      return;
-    }
-    // 换行熄灭：本次变更新插入换行 → 行内 mark 自动清空、新行回正文
-    // 防下一段无意继承粗体（先选后打状态机：mark 生命周期止于本行）。
-    if (kNoteMarkerReveal) {
-      // S3 文本真相输入路径：行内 runs 字符级随动（plain 含线级标记，runs
-      // 同坐标系），行级身份由派生视图重算——level/list 坐标随动层退役。
-      final (s0, e0) = spanChangeRange(oldPlain, value.text);
-      final insLen = value.text.length - oldPlain.length + (e0 - s0);
-      seg.spans.runs = adjustRuns(
-        seg.spans.runs,
-        s0,
-        e0,
-        insLen,
-      );
-      if (insLen > 0) {
-        for (final m in _activeMarks) {
-          seg.spans.runs.add(InlineRun(s0, s0 + insLen, m));
-        }
-      }
-      seg.spans.plain = value.text;
-      deriveLineRuns(seg.spans);
-      seg.spans.selBase = value.selection.baseOffset;
-      seg.spans.selExtent = value.selection.extentOffset;
-      // 文本真相下「打字落定」由派生视图自动表达（`- ` 留在文本里即列表项
-      // ——convert/extend 两枚 retrofit 无对象，退役）。
-      _notifyDirty(textEdit: true, changedSeg: seg);
-      return;
-    }
-    applyQuickNoteSpansInput(seg.spans, value.text, active: _activeMarks);
-    seg.spans.selBase = value.selection.baseOffset;
-    seg.spans.selExtent = value.selection.extentOffset;
-    if (newlineAdded && _activeMarks.isNotEmpty) {
-      setState(() => _activeMarks.clear());
-    }
-    // 行首列表标记落定：须在随动之后（spans.plain 才是最新态），且转换会改
-    // plain/坐标，命中后立刻同步 selection 并单独返回（不与后续记账混跑）。
-    // IME 组字期不动 ctrl 文本——改文本会打断组合，故整段跳过。
-    final composing = value.composing.isValid && !value.composing.isCollapsed;
-    final caretIn = value.selection.extentOffset;
-    final moved = composing
-        ? 0
-        : convertQuickNoteLineMarker(seg.spans, caret: caretIn);
-    // 续行归并：软换行后缩进续写（≥2 空格）→ 并入前序列表项。用**回退后**的
-    // 光标定位，避免刚剥掉前缀造成的行错判。
-    if (!composing) {
-      extendQuickNoteContinuation(seg.spans, caret: caretIn - moved);
-    }
-    if (moved > 0) {
-      final len = seg.spans.plain.length;
-      final base = (value.selection.baseOffset - moved).clamp(0, len);
-      final ext = (value.selection.extentOffset - moved).clamp(0, len);
-      seg.ctrl
-        ..text = seg.spans.plain
-        ..selection = TextSelection(baseOffset: base, extentOffset: ext);
-      seg.spans
-        ..selBase = base
-        ..selExtent = ext;
-      _notifyDirty(textEdit: true, changedSeg: seg);
-      if (mounted) setState(() {});
-      return;
-    }
-    _notifyDirty(textEdit: true, changedSeg: seg);
+    _doc.applyTextEdit(seg, seg.ctrl.value, activeMarks: _activeMarks.toList());
+    // 文字变更恒触发悬浮球退隐（打字即收，与原文案一致——引擎纯逻辑不替 UI
+    // 决定退隐，故此处显式声明 textEdited）。
+    _applyOutcome(_doc.consumeOutcome(), textEdited: true);
   }
 
-  /// 把本次插入的 `\n` 逐一物化为段边界：拆点=\n 前一位，`\n` 本体不进
-  /// 任何段（run/level 按 splitQuickNoteSpansAt 分配两侧，标题档留上侧与
-  /// 回车语义一致）。焦点/光标落最尾段末尾——打字=新空段段首、粘贴=续写位。
-  void _materializeNewlines(NoteTextSeg seg, int start, String inserted) {
-    var cur = seg;
-    var base = 0; // cur.spans.plain 在变更后全文中的起始偏移
-    for (var i = 0; i < inserted.length; i++) {
-      if (inserted[i] != '\n') continue;
-      final k = start + i;
-      final local = k - base;
-      if (local < 0 || local >= cur.spans.plain.length) continue;
-      final (l, r0) = splitQuickNoteSpansAt(cur.spans, local);
-      final (_, r) = splitQuickNoteSpansAt(r0, 1); // 丢弃 \n 本体
-      cur.spans = l;
-      cur.ctrl
-        ..text = l.plain
-        ..selection = TextSelection.collapsed(
-          offset: cur.ctrl.selection.extentOffset.clamp(0, l.plain.length),
-        );
-      final tail = NoteTextSeg()..spans = r;
-      tail.ctrl
-        ..text = r.plain
-        ..selection = const TextSelection.collapsed(offset: 0);
-      // S3 文本真相：拆段后的段级 run 视图来自整段派生坐标的机械拆分，
-      // 重派生保证与各自 plain 逐行贴合（标记留在所在行，不跨段失真）。
-      if (kNoteMarkerReveal) {
-        deriveLineRuns(cur.spans);
-        deriveLineRuns(tail.spans);
-      }
-      final idx = _segs.indexOf(cur);
-      _segs.insert(idx + 1, tail);
-      base = k + 1;
-      cur = tail;
-    }
-    _focusSeg(cur, offset: cur.spans.plain.length);
-  }
+
 
   // ---------- 内部：媒体获取链（两宿主同源） ----------
 
@@ -1403,41 +707,28 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     };
   }
 
-  /// 档位选择（转盘 标题扇区 H1/H2、正文直选）：光标行整行直设（0 回正文），
-  /// 选择区不丢。
+  /// 档位选择（转盘 标题扇区 H1/H2、正文直选）：纯逻辑委托 [_doc]，引擎写/删
+  /// `# ` 前缀——标记本就在文本里（文本真相），结果经 [EditOutcome] 反射
+  /// 焦点/重建/落盘。
   void _pickLevel(int level) {
-    final seg = _activeText?.spans;
+    final seg = _doc.activeText;
     if (seg == null) return;
-    _beginStructuralStep();
-    // S3 旗标门控（§6）：文本真相——行首写/删 `# ` 前缀；旧路径走 run 换挡。
-    if (kNoteMarkerReveal) {
-      final caret = seg.selExtent;
-      final r = setLineLevel(seg.plain, caret, level);
-      if (r != null) {
-        final active = _activeText!;
-        active.ctrl
-          ..text = r.text
-          ..selection = TextSelection.collapsed(offset: r.caret);
-        seg
-          ..plain = r.text
-          ..selBase = r.caret
-          ..selExtent = r.caret;
-        deriveLineRuns(seg);
-      }
-      _activeText?.focus.requestFocus();
-      _notifyDirty(track: false);
-      if (mounted) setState(() {});
-      return;
-    }
-    setState(() => setQuickNoteLevel(seg, level, caret: seg.selExtent));
-    _activeText?.focus.requestFocus();
-    _notifyDirty(track: false);
+    _doc.setListLevel(seg, level);
+    _applyOutcome(_doc.consumeOutcome());
   }
 
-  /// 行内 mark 开关（先选后打；2026-10-04 拍板：**单选制**——不做复合
-  /// 选择，B/I/U 互斥，新选替换旧选，再点同项关闭）：作用于之后输入的
-  /// 文字，无选区（选区操作走详情页完整编辑——统一后详情编辑同口径）。
+  /// 行内 mark 开关（高困惑 #2 修复：选区与未来输入分流）：
+  /// - 有选区 → 直接套到选中文字（[ComposerDoc.applyMarkToSelection]），随即收转盘；
+  /// - 塌缩 → 激活 mark，作用于之后输入的文字（原「先选后打」模型保留）。
+  /// 单选制（B/I/U 互斥，新选替换旧选，再点同项关闭）不变。
   void _toggleMark(InlineMark mark) {
+    final seg = _doc.activeText;
+    if (seg != null && !seg.ctrl.selection.isCollapsed) {
+      _doc.applyMarkToSelection(seg, mark);
+      _applyOutcome(_doc.consumeOutcome());
+      _closeFormatDial();
+      return;
+    }
     setState(() {
       if (!_activeMarks.remove(mark)) {
         _activeMarks
@@ -1602,7 +893,7 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
                         child: GestureDetector(
                           behavior: HitTestBehavior.translucent,
                           onTap: () {
-                            final last = _segs
+                            final last = _doc.segs
                                 .whereType<NoteTextSeg>()
                                 .lastOrNull;
                             if (last != null) {
@@ -1617,11 +908,11 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
                             },
                             child: ListView.builder(
                               padding: const EdgeInsets.only(top: Insets.xs),
-                              itemCount: _segs.length,
-                              itemBuilder: (context, i) => switch (_segs[i]) {
+                              itemCount: _doc.segs.length,
+                              itemBuilder: (context, i) => switch (_doc.segs[i]) {
                                 NoteTextSeg s => _textFieldFor(
                                   s,
-                                  showHint: i == 0 && _segs.length == 1,
+                                  showHint: i == 0 && _doc.segs.length == 1,
                                 ),
                                 NoteMediaSeg m => _mediaCard(m),
                               },
@@ -1666,14 +957,10 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     child: SizedBox.shrink(),
   );
 
-  /// 选区口径明示条（输入阻碍审计 P3-4 拍板 D：模型不改，只把口径说清）。
-  ///
-  /// 格式模型是**先选后打**——作用于之后输入的文字，不给已有文字套格式
-  ///（block-format-input.md §2 决策 3）。用户划选一段后点开转盘，最容易
-  /// 预期成「给选中文字加粗」，故在此刻就地说明，避免误导。
-  ///
-  /// **只在转盘展开期出现**：误解只发生在「即将选格式」这一刻，平时划选
-  /// （改字/复制）不弹条打扰。
+  /// 格式口径提示条（高困惑 #2 修复后口径更新）：
+  /// - 有选区：标记直接套到选中文字，无需提示；
+  /// - 塌缩：说明「格式将作用于之后输入的文字」（先选后打模型保留）。
+  /// 只在转盘展开期出现，不打扰平时书写。
   Widget _selectionHint(ColorScheme scheme) {
     if (!_formatSheetOpen) return _hintPlaceholder;
     final seg = _activeText;
@@ -1681,7 +968,7 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     return ListenableBuilder(
       listenable: seg.ctrl,
       builder: (context, _) {
-        if (seg.ctrl.selection.isCollapsed) return _hintPlaceholder;
+        if (!seg.ctrl.selection.isCollapsed) return _hintPlaceholder;
         return Positioned(
           left: 0,
           right: 0,
@@ -1695,7 +982,7 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
               ),
               color: scheme.surfaceContainerHighest,
               child: Text(
-                '格式作用于之后输入的文字，暂不支持给选中文字套格式',
+                '格式将作用于之后输入的文字',
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: scheme.onSurfaceVariant,
@@ -1868,38 +1155,20 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     );
   }
 
-  /// 待办勾选切换：只翻 [listRuns] 的 done（结构随 Tag 走），不动正文——
-  /// 序列化时落成 `- [x]` / `- [ ]`，与详情页阅读态同一口径。
+  /// 待办勾选切换（文本真相，引擎内部改写行内 `[ ]`/`[x]` 字面）：纯逻辑委托
+  /// [_doc]，结果经 [EditOutcome] 反射重建/落盘。
   void _toggleTodo(NoteTextSeg seg, SpanListRun target) {
-    // S3 旗标门控（§6）：文本真相路径——改写 `[ ]`/`[x]` 字面；旗标关闭走
-    // 旧 run.done 路径（S1–S2 现状不变）。
-    if (kNoteMarkerReveal) {
-      final r = toggleTodo(seg.spans.plain, target.start);
-      if (r != null) {
-        seg.ctrl
-          ..text = r.text
-          ..selection = TextSelection.collapsed(offset: r.caret);
-        seg.spans
-          ..plain = r.text
-          ..selBase = r.caret
-          ..selExtent = r.caret;
-        deriveLineRuns(seg.spans);
-        _notifyDirty(track: false);
-        if (mounted) setState(() {});
-        return;
-      }
-    }
-    final runs = seg.spans.listRuns;
-    final i = runs.indexOf(target);
-    if (i < 0) return;
-    final old = runs[i];
-    seg.spans.listRuns = [
-      for (var k = 0; k < runs.length; k++)
-        if (k == i) SpanListRun(old.start, old.end, old.kind, done: !old.done)
-        else runs[k],
-    ];
-    _notifyDirty(track: false);
-    if (mounted) setState(() {});
+    _doc.toggleTodo(seg, target);
+    _applyOutcome(_doc.consumeOutcome());
+  }
+
+  /// 软换行（高困惑 #1/#3 统一入口）：移动端无 Shift 也能块内换行；列表项内
+  /// 自动续行并入同一项。委托 [_doc.softNewline]，结果经 [EditOutcome] 反射。
+  void _softBreak() {
+    final seg = _doc.activeText;
+    if (seg == null) return;
+    _doc.softNewline(seg);
+    _applyOutcome(_doc.consumeOutcome(), textEdited: true);
   }
 
   /// 媒体段卡片：本体预览（与阅读态同源组件）+ 右上角移除按钮。
@@ -2009,15 +1278,19 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     );
   }
 
-  /// 媒体替换钩子执行：钩子内自行改 seg.url；返回后统一标脏重渲染
-  ///（取消 = url 不变，行快照不变，无脏扩散）。
+  /// 媒体替换钩子执行：钩子内自行改 seg.url；引擎先记结构撤销步，返回后
+  /// 经 [EditOutcome] 反射重建/落盘（取消 = url 不变，无脏扩散）。
   Future<void> _runReplace(NoteMediaSeg seg) async {
     final hook = widget.onMediaReplace;
     if (hook == null) return;
-    _beginStructuralStep();
+    _doc.beginStructuralStep();
     await hook(seg);
-    _notifyDirty(track: false);
-    if (mounted) setState(() {});
+    final out = _doc.consumeOutcome();
+    _applyOutcome(
+      out == null
+          ? const EditOutcome(needsRebuild: true)
+          : out.merge(const EditOutcome(needsRebuild: true)),
+    );
   }
 
   Widget _missingCard(ColorScheme scheme, {required String text}) {
@@ -2225,9 +1498,10 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
   }
 
   /// 「导入 Markdown」弹框（2026-10-06 拍板）：用户在**受控输入框**里粘贴/输入
-  /// md 片段 → [seedQuickNote] 解析成无标记所见即所得态 → [insertSeededSpans]
-  /// 插入当前段光标处。选此口而非钩粘贴的目的：绕开 `EditableText` 粘贴链路
-  ///（键盘 Ctrl+V 与移动端长按菜单两条路径、`TextInputFormatter` 只拿纯文本
+  /// md 片段 → [seedTextTruth] 解析为文本真相态（线级标记留文本，与段播种同
+  /// 口径——旧播种剥掉线级标记会让导进来的待办点勾选框无字面可翻）
+  /// → [insertSeededSpans] 插入当前段光标处。选此口而非钩粘贴的目的：绕开
+  /// `EditableText` 粘贴链路（键盘 Ctrl+V 与移动端长按菜单两条路径、`TextInputFormatter` 只拿纯文本
   /// 拿不到 runs 结构），转换时机由用户显式触发，桌面/移动行为完全一致。
   Future<void> _openMdImport() async {
     final text = await showDialog<String>(
@@ -2246,25 +1520,32 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
   void _insertSeededFragment(String md) {
     final seg = _activeText;
     if (seg == null) return;
-    final frag = seedQuickNote(md);
+    final frag = seedTextTruth(md);
     if (frag.plain.isEmpty) return;
     final sel = seg.ctrl.selection;
     final len = seg.spans.plain.length;
     final at = (sel.isValid ? sel.start : len).clamp(0, len);
     final replaceEnd = (sel.isValid ? sel.end : at).clamp(at, len);
-    _beginStructuralStep(); // 导入=结构变更，记一步撤销
+    _doc.beginStructuralStep(); // 导入=结构变更，记一步撤销
     // ⚠️ 顺序红线：先整整更新段状态（spans），再写控制器文本——
     // [_onSegChanged] 以 `oldPlain = seg.spans.plain` 判插入新行，若先写 ctrl
     // 会让多行片段被误判为「敲进来的换行」而逐行拆成独立段。
     insertSeededSpans(seg.spans, frag, at, replaceEnd: replaceEnd);
+    // 文本真相：片段的线级标记已进文本，行级身份必须由派生视图重算——
+    // insertSeededSpans 内的 adjust* 是旧模型坐标搬运（只挪不建）。
+    deriveLineRuns(seg.spans);
     final caret = (at + frag.plain.length).clamp(0, seg.spans.plain.length);
     seg.ctrl
       ..text = seg.spans.plain
       ..selection = TextSelection.collapsed(offset: caret);
     seg.spans.selBase = caret;
     seg.spans.selExtent = caret;
-    _notifyDirty(track: false);
-    if (mounted) setState(() {});
+    final out = _doc.consumeOutcome();
+    _applyOutcome(
+      out == null
+          ? const EditOutcome(needsRebuild: true)
+          : out.merge(const EditOutcome(needsRebuild: true)),
+    );
   }
 
   /// 动作行：拍照 / 相册 / 录音 / 视频（/ 标签——速记条启用）。
@@ -2277,14 +1558,19 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
       child: Row(
         children: [
           IconButton(
-            onPressed: _undoStack.isEmpty ? null : _undo,
+            onPressed: _doc.canUndo ? _undo : null,
             icon: const Icon(Icons.undo_outlined),
             tooltip: '撤销',
           ),
           IconButton(
-            onPressed: _redoStack.isEmpty ? null : _redo,
+            onPressed: _doc.canRedo ? _redo : null,
             icon: const Icon(Icons.redo_outlined),
             tooltip: '重做',
+          ),
+          IconButton(
+            onPressed: _softBreak,
+            icon: const Icon(Icons.wrap_text),
+            tooltip: '换行（列表内续行）',
           ),
           IconButton(
             onPressed: _sending ? null : _photo,
@@ -2347,7 +1633,7 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
 /// 生命周期跟随 dialog 自身——避免在宿主侧 dispose 后、退场动画仍在读数导致
 /// 「used after being disposed」。
 ///
-/// 受控输入框是**刻意的**（不钩系统粘贴）：md 片段走 [seedQuickNote] 显式
+/// 受控输入框是**刻意的**（不钩系统粘贴）：md 片段走 [seedTextTruth] 显式
 /// 解析，桌面/移动两条粘贴链路（Ctrl+V / 长按菜单）语义统一，零歧义。
 class _MdImportDialog extends StatefulWidget {
   const _MdImportDialog();

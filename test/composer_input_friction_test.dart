@@ -83,27 +83,27 @@ void main() {
     expect(hubVisible(), findsOneWidget);
   });
 
-  Finder hint() => find.textContaining('暂不支持给选中文字套格式');
+  Finder hint() => find.textContaining('格式将作用于之后输入的文字');
 
-  testWidgets('划选后展开转盘：明示「格式作用于之后输入的文字」', (tester) async {
+  testWidgets('展开转盘：格式口径提示（塌缩=未来输入 / 选区=直接套）', (tester) async {
     final state = await pump(tester, const [['t', '前言后语']]);
     final seg = state.segs.first as NoteTextSeg;
 
-    // 无选区展开转盘：不打扰（误解只发生在「即将选格式且有选区」时）
+    // 展开转盘 + 塌缩光标：明示「格式将作用于之后输入的文字」（先选后打模型）
     await tester.tap(find.text('Tt'));
     await tester.pumpAndSettle();
     expect(find.text('Tt'), findsNothing, reason: '转盘展开期藏球（确认转盘已展开）');
-    expect(hint(), findsNothing);
-
-    // 段内划选（跨段选区本就不支持——这是 P3-4 拍板 D 要明示的事实）
-    seg.ctrl.selection = const TextSelection(baseOffset: 0, extentOffset: 2);
-    await tester.pump();
     expect(hint(), findsOneWidget);
 
-    // 选区塌缩 → 提示立即收起
-    seg.ctrl.selection = const TextSelection.collapsed(offset: 0);
+    // 段内划选：选区直接套格式（高困惑 #2 已修复），无需提示 → 收起
+    seg.ctrl.selection = const TextSelection(baseOffset: 0, extentOffset: 2);
     await tester.pump();
     expect(hint(), findsNothing);
+
+    // 选区塌缩 → 提示恢复
+    seg.ctrl.selection = const TextSelection.collapsed(offset: 0);
+    await tester.pump();
+    expect(hint(), findsOneWidget);
   });
 
   testWidgets('点正文下方空白：聚焦末段并把光标送到文末', (tester) async {

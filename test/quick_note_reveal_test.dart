@@ -170,10 +170,6 @@ void main() {
       expect(a, b);
     });
 
-    test('S3 旗标已翻转（唯一不可逆点已过，显隐判据激活）', () {
-      expect(kNoteMarkerReveal, isTrue);
-    });
-
     test('markerEnd 与 LineShape 同源（判据消费单次解析）', () {
       // 判据的「标记区末端」必须来自 parseLine 原语（§4.6 禁第二条路径）。
       const line = '- [x] 甲';

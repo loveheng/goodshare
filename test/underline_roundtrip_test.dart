@@ -10,7 +10,7 @@ import 'package:goodshare/data/repository.dart';
 import 'package:goodshare/doc/rich_text.dart';
 import 'package:goodshare/models/draft_store.dart';
 import 'package:goodshare/share/note_composer.dart';
-import 'package:goodshare/share/quick_note_span_codec.dart';
+import 'package:goodshare/share/quick_note_text_actions.dart';
 import 'package:goodshare/share/text_collector.dart';
 import 'package:goodshare/ui/content_body.dart';
 import 'package:goodshare/ui/format_dial.dart';
@@ -41,13 +41,13 @@ void main() {
 
   group('codec 往返（编辑态种子 ↔ 落库 md）', () {
     test('md 播种 → plain + underline run → 序列化回写同串', () {
-      final s = seedQuickNote(src);
+      final s = seedTextTruth(src);
       expect(s.plain, 'abc def');
       expect(s.runs.length, 1);
       expect(s.runs.single.mark, InlineMark.underline);
       expect(s.runs.single.start, 0);
       expect(s.runs.single.end, 3);
-      expect(serializeQuickNoteSpans(s), src);
+      expect(serializeTextTruthSpans(s), src);
     });
 
     test('落库 md 解析回 InlineUnderline（阅读态入口同口径）', () {

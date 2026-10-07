@@ -643,6 +643,59 @@ List<InlineRun> adjustRuns(
   return out;
 }
 
+/// 选区套格式（编辑态样式化层）：在 [start, end) 上切换 [mark]。
+/// 重叠模型：先按边界切分跨 start/end 的 mark run，整段已覆盖则摘掉、否则清掉
+/// 重叠部分后整段盖上——纯函数，供 [ComposerDoc.applyMarkToSelection] 复用。
+List<InlineRun> toggleInlineMarkRuns(
+  List<InlineRun> runs,
+  InlineMark mark,
+  int start,
+  int end,
+) {
+  if (end <= start) return runs;
+  // 1. 边界切分：把跨 start/end 的 mark run 断开，避免局部覆盖残留
+  final split = <InlineRun>[];
+  for (final r in runs) {
+    if (r.mark != mark) {
+      split.add(r);
+      continue;
+    }
+    if (r.start < start && start < r.end) {
+      split.add(InlineRun(r.start, start, mark, url: r.url));
+      split.add(InlineRun(start, r.end, mark, url: r.url));
+      continue;
+    }
+    if (r.start < end && end < r.end) {
+      split.add(InlineRun(r.start, end, mark, url: r.url));
+      split.add(InlineRun(end, r.end, mark, url: r.url));
+      continue;
+    }
+    split.add(r);
+  }
+  // 2. 区间内 mark 覆盖度判定
+  final intervals = <(int, int)>[];
+  for (final r in split) {
+    if (r.mark != mark) continue;
+    final s = r.start.clamp(start, end);
+    final e = r.end.clamp(start, end);
+    if (e > s) intervals.add((s, e));
+  }
+  intervals.sort((a, b) => a.$1.compareTo(b.$1));
+  var covered = start;
+  for (final (s, e) in intervals) {
+    if (s > covered) break;
+    covered = e > covered ? e : covered;
+  }
+  final fullyCovered = covered >= end;
+  // 3. 清掉区间内 mark run（无论开/关都先清，避免重叠残留）
+  final cleared = split
+      .where((r) => !(r.mark == mark && r.end > start && r.start < end))
+      .toList();
+  if (fullyCovered) return cleared;
+  cleared.add(InlineRun(start, end, mark));
+  return cleared;
+}
+
 /// runs + plain → 行内节点树（slice-4 序列化回写与块重建的唯一出口）。
 /// 重叠 run 按字符合成标记集合，相邻同集合（含同 link url）段合并；
 /// 嵌套优先级固定为枚举顺序（bold > italic > code > underline > link）。

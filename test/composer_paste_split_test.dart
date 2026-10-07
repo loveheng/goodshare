@@ -51,14 +51,18 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  testWidgets('多段粘贴（空行分隔）：逐段拆块，段内不残留 \\n', (tester) async {
+  testWidgets('D-多段粘贴（空行分隔）：空行保留为段落间距，拆为多块', (tester) async {
+    // 治 D：空行不再折叠。'第一段⏎⏎第二段⏎⏎第三段' 含 4 个换行 →
+    // 拆为 5 块（空行=空块）：第一段 / 空 / 第二段 / 空 / 第三段。
     final state = await pump(tester, const [['t', '']]);
     await pasteAtStart(tester, state, 0, '第一段\n\n第二段\n\n第三段');
 
-    expect(state.segs.length, 3);
+    expect(state.segs.length, 5);
     expect(textOf(state), '第一段');
-    expect(textOf(state, 1), '第二段');
-    expect(textOf(state, 2), '第三段');
+    expect(textOf(state, 1), isEmpty);
+    expect(textOf(state, 2), '第二段');
+    expect(textOf(state, 3), isEmpty);
+    expect(textOf(state, 4), '第三段');
   });
 
   testWidgets('段中粘贴：两侧文本分裂到各自段', (tester) async {
@@ -85,10 +89,11 @@ void main() {
     final state = await pump(tester, const [['t', '']]);
     await pasteAtStart(tester, state, 0, '一段\r\n二段\r\n\r\n三段');
 
-    expect(state.segs.length, 3);
+    expect(state.segs.length, 4);
     expect(textOf(state), '一段');
     expect(textOf(state, 1), '二段');
-    expect(textOf(state, 2), '三段');
+    expect(textOf(state, 2), isEmpty);
+    expect(textOf(state, 3), '三段');
     expect(
       state.segs.every((s) => s is! NoteTextSeg || !s.spans.plain.contains('\r')),
       isTrue,

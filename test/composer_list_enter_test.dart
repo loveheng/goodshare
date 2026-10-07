@@ -4,6 +4,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:goodshare/doc/rich_text.dart';
 import 'package:goodshare/share/quick_note_text_actions.dart'
     show seedTextTruth, serializeTextTruthSpans;
+import 'package:goodshare/share/note_seg.dart' show NoteTextSeg;
+import 'package:goodshare/ui/composer_doc.dart' show ComposerDoc;
 import 'package:goodshare/ui/note_composer_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -297,5 +299,67 @@ void main() {
     expect(state.segs.length, 2, reason: '粘贴走既有拆段口径，与本次改动无关');
     expect(serializeTextTruthSpans(textSeg(state).spans), '- 甲');
     expect(serializeTextTruthSpans(textSeg(state, 1).spans), '- 乙');
+  });
+
+  // --- 中困惑 #C 防误退：空项退列改双回车（预存空项首次回车保留列表） ---
+
+  test('中困惑 #C 防误退（键盘 route1）：预存空项首次回车保留列表，再按才退', () {
+    // 预存空项：'- 甲' 后已有一个空 bullet（非上一次回车刚生成）。
+    final d = ComposerDoc([['t', '- 甲\n- ']]);
+    final seg = d.activeText!;
+    expect(seg.spans.listRuns.length, 2, reason: '初始两项');
+    // 首次回车（route1 键盘路径）→ 不退出：吞键保留列表（防误退）
+    seg.ctrl.selection = TextSelection.collapsed(offset: seg.spans.plain.length);
+    d.enterOnListLine(seg);
+    d.consumeOutcome();
+    expect(seg.spans.plain, '- 甲\n- ', reason: '防误退：首次回车保留列表');
+    expect(seg.spans.listRuns.length, 2);
+    // 再按一次 → 退出列表（双回车退列）
+    d.enterOnListLine(seg);
+    d.consumeOutcome();
+    expect(seg.spans.plain, '- 甲\n\n', reason: '二次回车退出列表');
+    expect(seg.spans.listRuns.length, 1);
+    d.disposeAll();
+  });
+
+  test('中困惑 #C 防误退（软键盘 route2）：预存空项首次回车保留列表', () {
+    final d = ComposerDoc([['t', '- 甲\n- ']]);
+    final seg = d.activeText!;
+    // 模拟软键盘在空项行尾插入 \n（onChanged → applyTextEdit 的 listEnter）
+    final inserted =
+        seg.spans.plain.replaceRange(seg.spans.plain.length, seg.spans.plain.length, '\n');
+    seg.ctrl.value = TextEditingValue(
+      text: inserted,
+      selection: TextSelection.collapsed(offset: inserted.length),
+    );
+    d.applyTextEdit(seg, seg.ctrl.value);
+    d.consumeOutcome();
+    expect(seg.spans.plain, '- 甲\n- ', reason: 'route2 防误退：回退插入的 \\n，保留列表');
+    // 再按一次 → 退出列表
+    final inserted2 = seg.spans.plain
+        .replaceRange(seg.spans.plain.length, seg.spans.plain.length, '\n');
+    seg.ctrl.value = TextEditingValue(
+      text: inserted2,
+      selection: TextSelection.collapsed(offset: inserted2.length),
+    );
+    d.applyTextEdit(seg, seg.ctrl.value);
+    d.consumeOutcome();
+    expect(seg.spans.plain, '- 甲\n\n', reason: '二次回车退出列表');
+    d.disposeAll();
+  });
+
+  test('中困惑 #C：新建空项维持「再按即退」自然双击离开（不被防误退吞键）', () {
+    final d = ComposerDoc([['t', '- 甲']]);
+    final seg = d.activeText!;
+    // 在「甲」末尾回车 → 起新空项（latch 自动武装）
+    seg.ctrl.selection = TextSelection.collapsed(offset: seg.spans.plain.length);
+    d.enterOnListLine(seg);
+    d.consumeOutcome();
+    expect(seg.spans.listRuns.length, 2, reason: '起新空项');
+    // 紧接着再按一次 → 直接退出（自然双击离开，无需第三次）
+    d.enterOnListLine(seg);
+    d.consumeOutcome();
+    expect(seg.spans.plain, '- 甲\n\n', reason: '新建空项再按即退（旧行为保留）');
+    d.disposeAll();
   });
 }

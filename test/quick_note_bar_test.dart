@@ -160,7 +160,7 @@ void main() {
     await tester.pump();
   }
 
-  testWidgets('转盘选「一级标题」：当前行直设档位，编辑区无 # 前缀，角标 H1',
+  testWidgets('转盘选「一级标题」：当前行直设档位，编辑区写 # 前缀，角标 H1',
       (tester) async {
     await pumpShell(tester);
     await expandViaPeek(tester);
@@ -179,7 +179,8 @@ void main() {
     await dialDrag(tester, at: const Offset(-85.9, -35.6));
     await tester.pumpAndSettle();
     final ctrl = tester.widget<TextField>(find.byType(TextField)).controller!;
-    expect(ctrl.text, '购物清单', reason: '所见即所得：编辑区无 # 前缀');
+    expect(ctrl.text, '# 购物清单',
+        reason: '文本真相：线级标记进文本，显隐层把标记区渲染为透明');
     expect(find.text('H1'), findsOneWidget, reason: '圆钮角标外显当前档位');
   });
 

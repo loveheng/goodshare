@@ -2,7 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:goodshare/doc/rich_text.dart' show SpanListKind;
 import 'package:goodshare/share/quick_note_line_shape.dart';
-import 'package:goodshare/share/quick_note_span_codec.dart' show seedQuickNote;
+import 'package:goodshare/share/quick_note_text_actions.dart' show seedTextTruth;
 
 /// S0 `parseLine` 单行纯解析原语单测（note-editor-source-of-truth.md §6 S0）。
 ///
@@ -143,14 +143,19 @@ void main() {
       }
     });
 
-    test('seedQuickNote 的列表/标题剥离长度与 parseLine.markerEnd 一致', () {
-      // codec 播种（迁移后走同一正则）与 parseLine 必须同口径——防迁移漂移。
+    test('seedTextTruth 保留线级标记，派生视图与 parseLine 同口径', () {
+      // 文本真相：线级标记留在 plain 里，行身份由派生视图表达——派生结果
+      // 必须与 parseLine 原语一致（§4.6 禁第二条解析路径）。
       for (final line in ['# 甲', '- 乙', '- [x] 丙', '3) 丁']) {
         final shape = parseLine(line);
-        final body = line.substring(shape.markerEnd);
-        // 剥完后的剩余内容即正文：播种后 plain 的该行应等于 body
-        final seeded = seedQuickNote(line);
-        expect(seeded.plain, body, reason: '"$line" 播种剥离口径应一致');
+        final seeded = seedTextTruth(line);
+        expect(seeded.plain, line, reason: '"$line" 线级标记应保留在文本里');
+        if (shape.isHeading) {
+          expect(seeded.levelRuns.single.level, shape.level);
+        } else {
+          expect(seeded.listRuns.single.kind, shape.listKind);
+          expect(seeded.listRuns.single.done, shape.done);
+        }
       }
     });
   });

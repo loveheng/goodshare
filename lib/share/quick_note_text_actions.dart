@@ -6,7 +6,8 @@ import '../doc/rich_text.dart'
         SpanListRun,
         inlineNodesOf,
         inlineSpansOf,
-        serializeInline;
+        serializeInline,
+        spanChangeRange;
 import 'quick_note_line_shape.dart';
 import 'quick_note_span_codec.dart' show QuickNoteSpans, SpanCodeRun;
 
@@ -14,9 +15,8 @@ import 'quick_note_span_codec.dart' show QuickNoteSpans, SpanCodeRun;
 /// 回车续标记 / 行首退格出列 / 勾选翻转——**一律写真实文本**（标记本就在
 /// 文本里），不再维护坐标 run。纯函数：`(文本, 光标) → (新文本, 新光标)`。
 ///
-/// 与旧路径（`convertQuickNoteLineMarker`/`adjustQuickNoteListRuns` 等）的
-/// 等价性由 S2 单测钉住；编辑器接入在 [kNoteMarkerReveal] 旗标下 S3 激活
-/// ——S2 阶段旧路径仍在线，本模块只被测试消费（§6「S0–S2 只加不改」）。
+/// 与旧坐标随动路径的等价性由 S2 单测钉住；S3（2026-10-07）真机验收通过后，
+/// 旧路径与双路径分支一并删除——本模块成为编辑器的唯一行级动作实现（§6）。
 ///
 /// 有序序号口径（§2.4）：buffer 存字面数字，显示重排归 L2；回车起新项时
 /// 新行字面序号 = 当前行字面序号 + 1（落盘规整在序列化出口统一做）。
@@ -139,8 +139,9 @@ TextActionResult? toggleTodo(String text, int lineStart) {
 /// 落盘规整。标记本就在文本里，无需坐标重建。
 String serializeTextTruth(String text) => normalizeOrderedNumbers(text);
 
-/// 档位直设·文本真相版（对应旧 `setQuickNoteLevel`）：[caret] 所在行
-/// level>0 → 行首写 `#{level} ` 前缀（已有档位先换挡）；level==0 → 删行首
+/// 档位直设（文本真相版，取代已删除的旧坐标换挡）：[caret] 所在行
+/// level>0 → 行首写「`#`×level + 空格」前缀（与 headingRe `^(#{1,6})\s+`
+/// **同源**——写成 `#1 ` 派生产不出档位，保存即丢）；level==0 → 删行首
 /// 标记回正文。返回 null = 行无变化（已是目标档位/越界）。
 TextActionResult? setLineLevel(String text, int caret, int level) {
   if (caret < 0 || caret > text.length || level < 0 || level > 6) return null;
@@ -155,7 +156,7 @@ TextActionResult? setLineLevel(String text, int caret, int level) {
     return TextActionResult(
         newText, (caret - shape.markerEnd).clamp(0, newText.length));
   }
-  final prefix = '#$level ';
+  final prefix = '${'#' * level} ';
   if (shape.isHeading && shape.level == level) return null;
   // 换挡：替换旧标记（含标题档位与列表标记）；正文起手：插前缀
   final oldLen = shape.isHeading || shape.isList ? shape.markerEnd : 0;
@@ -252,7 +253,7 @@ void deriveLineRuns(QuickNoteSpans s) {
 }
 
 /// 序列化·文本真相版：QuickNoteSpans → md。线级标记本就在 plain 里，
-/// 只剩行内 runs 的序列化（旧 `serializeQuickNoteSpans` 的行内部分）+
+/// 只剩行内 runs 的序列化（与已删除的旧出口同源的行内部分）+
 /// 有序组落盘规整。§8：inline 仍在坐标模型，故不能整段恒等。
 String serializeTextTruthSpans(QuickNoteSpans s) {
   // 行内 runs 在 plain（含线级标记文本）上的序列化：**线级前缀原样保留**
@@ -286,6 +287,64 @@ String serializeTextTruthSpans(QuickNoteSpans s) {
 }
 
 
+/// 一次文本变更的处置类别（编辑器 `_onSegChanged` 的路径分流判据）。
+enum TextEditKind {
+  /// 行内变更（打字 / 删除）→ 行内 runs 字符级随动 + 行级身份重派生。
+  inline,
+
+  /// 列表行回车：只插入**单个** `\n` 且落在列表首行 → 交 [enterWithMarker]
+  /// 就地起新项（不拆段——拆段会把列表切成互不相干的独立段，多行项与续行
+  /// 都无从谈起）。
+  listEnter,
+
+  /// 换行物化：插入的文本含 `\n`（软键盘回车 / 多行粘贴）→ 逐 `\n` 拆段。
+  splitLines,
+}
+
+/// [planTextEdit] 的结果：处置类别 + 变更窗起点 + 本次插入的文本。
+class TextEditPlan {
+  const TextEditPlan(this.kind, this.start, this.inserted);
+
+  final TextEditKind kind;
+
+  /// 变更窗起点（[spanChangeRange] 口径）：列表行判定与拆段定位都以此为锚。
+  final int start;
+
+  /// 本次插入的文本（纯删除时为空串）。
+  final String inserted;
+}
+
+/// 文本变更 → 处置判据（纯函数，**可表驱动单测**）。
+///
+/// 编辑器 `_onSegChanged` 的路径分流集中于此：软键盘无 shift 语义、粘贴无
+/// 按键事件，行级动作只能从**文本变更侧**判据，物理无修饰回车同路收敛——
+/// 判据一旦分散，四条入口（物理 / 软键盘 / IME / 粘贴）就会各行其是。
+///
+/// - [composing] = IME 组合期（拼音未上屏）：改文本会打断组合，一律放行
+///   原生行为（落到 [TextEditKind.splitLines] 由拆段兜底）。
+/// - [isListLineAt] = 变更窗起点所在行是否为**列表首行**；宿主用
+///   `quickNoteLineRangeAt` + `quickNoteListRunAt` 判定后以闭包传入，使本
+///   函数保持零 Flutter 依赖。
+TextEditPlan planTextEdit({
+  required String oldPlain,
+  required String newText,
+  required bool composing,
+  required bool Function(int start) isListLineAt,
+}) {
+  final (start, oldEnd) = spanChangeRange(oldPlain, newText);
+  final insertLen = newText.length - oldPlain.length + (oldEnd - start);
+  final inserted = insertLen > 0
+      ? newText.substring(start, start + insertLen)
+      : '';
+  if (!inserted.contains('\n')) {
+    return TextEditPlan(TextEditKind.inline, start, inserted);
+  }
+  if (inserted == '\n' && !composing && isListLineAt(start)) {
+    return TextEditPlan(TextEditKind.listEnter, start, inserted);
+  }
+  return TextEditPlan(TextEditKind.splitLines, start, inserted);
+}
+
 /// 文本真相序列化出口的有序组规整（§2.4 落盘清洗）：连续有序组按出现顺序
 /// 重编字面序号（1 起递增，非有序行断组）——与旧 `quickNoteOrderedOrdinals`
 /// 的组判定口径一致（同一连续组内逐行递增）。
@@ -308,3 +367,136 @@ String normalizeOrderedNumbers(String text) {
   }
   return lines.join('\n');
 }
+
+/// B+ 门禁2（纯函数版）：删除型结构判定——当且仅当一次文本删除「可能制造有序
+/// 序号空洞」时返回 true：删区跨越了换行符（整行被删）或包含了行首有序 marker
+/// （`\d+.` / `\d).`）。纯中段文字删除（不跨行、不删 marker）物理上不可能造空洞，
+/// 直接放行（O(1) 长度比较 + 删区特征，绝不每键扫全篇）。替换型序号改写（长度
+/// 相等）不视为删除，故用户主动改序号不会被重排误伤。
+///
+/// 调用方须先过 IME 绝热守卫（compose 态不传本函数）。[oldPlain]/[newPlain]
+/// 为变更前后文本，[spanChangeRange] 夹出删区（旧坐标）。
+bool detectStructuralDeletion(String oldPlain, String newPlain) {
+  if (newPlain.length >= oldPlain.length) return false; // 非删除（插入/替换/等长）
+  final (s0, e0) = spanChangeRange(oldPlain, newPlain);
+  if (e0 <= s0) return false;
+  final deleted = oldPlain.substring(s0, e0);
+  final lostNewline = deleted.contains('\n');
+  final hasMarker = RegExp(r'(?:^|\n)[ \t]*\d+[.)][ \t]').hasMatch(deleted);
+  return lostNewline || hasMarker;
+}
+
+/// 编辑期·有序组局部重编号（治「编辑期空洞序号」#3）。沿同缩进连续有序组就地
+/// 重编字面序号 1..k 写回 [text]。返回 `(新文本, 重映射光标)`——前缀宽度变化
+/// （如 9→10 跨位）已计入光标偏移，杜绝「显示序号 / 光标 offset / buffer 字符数」
+/// 三者错位引发的雪崩。
+///
+/// ⚠️ 收口规则（2026-10-08 修订）：编辑期物化路径有二——①键盘动作层（回车续项
+/// `_commitEnter` / 退格出列 `backspaceOutdentAt`，插入型/出列型组变化）；②
+/// `applyTextEdit` 的删除型分支（门禁1 IME 绝热 + 门禁2 `detectStructuralDeletion`
+/// 通过后调用，覆盖打字删 / 选区删 / IME 删等所有经 onChanged 的路径）。buffer 仍存
+/// 字面（保存 md 恒等），符合 text-truth 不变量。全文本扫描所有连续组，O(k)。
+(String, int) renumberOrderedGroup(String text, int caret) {
+  if (caret < 0 || caret > text.length) return (text, caret);
+  final lines = text.split('\n');
+  final caretLine = _lineIndexAtOffset(text, caret);
+  // 锚定 caret 行或最近相邻有序行（替换已删的 _nearestOrderedLine，零依赖）。
+  int? anchor;
+  if (caretLine >= 0 && caretLine < lines.length && _isOrderedLine(lines[caretLine])) {
+    anchor = caretLine;
+  } else if (caretLine + 1 < lines.length && _isOrderedLine(lines[caretLine + 1])) {
+    anchor = caretLine + 1;
+  } else if (caretLine - 1 >= 0 && _isOrderedLine(lines[caretLine - 1])) {
+    anchor = caretLine - 1;
+  }
+  if (anchor == null) return (text, caret);
+  // 沿同缩进连续有序组双向扩到组边界（断组 / 孤立项不误伤，仅重排受影响组）。
+  var gStart = anchor;
+  while (gStart > 0 && _sameOrderedGroup(lines[gStart - 1], lines[gStart])) {
+    gStart--;
+  }
+  var gEnd = anchor;
+  while (gEnd < lines.length - 1 &&
+      _sameOrderedGroup(lines[gEnd], lines[gEnd + 1])) {
+    gEnd++;
+  }
+  final newLines = List<String>.from(lines);
+  var n = 0;
+  for (var i = gStart; i <= gEnd; i++) {
+    n++;
+    // replaceFirstMapped 保留缩进（捕获组 1），避免嵌套有序项丢前导空格
+    newLines[i] = lines[i].replaceFirstMapped(
+      RegExp(r'^(\s*)(\d+)[.)]'),
+      (m) => '${m[1]}$n.',
+    );
+  }
+  final newText = newLines.join('\n');
+  if (newText == text) return (text, caret);
+  return (
+    newText,
+    _remapCaretForRenumber(
+      text, lines, newLines, gStart, gEnd, caretLine, caret,
+    ),
+  );
+}
+
+/// [caret] 在 [text] 中的行号（\n 计数）。
+int _lineIndexAtOffset(String text, int caret) {
+  var line = 0;
+  for (var i = 0; i < caret && i < text.length; i++) {
+    if (text.codeUnitAt(i) == 0x0A) line++;
+  }
+  return line;
+}
+
+bool _isOrderedLine(String line) {
+  final s = parseLine(line);
+  return s.isList && s.listKind == SpanListKind.ordered;
+}
+
+/// 两行是否同属一个连续有序组：皆有序 + 同缩进（嵌套组由此隔离）。
+bool _sameOrderedGroup(String prev, String cur) {
+  if (!_isOrderedLine(prev) || !_isOrderedLine(cur)) return false;
+  return _indentOf(prev) == _indentOf(cur);
+}
+
+int _indentOf(String line) {
+  final m = RegExp(r'^(\s*)').firstMatch(line);
+  return m?.group(1)?.length ?? 0;
+}
+
+/// 重编号后把旧光标映射到新文本（前缀宽度变化计入）。
+int _remapCaretForRenumber(
+  String oldText,
+  List<String> oldLines,
+  List<String> newLines,
+  int gStart,
+  int gEnd,
+  int caretLine,
+  int caret,
+) {
+  final lineStarts = <int>[0];
+  for (var i = 0; i < oldText.length; i++) {
+    if (oldText.codeUnitAt(i) == 0x0A) lineStarts.add(i + 1);
+  }
+  // caret 之前的重编号行累计宽度差
+  var deltaBefore = 0;
+  for (var i = gStart; i < caretLine && i <= gEnd; i++) {
+    deltaBefore += _prefixDelta(oldLines[i], newLines[i]);
+  }
+  if (caretLine >= gStart && caretLine <= gEnd) {
+    final ls = lineStarts[caretLine];
+    final oldP = _orderedPrefixLen(oldLines[caretLine]);
+    final newP = _orderedPrefixLen(newLines[caretLine]);
+    if (caret <= ls + oldP) return ls + newP; // 光标在/紧邻前缀：钳到新前缀尾
+    return caret + (newP - oldP);
+  }
+  return caret + deltaBefore;
+}
+
+int _prefixDelta(String oldLine, String newLine) {
+  if (!_isOrderedLine(oldLine) || !_isOrderedLine(newLine)) return 0;
+  return _orderedPrefixLen(newLine) - _orderedPrefixLen(oldLine);
+}
+
+int _orderedPrefixLen(String line) => parseLine(line).markerEnd;

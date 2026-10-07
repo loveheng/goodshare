@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../doc/rich_text.dart';
-import '../share/quick_note_reveal.dart' show kNoteMarkerReveal, revealAt;
+import '../share/quick_note_reveal.dart' show revealAt;
 import '../share/quick_note_line_shape.dart' show parseLine;
 
 /// IME 组合期维度哨兵（不与 [InlineMark]/行级档位混淆）。
@@ -42,8 +42,8 @@ class _CodeTag {
 
 const Object _codeTag = _CodeTag();
 
-/// 标记区隐藏哨兵（S1 显示变换，[kNoteMarkerReveal] 激活）：隐藏态下标记区
-/// 字符零宽渲染——buffer 坐标不变（契约：单坐标系，§4.5），仅显示收起。
+/// 标记区隐藏哨兵（S1 显示变换）：隐藏态下标记区字符占宽透明渲染——buffer
+/// 坐标不变（契约：单坐标系，§4.5），仅显示收起。
 class _MarkerHiddenTag {
   const _MarkerHiddenTag();
   @override
@@ -51,6 +51,16 @@ class _MarkerHiddenTag {
 }
 
 const Object _markerHiddenTag = _MarkerHiddenTag();
+
+/// 标题标记淡显哨兵（中困惑 #G）：非焦点行的标题 `#` 不再纯透明，改为淡显
+/// 以保留长文结构辨识度（列表项有左侧凹槽，仍走透明隐藏）。
+class _MarkerFaintTag {
+  const _MarkerFaintTag();
+  @override
+  String toString() => 'markerFaint';
+}
+
+const Object _markerFaintTag = _MarkerFaintTag();
 
 /// span 样式渲染（原生单控件派核心）：由纯文本 + 样式维度构建带样式的
 /// TextSpan 树，注入 TextField 自身渲染管线——文字、光标、选择柄、换行
@@ -71,6 +81,7 @@ TextSpan buildSpanTextSpan({
   required TextEditingValue value,
   required bool withComposing,
   List<(int, int)> hiddenMarkerRanges = const [],
+  List<(int, int)> faintMarkerRanges = const [],
   List<(int, int)> codeRanges = const [],
 }) {
   final base = style ?? const TextStyle();
@@ -104,17 +115,14 @@ TextSpan buildSpanTextSpan({
       addRange(c.start, c.end, _composingTag);
     }
   }
-  // S1 显示变换（kNoteMarkerReveal 旗标门控，S3 激活）：隐藏态标记区零宽
-  // 渲染——区间由调用方（L1 显隐判据）传入，本函数不做解析（性能红线）。
-  if (kNoteMarkerReveal) {
-    for (final (s, e) in hiddenMarkerRanges) {
-      addRange(s, e, _markerHiddenTag);
-    }
-  } else if (hiddenMarkerRanges.isNotEmpty) {
-    assert(
-      false,
-      'hiddenMarkerRanges 在旗标关闭时传入（调用方应只在 S3 旗标下计算）',
-    );
+  // S1 显示变换：隐藏态标记区渲染——区间由调用方（L1 显隐判据）传入，
+  // 本函数不做解析（性能红线）。
+  for (final (s, e) in hiddenMarkerRanges) {
+    addRange(s, e, _markerHiddenTag);
+  }
+  // 标题标记淡显（中困惑 #G）：非焦点标题保留结构线索，仅降透明度。
+  for (final (s, e) in faintMarkerRanges) {
+    addRange(s, e, _markerFaintTag);
   }
   // S4 围栏代码块区域：等宽 + 底色（区间由调用方传派生视图，本函数不解析）
   for (final (s, e) in codeRanges) {
@@ -176,6 +184,12 @@ TextSpan buildSpanTextSpan({
         seg = seg.copyWith(
           fontFamily: 'monospace',
           backgroundColor: scheme.surfaceContainerHighest,
+        );
+      } else if (identical(m, _markerFaintTag)) {
+        // 标题标记淡显（中困惑 #G）：保留宽度与字号，仅降为次级灰，让非焦点
+        // 标题仍有可见结构线索（不再是纯透明、只剩字号差异）。
+        seg = seg.copyWith(
+          color: scheme.onSurfaceVariant.withValues(alpha: 0.5),
         );
       } else if (identical(m, _markerHiddenTag)) {
         // 标记区隐藏（§4.5）：S1 机制阶段取「占宽隐藏」回退方案——纯透明
@@ -244,13 +258,10 @@ class SpanTextEditingController extends TextEditingController {
     TextStyle? style,
     required bool withComposing,
   }) {
-    // S3（kNoteMarkerReveal）：buffer 即含线级标记的文本——显隐为纯谓词
-    // （§3.1/契约5），paint 时对光标行当帧求值，禁跨帧缓存。谓词 false 的
-    // 行算出标记区隐藏区间传给显示变换；true（光标在标记区/空项）不隐藏。
-    List<(int, int)>? hidden;
-    if (kNoteMarkerReveal) {
-      hidden = _hiddenMarkerRanges(text, value.selection.extentOffset);
-    }
+    // buffer 即含线级标记的文本——显隐为纯谓词（§3.1/契约5），paint 时对
+    // 光标行当帧求值，禁跨帧缓存。谓词 false 的行算出标记区隐藏区间传给
+    // 显示变换；true（光标在标记区/空项）不隐藏。
+    final (hidden, faint) = _hiddenMarkerRanges(text, value.selection.extentOffset);
     return buildSpanTextSpan(
       context: context,
       plain: text,
@@ -259,15 +270,21 @@ class SpanTextEditingController extends TextEditingController {
       style: style,
       value: value,
       withComposing: withComposing,
-      hiddenMarkerRanges: hidden ?? const [],
+      hiddenMarkerRanges: hidden,
+      faintMarkerRanges: faint,
       codeRanges: codeRangesProvider?.call() ?? const [],
     );
   }
 
   /// 逐行算隐藏区间（整段一次求值，O(文本)）：谓词 false 且该行有标记
-  /// → 隐藏 `[行首, markerEnd)`。谓词求值用 revealAt（S1 纯函数）。
-  static List<(int, int)> _hiddenMarkerRanges(String text, int caret) {
-    final out = <(int, int)>[];
+  /// → 隐藏 `[行首, markerEnd)`。标题标记走 [faint]（淡显保留结构线索，
+  /// 中困惑 #G）；其余标记走 [hidden]（透明占位，§4.5）。谓词用 revealAt。
+  static (List<(int, int)>, List<(int, int)>) _hiddenMarkerRanges(
+    String text,
+    int caret,
+  ) {
+    final hidden = <(int, int)>[];
+    final faint = <(int, int)>[];
     var pos = 0;
     for (final line in text.split('\n')) {
       final start = pos;
@@ -276,13 +293,17 @@ class SpanTextEditingController extends TextEditingController {
       final shape = parseLine(line);
       if (shape.isPlain || shape.markerEnd <= 0) continue;
       final revealed = revealAt(text, caret.clamp(0, text.length),
-          frozen: false, heldValue: false) &&
+              frozen: false, heldValue: false) &&
           _caretInLine(text, caret.clamp(0, text.length), start, start + line.length);
-      if (!revealed) {
-        out.add((start, start + shape.markerEnd));
+      if (revealed) continue;
+      // 标题淡显、其余透明隐藏（中困惑 #G）
+      if (shape.isHeading) {
+        faint.add((start, start + shape.markerEnd));
+      } else {
+        hidden.add((start, start + shape.markerEnd));
       }
     }
-    return out;
+    return (hidden, faint);
   }
 
   static bool _caretInLine(String text, int caret, int lineStart, int lineEnd) {
@@ -292,13 +313,18 @@ class SpanTextEditingController extends TextEditingController {
   }
 }
 
-/// span 粘贴归一（详情页/速记共用）：**粘贴**含空行多段不拆块（拆块走 md
-/// 重建会丢样式），空行折叠为单换行——段落结构稳定、样式保全。
+/// span 粘贴归一（详情页/速记共用）：仅做 CRLF/CR→`\n` 归一，**不折叠空行**。
+///
+/// 多段空行 `\n\n` 原样放行，交由编辑器 `_onSegChanged`→`splitLines`
+/// （`_materializeNewlines`）物化为多个段——与打字回车拆段同口径，段落
+/// 间距（空段）得以保留；行内 runs 经 `splitQuickNoteSpansAt` 跨段保全。
+/// 旧实现曾把 `\n[ \t]*\n+` 折成单 `\n`（空行被吃掉、段落间距丢失），该
+/// 折叠在文本真相模型下已无必要（拆段不丢样式），D 专项（2026-10-08）摘除。
 ///
 /// 只认「单次编辑插入的文本自带空行」这一粘贴签名：敲回车一次只进一个
 /// `\n`，逐次敲出的空行原样放行（输入格式化器对所有编辑生效，旧实现按
 /// 整文本折叠会把用户连敲的第二个回车 `\n\n` 当场折叠回 `\n`——永远敲
-/// 不出空行，光标看似卡在下一行动不了）。折叠只作用于插入区，此前敲出
+/// 不出空行，光标看似卡在下一行动不了）。归一只作用于插入区，此前敲出
 /// 的空行不被后续粘贴连带抹掉。
 class SpanPasteNormalizeFormatter extends TextInputFormatter {
   const SpanPasteNormalizeFormatter();
@@ -310,18 +336,20 @@ class SpanPasteNormalizeFormatter extends TextInputFormatter {
   ) {
     final (start, inserted) = _insertedRange(oldValue.text, newValue.text);
     // CRLF/CR 一律归一为 \n（单段 CRLF 粘贴也会经回车拆块物化，残留 \r
-    // 会成段内杂字符）；再折叠空行（\r\n\r\n 的空行签名在 \n 口径下才可见）。
-    // 打字路径不受影响（IME 只插 \n）。
+    // 会成段内杂字符）；打字路径不受影响（IME 只插 \n）。
+    // D 专项（2026-10-08）：**不再折叠空行**——多段空行 `\n\n` 原样保留，
+    // 段落间距交由编辑器 `_onSegChanged`→`splitLines`（`_materializeNewlines`）
+    // 物化为多个段（与打字回车同口径）；行内 runs 经 `splitQuickNoteSpansAt`
+    // 跨段保全，旧注释担忧的「丢样式」在文本真相模型下已不存在。
     final normalized = inserted
         .replaceAll('\r\n', '\n')
         .replaceAll('\r', '\n');
-    final folded = normalized.replaceAll(RegExp(r'\n[ \t]*\n+'), '\n');
-    if (folded == inserted) return newValue;
+    if (normalized == inserted) return newValue;
     final oldEnd = start + inserted.length;
-    final foldedEnd = start + folded.length;
-    final delta = inserted.length - folded.length;
+    final foldedEnd = start + normalized.length;
+    final delta = inserted.length - normalized.length;
     return TextEditingValue(
-      text: newValue.text.replaceRange(start, oldEnd, folded),
+      text: newValue.text.replaceRange(start, oldEnd, normalized),
       selection: TextSelection(
         baseOffset: _mapOffset(
           newValue.selection.baseOffset,

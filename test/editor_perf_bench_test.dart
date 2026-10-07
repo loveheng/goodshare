@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:goodshare/doc/rich_text.dart' show InlineMark, InlineRun;
+import 'package:goodshare/doc/rich_text.dart'
+    show InlineMark, InlineRun, adjustRuns;
 import 'package:goodshare/share/quick_note_span_codec.dart';
+import 'package:goodshare/share/quick_note_text_actions.dart';
 import 'package:goodshare/ui/note_composer_editor.dart';
 import 'package:goodshare/ui/span_text_controller.dart';
 
@@ -13,22 +15,28 @@ void main() {
   const keystrokes = 50;
 
   QuickNoteSpans bigSeg() {
-    final s = seedQuickNote('字' * segLen);
+    final s = seedTextTruth('字' * segLen);
     s.runs
       ..add(const InlineRun(0, 500, InlineMark.bold))
       ..add(InlineRun(segLen - 500, segLen, InlineMark.italic));
     return s;
   }
 
-  test('基准①输入随动：applyQuickNoteSpansInput × $keystrokes @10k 字符', () {
+  test('基准①输入随动：adjustRuns + deriveLineRuns × $keystrokes @10k 字符',
+      () {
     final s = bigSeg();
     final sw = Stopwatch()..start();
     for (var i = 0; i < keystrokes; i++) {
-      applyQuickNoteSpansInput(s, '${s.plain}字', active: const {});
+      // 现役击键路径（编辑器 _syncSegFromCtrl）：行内 runs 字符级随动 +
+      // 行级身份整段重派生——后者是文本真相下的新增成本，必须量进基准。
+      final at = s.plain.length;
+      s.runs = adjustRuns(s.runs, at, at, 1);
+      s.plain = '${s.plain}字';
+      deriveLineRuns(s);
     }
     sw.stop();
     // ignore: avoid_print
-    print('BENCH applyQuickNoteSpansInput: '
+    print('BENCH syncSegFromCtrl: '
         '${(sw.elapsedMicroseconds / keystrokes).toStringAsFixed(1)}us/击键');
     expect(sw.elapsed, lessThan(const Duration(seconds: 10)));
   });

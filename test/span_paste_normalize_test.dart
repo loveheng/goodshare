@@ -36,26 +36,27 @@ void main() {
   });
 
   group('SpanPasteNormalizeFormatter 粘贴归一', () {
-    test('粘贴含空行多段折叠为单换行，选区吸附到折叠尾', () {
-      // 粘贴签名：单次编辑插入文本自带空行
+    test('粘贴含空行多段原样保留（D：不再折叠），选区不偏移', () {
+      // 粘贴签名：单次编辑插入文本自带空行；D 专项摘除折叠，空行透传，
+      // 下游 splitLines 物化为多段。
       final v = edit('前', '前第一段\n\n第二段');
-      expect(v.text, '前第一段\n第二段');
-      expect(v.selection.baseOffset, '前第一段\n第二段'.length);
+      expect(v.text, '前第一段\n\n第二段');
+      expect(v.selection.baseOffset, '前第一段\n\n第二段'.length);
     });
 
-    test('只折叠插入区，已有敲出的空行保留', () {
+    test('D：空行一律保留（不再折叠插入区，也不动已有空行）', () {
       final v = edit('a\n\nb', 'a\n\nb粘\n\n贴');
-      expect(v.text, 'a\n\nb粘\n贴');
+      expect(v.text, 'a\n\nb粘\n\n贴');
     });
 
-    test('粘贴替换选区（diff 剥前后缀）同样折叠', () {
+    test('粘贴替换选区（diff 剥前后缀）空行同样保留', () {
       final v = edit('abcdef', 'aX\n\nYf');
-      expect(v.text, 'aX\nYf');
+      expect(v.text, 'aX\n\nYf');
     });
 
-    test('粘贴 \r\n 归一为 \n', () {
+    test('粘贴 \r\n 归一无残留（空行不再折叠）', () {
       final v = edit('', '第一段\r\n\r\n第二段');
-      expect(v.text, '第一段\n第二段');
+      expect(v.text, '第一段\n\n第二段');
     });
 
     test('无空行的普通输入原样放行（值不变）', () {

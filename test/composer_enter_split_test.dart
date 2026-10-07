@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:goodshare/share/quick_note_span_codec.dart';
+import 'package:goodshare/share/quick_note_text_actions.dart' show setLineLevel;
 import 'package:goodshare/ui/note_composer_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -105,16 +105,32 @@ void main() {
     expect(state.segs.length, 1);
   });
 
+  testWidgets('D-多段空行粘贴：空行保留为段落间距（拆为多段）', (tester) async {
+    // 治 D：粘贴含空行多段不再折叠为单换行。空字段粘贴「段落A⏎⏎段落B」，
+    // 插入区间含双换行 → splitLines 物化为 段落A / 空段 / 段落B 三段。
+    final state = await pump(tester, const [['t', '']]);
+    await tester.enterText(find.byType(TextField).first, '段落A\n\n段落B');
+    await tester.pumpAndSettle();
+    expect(state.segs.length, 3, reason: '空行保留 → 三段（含空段）');
+    expect(textOf(state), '段落A');
+    expect(textOf(state, 1), isEmpty, reason: '空段=段落间距');
+    expect(textOf(state, 2), '段落B');
+  });
+
   testWidgets('标题档位随拆段留上侧：标题行回车后新段回正文', (tester) async {
     final state = await pump(tester, const [['t', '标题']]);
     final seg = state.segs[0] as NoteTextSeg;
     seg.focus.requestFocus();
     await tester.pump();
-    setQuickNoteLevel(seg.spans, 1, caret: 2);
+    // 文本真相：档位 = 行首写 `# ` 前缀（旧 setQuickNoteLevel 只改坐标 run，
+    // 派生视图读不出档位）。成对更新 spans.plain 与 ctrl.text。
+    final r = setLineLevel(seg.spans.plain, seg.spans.plain.length, 1)!;
+    seg.spans.plain = r.text;
+    seg.ctrl.text = r.text;
     await tester.pumpAndSettle();
 
     // 在标题行末尾回车 → 标题档留上段，新段回正文档
-    await tester.enterText(find.byType(TextField).first, '标题\n正文');
+    await tester.enterText(find.byType(TextField).first, '${r.text}\n正文');
     await tester.pumpAndSettle();
 
     expect(state.segs.length, 2);
