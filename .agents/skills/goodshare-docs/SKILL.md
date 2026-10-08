@@ -17,7 +17,7 @@ description: 拾贝 goodshare 的文档体系归属索引——只登记三项�
 | product（产品/跨域需求） | `docs/product/` | 全局 PRD、V2 收敛需求 | 2 |
 | architecture（架构） | `docs/architecture/` | 分层总览、Human-AI 对称性（无头架构） | 2 |
 | guide（接入指南） | `docs/guide/` | MCP 接入、自更新手册 | 2 |
-| design（UI 设计规范） | `docs/design/` | 全部 UI/交互/媒体/AI 能力设计稿（多为 draft） | 28 |
+| design（UI 设计规范） | `docs/design/` | 全部 UI/交互/媒体/AI 能力设计稿（多为 draft） | 34 |
 | engineering（工程规范） | `docs/engineering/` | AI 协作开发双操作者约束 | 1 |
 
 ## 2. 本仓 lint 脚本路径

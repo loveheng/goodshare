@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-07
+updated: 2026-10-08
 ---
 
 # docs/ 结构索引
@@ -28,7 +28,8 @@ updated: 2026-10-07
 - [workspace.md](design/workspace.md) — 工作区管理闭环交互设计稿（active 2026-10-05）：删除守门与清空链路（删工作区≠删内容语义红线、列表层长按单删不做多选、非空守门 B 快捷删「保留内容并删除」、ackNonEmpty 仅 ui actor 的动作层同守门、重命名复用整页创建表单）；「移出本工作区」批量转正为独立候选。
 - [card-batch-selection.md](design/card-batch-selection.md) — 卡片长按批量选择模式方案蓝本（draft 未实现）：长按进选择模式 + 底部操作栏取代导航、四动作（置顶/工作区/保险箱/删除）声明式配置、置顶全链路（pinned_at + PinCommand + MCP set_pin）、四层抽象（词汇表/执行全共享，呈现分形态：列表选择栏/详情底栏/⋯面板）、整体落地切片。
 - [block-format-input.md](design/block-format-input.md) — 编辑态格式输入方案蓝本（draft 未实现）：键盘工具条「格式」按钮先选后打、块级标题/正文真所见即所得、行内加粗/斜体/下划线自研样式化编辑层（无 md 标记可见，不换编辑器）、`<u>` 语法扩展。
-- [quick-note-format-dial.md](design/quick-note-format-dial.md) — 速记格式转盘交互设计稿（draft 待过稿）：可收起三级径向盘（一级圆钮/二级三分类/三级联动）、松手即选、激活角标外显；仅转盘输入交互，渲染/GFM 收编拆至 rich-text-gfm.md。
+- [quick-note-format-dial.md](design/quick-note-format-dial.md) — 速记格式转盘交互设计稿（draft 待过稿）：可收起三级径向盘（一级圆钮/二级三分类/三级联动）、松手即选、激活角标外显；仅转盘输入交互，渲染/GFM 收编拆至 rich-text-gfm.md。（**已墓碑化**：被下条引导层取代）
+- [note-format-guidance-layer.md](design/note-format-guidance-layer.md) — 编辑器格式引导层（active 2026-10-08）：格式选择入口 SSOT——统一排版规约 `BlockPresentation`（正文渲染/侧轨角标/浮层打样三消费方同源，所见即所选）+ 聚焦段侧轨语义角标（只读，获焦才显、绝不挤正文）+ 贴键浮层打样面板（5 档 WYSIWYG，经 `setLineKind` 落地，含 IME 组合态守卫）；待办走 `toggleTodo` 不在浮层档位内。
 - [rich-text-gfm.md](design/rich-text-gfm.md) — 富文本 GFM 渲染收编与 AI 写入原则设计稿（draft 待拍板）：AI 写入三层处理链（引导/映射/R1 告知）、格式全量镜像对照表（与 rich_text.dart 同源）、GFM 收编语法实现契约（粗斜体/删除线/高亮/表格/自动链接/行内码防回溯方案）与渲染标准；自 quick-note-format-dial.md §3-§4 拆出。
 - [ai-writeback-revert.md](design/ai-writeback-revert.md) — AI 写回可逆与用户接管设计稿（active 2026-10-04）：单基线快照三件套（`human_md_baseline` 锚点 + `doc_meta_json.ai_session_state` 短枚举 + `ai_revisions` 有界日志表）、AI_PENDING/RESTORED/CLOSED 状态机、1.5s settle 接管判定（生命周期强制 flush + 显式按钮取消计时器的竞态防护）、只读 Inline Diff 与接管 Toast / 极简历史面板。与 rich-text-gfm.md 互补——那稿管「写入质量」，本稿管「写入后的可控性」。
 - [note-editor-unification.md](design/note-editor-unification.md) — 编辑器统一（active 2026-10-03）：详情编辑切换到速记作曲器形态（NoteComposerEditor 唯一编辑器）、human_md→草稿行转换（noteMdToDraftRows 字面保留裁决）、媒体替换钩子与 EditSession/FormatToolbar 废弃口径。

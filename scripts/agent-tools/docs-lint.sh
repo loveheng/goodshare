@@ -1,11 +1,14 @@
 #!/bin/bash
 # docs-lint — docs/ 工程文档机械校验（docs-spec §6 落地）
 # ① frontmatter 四项校验 ② 根目录平铺检查 ③ README 双向覆盖（链接存在 + 非孤儿）
+# 严重级：E=错误(阻断) / W=警告(阻断) / I=提示(不阻断)
+#   deprecated 墓碑属 I：docs-spec §4 明令「不删」、废弃态长期存在，且检索入口本就靠
+#   `status: deprecated`——若判阻断则等于禁止规范动作，故只提示。
 #
 # toolbox-script
 # format: v1
 # name: docs-lint
-# summary: docs/ 机械校验：frontmatter status/updated 四项、根目录平铺、README 双向覆盖（链接存在性+孤儿检测）
+# summary: docs/ 机械校验：frontmatter status/updated 四项、根目录平铺、README 双向覆盖（链接存在性+孤儿检测）；deprecated 墓碑为提示级不阻断（docs-spec §4）
 # trigger: pre-commit
 # cat: docs
 # alias: dl
@@ -13,7 +16,7 @@
 # self-test: --self-test
 
 set -u
-ROOT=''; FINDINGS=''; ERR=0; WARN=0; JSON_ONLY=0
+ROOT=''; FINDINGS=''; ERR=0; WARN=0; INFO=0; JSON_ONLY=0
 
 usage() {
   cat <<'EOF'
@@ -30,8 +33,12 @@ EOF
   exit 0
 }
 
-add() { # $1=级别 $2=消息（消息内禁双引号，json 契约要求）
-  if [ "$1" = E ]; then ERR=$((ERR+1)); else WARN=$((WARN+1)); fi
+add() { # $1=级别（E=错误阻断 / W=警告阻断 / I=提示不阻断）$2=消息（消息内禁双引号，json 契约要求）
+  case "$1" in
+    E) ERR=$((ERR+1)) ;;
+    W) WARN=$((WARN+1)) ;;
+    *) INFO=$((INFO+1)) ;;
+  esac
   FINDINGS="${FINDINGS}$1 $2\n"
 }
 
@@ -45,7 +52,7 @@ lint_docs() {
     l1=$(sed -n '1p' "$f"); l2=$(sed -n '2p' "$f"); l3=$(sed -n '3p' "$f"); l4=$(sed -n '4p' "$f")
     case "$l1" in "---") : ;; *) add E "${f#$ROOT/} 缺frontmatter开头" ;; esac
     case "$l2" in "status: draft"|"status: active"|"status: deprecated") : ;; *) add E "${f#$ROOT/} status异常($l2)" ;; esac
-    case "$l2" in "status: deprecated") add W "${f#$ROOT/} 已废弃——严禁当现行事实引用" ;; esac
+    case "$l2" in "status: deprecated") add I "${f#$ROOT/} 已废弃（Tombstone, docs-spec §4）——严禁当现行事实引用, 引用前须按其首行墓碑转向继任文档" ;; esac
     case "$l3" in "updated: "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]|updated:[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;; *) add E "${f#$ROOT/} updated异常($l3)" ;; esac
     case "$l4" in "---") : ;; *) add E "${f#$ROOT/} 字段超量(应仅status/updated)" ;; esac
   done < <(find "$docs" -name '*.md' ! -name README.md)
@@ -79,14 +86,15 @@ lint_docs() {
 report() {
   if [ "$JSON_ONLY" -eq 1 ]; then
     if [ "$ERR" -eq 0 ]; then
-      printf '{"status":"OK","severity":"info","message":"docs-lint: %d项通过（warn=%d）"}\n' "$((ERR+WARN))" "$WARN"
+      printf '{"status":"OK","severity":"info","message":"docs-lint: %d项通过（warn=%d, info=%d）"}\n' "$((ERR+WARN+INFO))" "$WARN" "$INFO"
     else
       printf '{"status":"FAIL","severity":"error","message":"docs-lint: %d项错误 %d项警告","remedy":"裸跑 toolbox run docs-lint 看逐条明细；frontmatter 格式见 docs-spec §1"}\n' "$ERR" "$WARN"
     fi
     return $([ "$ERR" -eq 0 ] && echo 0 || echo 1)
   fi
   if [ "$ERR" -eq 0 ] && [ "$WARN" -eq 0 ]; then
-    echo "OK: docs/ 全部校验通过"
+    if [ "$INFO" -gt 0 ]; then printf '%b' "$FINDINGS"; echo "----"; fi
+    echo "OK: docs/ 全部校验通过（提示 $INFO 项，提示级不阻断）"
     return 0
   fi
   printf '%b' "$FINDINGS"
@@ -108,7 +116,9 @@ self_test() {
   # 好样本：齐 frontmatter + README 条目
   printf -- '---\nstatus: active\nupdated: 2026-09-28\n---\n# ok\n' > "$tmp/docs/guide/bad.md"
   rm "$tmp/docs/flat.md"
-  printf -- '---\nstatus: active\nupdated: 2026-09-28\n---\n# idx\n- [bad.md](guide/bad.md)\n' > "$tmp/docs/README.md"
+  # 废弃态样本：deprecated 是 docs-spec §4 标准手段，属提示级不阻断——净样本仍须放行 exit 0
+  printf -- '---\nstatus: deprecated\nupdated: 2026-09-28\n---\n# dep\n' > "$tmp/docs/guide/dep.md"
+  printf -- '---\nstatus: active\nupdated: 2026-09-28\n---\n# idx\n- [bad.md](guide/bad.md)\n- [dep.md](guide/dep.md)\n' > "$tmp/docs/README.md"
   bash "$0" --root "$tmp" >/dev/null 2>&1; good_rc=$?
   rm -rf "$tmp"
   if [ "$bad_rc" -eq 1 ] && [ "$good_rc" -eq 0 ]; then

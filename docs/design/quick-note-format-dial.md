@@ -1,9 +1,13 @@
 ---
-status: active
-updated: 2026-10-04
+status: deprecated
+updated: 2026-10-08
 ---
 
 # 速记格式转盘（可收起三级径向盘）设计稿
+
+> [Deprecated 2026-10-08] 已被**编辑器格式引导层**（侧轨语义角标 + 贴键浮层打样面板）取代
+> → [note-format-guidance-layer.md](note-format-guidance-layer.md)
+> （代码侧为**临时退役**：挂载调用已注释、方法整段 `/* */` 保留可一键还原）
 
 > 状态：**active**——2026-10-03 起分批落地（真机反馈两轮定标回写本文）。
 >

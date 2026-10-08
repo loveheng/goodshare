@@ -1,12 +1,14 @@
 ---
 status: active
-updated: 2026-10-07
+updated: 2026-10-08
 ---
 
 # 编辑器统一：详情编辑切换到速记作曲器形态
 
 > 2026-10-03 用户拍板「详情的编辑页面和全部入口新增页面是一模一样，而不是现在区块样子」。
-> 本文记录同源化改造的结构、裁决与边界；转盘交互 SSOT 见 [quick-note-format-dial.md](quick-note-format-dial.md)，
+> 本文记录同源化改造的结构、裁决与边界；格式选择入口 SSOT 见
+> [note-format-guidance-layer.md](note-format-guidance-layer.md)（2026-10-08 起取代已墓碑化的
+> [quick-note-format-dial.md](quick-note-format-dial.md)），
 > 段模型/序列化口径见 [rich-text-media.md](rich-text-media.md) §2 与 [block-format-input.md](block-format-input.md)。
 
 ## 1. 结构
@@ -15,13 +17,13 @@ updated: 2026-10-07
 flowchart LR
     A["QuickNoteBar 外壳<br/>(peek/拖拽形变/顶栏/草稿/保存路由)"] --> C
     B["详情页编辑态<br/>(SliverFillRemaining + UpdateItemCommand)"] --> C
-    C["NoteComposerEditor<br/>统一作曲编辑器<br/>(分段作曲层+媒体卡+动作行+可拖动格式转盘)"] --> D["quick_note_span_codec<br/>(纯 Dart：段模型/命中/序列化)"]
+    C["NoteComposerEditor<br/>统一作曲编辑器<br/>(分段作曲层+媒体卡+动作行+侧轨角标/贴键浮层)"] --> D["quick_note_span_codec<br/>(纯 Dart：段模型/命中/序列化)"]
     C --> E["note_composer<br/>serializeNoteMd / noteMdToDraftRows"]
 ```
 
 - **唯一编辑器** `lib/ui/note_composer_editor.dart`：段序列（NoteTextSeg/NoteMediaSeg）、
   光标处插媒体、格式状态机（先选后打+行级档位）、动作行（拍照/相册/录音弹框/视频门槛/标签）、
-  可拖动转盘行 + 转盘面板 + 点空白收合——「作曲层+工具层顶层 Stack」挂载约束封装在组件内，宿主只给有界高度。
+  侧轨语义角标（只读）+ 贴键浮层打样面板（WYSIWYG 选块，2026-10-08 取代可拖动转盘）+ 点空白收合——「作曲层+工具层顶层 Stack」挂载约束封装在组件内，宿主只给有界高度。
 - **宿主解耦面**：`onDirty(rows)`（草稿行快照，宿主防抖落盘）/ `onChanged`（内容感知刷新）/
   `pendingTags`+`onPendingTagsChanged`（速记标签，详情不传即隐藏）/ `onMediaReplace`（媒体替换钩子）/
   `audioController`（页面单实例红线：详情复用页面控制器，速记自建）。
