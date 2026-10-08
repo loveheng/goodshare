@@ -38,6 +38,20 @@ void main() {
     await db.delete('ai_task_queue');
   });
 
+  // R5 拆分·数据侧（2026-10-08）：「速记保存 → 落库」的断言从 widget 用例
+  // （quick_note_bar_test「保存路由」）搬到此普通 test —— 页面级 UI 不碰真实
+  // sqlite，落库正确性由数据侧钉住，UI 侧只守「交给唯一写入口 + 反馈」。
+  test('速记保存路径：纯文本经 collectText 落库为单条 note，preview 含原文',
+      () async {
+    final it = await collector.collectText('购物清单一条', sourceApp: '速记');
+    expect(it, isNotNull);
+    expect(await repo.count(), 1, reason: '纯文本保存 = 一个 note 条目');
+    final items = await repo.list();
+    expect(items.single.itemType, InboxItem.typeNote);
+    expect(items.single.preview, contains('购物清单一条'));
+    expect(items.single.sourceApp, '速记');
+  });
+
   test('分散模式（默认）：每次收集独立成条、不锁定、入库即入队', () async {
     final a = await collector.collectText('第一条');
     final b = await collector.collectText('第二条');

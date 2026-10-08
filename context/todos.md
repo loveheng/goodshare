@@ -35,3 +35,7 @@ format: v3
 - [ ] [2026-10-03] (文档)(层:L0)(重:轻) 收敛复盘提议待确认：lessons「Scaffold body 内避让/高度手算」三连坑多次复现且表述稳定，拟固化进 goodshare-ui skill，确认后原条目降级 Ref (src: ai, media-native ::done 收敛复盘)
 - [ ] [2026-10-03] (功能)(候)(层:L3)(重:轻) 录音弹框语言选择：参考稿的「中文 ▼」暂未做——转写语言现状=ASR 模型档位 SSOT（asr.dart language:'auto'），「语言随条目走」管线未建，不做假下拉；待 item 级语言标注→transcribe 任务透传落地后补 (src: 用户参考稿, ai 权衡)
 - [ ] [2026-10-03] (环境)(层:L0)(重:轻) 编辑器统一死代码清偿：lib/doc/edit_session.dart（块模型/EditOp 家族，edit_session_test 约 40 钉子）与 lib/ui/format_toolbar.dart 已标 DEPRECATED 无 UI 消费，下一轮连同其单测删除；SSOT：docs/design/note-editor-unification.md §2 (src: 用户拍板「暂留标废弃」)
+- [ ] [2026-10-08] (功能)(候)(层:L4)(重:轻) 行内加粗 B 档是否进浮层：受 pending-confirm D5 约束（格式模型＝先选后打，不做给已有文字套格式/选区交互），只能做成「先选后打」开关瓦片而非选区菜单；待用户拍板 (src: 2026-10-08 格式档位评估)
+- [ ] [2026-10-08] (功能)(候)(层:L4)(重:轻) lib/ui/rotary_dial.dart（可旋转圆盘，stepped/continuous 双模式）从未接入消费方，有独立单测——与已恢复的 format_dial / smart_floating_hub 同为「零业务语义待复用件」；长期无宿主则再评估清偿 (src: 2026-10-08 死代码清偿)
+- [ ] [2026-10-08] (功能)(候)(层:L4)(重:轻) lib/ui/format_dial.dart（三级径向盘）保留但**当前无消费方**：零业务语义可复用件（DialSpec 三节注入），单测 30 条守护；若长期找不到宿主会退化成新死代码——复用或再次清偿二选一。同源的 smart_floating_hub.dart 已删 (src: 2026-10-08 死代码清偿)
+- [ ] [2026-10-08] (优化)(候)(层:L4)(重:中) 标题标记透明隐藏后的 H2 辨识度：H2=titleMedium w600 与正文 bodyLarge(16sp) 仅差字重，标记隐去后非焦点行几乎看不出是标题；待真机确认，必要时拉开 H2（字重 700 / 换字号档 / 主色） (src: 2026-10-08 标题标记显隐拍板)

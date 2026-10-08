@@ -277,8 +277,16 @@ class SpanTextEditingController extends TextEditingController {
   }
 
   /// 逐行算隐藏区间（整段一次求值，O(文本)）：谓词 false 且该行有标记
-  /// → 隐藏 `[行首, markerEnd)`。标题标记走 [faint]（淡显保留结构线索，
-  /// 中困惑 #G）；其余标记走 [hidden]（透明占位，§4.5）。谓词用 revealAt。
+  /// → 隐藏 `[行首, markerEnd)`，**透明占位**（保留宽度、不动字号，§4.5）。
+  /// 所有标记同口径（标题/列表/待办/引用），谓词用 revealAt。
+  ///
+  /// 2026-10-08 拍板：标题标记**回归隐藏态**，不再走淡显（中困惑 #G 废弃）。
+  /// 起因是真机实测「标题行看得见 `# `」被当成 bug——列表/引用/待办都透明、
+  /// 唯独标题淡灰，观感上就是「没做成所见即所得」；#G 想保的「非焦点标题结构
+  /// 线索」改由字号字重承担（H2 与正文差异不足已挂待办，见 context/todos.md）。
+  /// [faint] 通道保留（暂恒空），若日后需要极淡线索可一句切回。
+  ///
+  /// 公开包装见 [hiddenMarkerRangesFor]（同实现，供单测钉住判据）。
   static (List<(int, int)>, List<(int, int)>) _hiddenMarkerRanges(
     String text,
     int caret,
@@ -296,15 +304,19 @@ class SpanTextEditingController extends TextEditingController {
               frozen: false, heldValue: false) &&
           _caretInLine(text, caret.clamp(0, text.length), start, start + line.length);
       if (revealed) continue;
-      // 标题淡显、其余透明隐藏（中困惑 #G）
-      if (shape.isHeading) {
-        faint.add((start, start + shape.markerEnd));
-      } else {
-        hidden.add((start, start + shape.markerEnd));
-      }
+      // 标题与列表同口径透明隐藏（2026-10-08；faint 通道暂不启用）
+      hidden.add((start, start + shape.markerEnd));
     }
     return (hidden, faint);
   }
+
+  /// [SpanTextEditingController._hiddenMarkerRanges] 的公开包装：同一实现，
+  /// 供单测钉住显隐判据（库私有方法测试不可达）。返回 `(hidden, faint)`。
+  static (List<(int, int)>, List<(int, int)>) hiddenMarkerRangesFor(
+    String text,
+    int caret,
+  ) =>
+      _hiddenMarkerRanges(text, caret);
 
   static bool _caretInLine(String text, int caret, int lineStart, int lineEnd) {
     // revealAt 已定位光标所在行；此处只需判断该行是否就是光标行——

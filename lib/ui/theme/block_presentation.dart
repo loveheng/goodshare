@@ -49,14 +49,19 @@ final List<BlockPresentation> kBlockPresentations = [
     badge: 'H1',
     markerPrefix: '# ',
     resolveStyle: (t, _) =>
-        (t.titleLarge ?? const TextStyle()).copyWith(fontWeight: FontWeight.w600),
+        (t.titleLarge ?? const TextStyle()).copyWith(fontWeight: FontWeight.w700),
   ),
   BlockPresentation(
     kind: BlockKind.h2,
     badge: 'H2',
     markerPrefix: '## ',
-    resolveStyle: (t, _) =>
-        (t.titleMedium ?? const TextStyle()).copyWith(fontWeight: FontWeight.w600),
+    // 2026-10-08：标记区改透明隐藏后，「H2 与正文只差字重」会在编辑区糊成一
+    // 片（用户实测看不出是标题）。补 md 编辑器同款**三件套**——字号档 + 加粗
+    // + 主色：凭颜色一眼可辨，不依赖被隐藏的 `##` 标记。
+    resolveStyle: (t, s) => (t.titleMedium ?? const TextStyle()).copyWith(
+      fontWeight: FontWeight.w700,
+      color: s.primary,
+    ),
   ),
   BlockPresentation(
     kind: BlockKind.bullet,

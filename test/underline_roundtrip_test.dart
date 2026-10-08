@@ -1,21 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-import 'package:goodshare/action/item_action_handler.dart';
 import 'package:goodshare/data/db.dart';
-import 'package:goodshare/data/repository.dart';
 import 'package:goodshare/doc/rich_text.dart';
-import 'package:goodshare/models/draft_store.dart';
 import 'package:goodshare/share/note_composer.dart';
 import 'package:goodshare/share/quick_note_text_actions.dart';
-import 'package:goodshare/share/text_collector.dart';
 import 'package:goodshare/ui/content_body.dart';
-import 'package:goodshare/ui/format_dial.dart';
 import 'package:goodshare/ui/note_composer_editor.dart';
-import 'package:goodshare/ui/quick_note_bar.dart';
 
 /// 下划线端到端往返（编辑态 ↔ 阅读态同源护栏）。
 ///
@@ -139,91 +132,8 @@ void main() {
     });
   });
 
-  group('速记转盘选 U → 打字 → 保存落库', () {
-    testWidgets('落库 md 带 <u>，与编辑态所见一致', (tester) async {
-      final repo = await _pumpShell(tester);
-      await tester.tap(find.text('记点什么…'));
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField), 'abc');
-      // 打字退隐期 hub 是 IgnorePointer（P3-2 拍板）：先推进到恢复延时之后
-      // 再点，否则点击被吞（不报错、面板不展开）
-      await tester.pump(const Duration(seconds: 2));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Tt'));
-      await tester.pumpAndSettle();
-      // 二级「行内」扇区（idx2 中角 -105°、中径 50）按住扇出三级
-      final origin = tester.getRect(find.byType(FormatDial)).bottomRight -
-          const Offset(kDialHubRadius, kDialHubRadius);
-      final g = await tester.startGesture(origin + const Offset(-12.9, -48.3));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 150));
-      await g.up();
-      await tester.pumpAndSettle();
-      // 三级 U 叶（idx2 中角 -108°、中径 100）
-      await _dialDrag(tester, at: const Offset(-31, -95));
-      await tester.pumpAndSettle();
-      expect(find.text('U'), findsOneWidget, reason: '圆钮角标外显激活 U');
-      await tester.enterText(find.byType(TextField), '重点');
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('保存'));
-      for (var i = 0; i < 30; i++) {
-        if (find.text('已记下').evaluate().isNotEmpty) break;
-        await tester.runAsync(
-            () => Future<void>.delayed(const Duration(milliseconds: 50)));
-        await tester.pump(const Duration(milliseconds: 50));
-      }
-      expect(tester.takeException(), isNull);
-      await tester.runAsync(() async {
-        final items = await repo.list();
-        expect(items.length, 1);
-        expect(items.single.rawContent, '<u>重点</u>',
-            reason: '落库必须是 <u> 标记 md（详情页据此渲染下划线）');
-      });
-    });
-  });
-}
-
-/// 速记外壳（复刻 home_shell 的有界高度挂载，同 quick_note_bar_test 口径）。
-Future<Repository> _pumpShell(WidgetTester tester) async {
-  SharedPreferences.setMockInitialValues({});
-  final repo = Repository();
-  final handler = ItemActionHandler(repo);
-  final collector = TextCollector(handler);
-  await tester.pumpWidget(MaterialApp(
-    home: Scaffold(
-      body: Stack(
-        children: [
-          ListView(children: const [Text('占位列表')]),
-          Positioned(
-            left: 0,
-            right: 0,
-            top: 0,
-            bottom: 0,
-            child: QuickNoteBar(
-              collector: collector,
-              handler: handler,
-              draftPersistencer: InMemoryDraftStore(),
-            ),
-          ),
-        ],
-      ),
-    ),
-  ));
-  await tester.pumpAndSettle();
-  return repo;
-}
-
-/// 转盘拖选手势（同 quick_note_bar_test.dialDrag）。
-Future<void> _dialDrag(
-  WidgetTester tester, {
-  required Offset at,
-}) async {
-  final origin = tester.getRect(find.byType(FormatDial)).bottomRight -
-      const Offset(kDialHubRadius, kDialHubRadius);
-  final g = await tester.startGesture(origin + at);
-  await tester.pump();
-  await g.up();
-  await tester.pump();
+  // 2026-10-08 清理：「速记转盘选 U → 打字 → 保存落库」随悬浮球径向盘退役删除；
+  // 下划线端到端往返已由本文件 codec 往返 + 编辑/阅读同源两组用例覆盖。
 }
 
 /// 已渲染树里是否存在带下划线装饰的文本 span。

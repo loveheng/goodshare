@@ -4,11 +4,13 @@
 // 运行：flutter test test/input_self_audit_test.dart
 // 本文件只观测【当前实现】的真实输出，不假设「应当如何」；标注 FRICTION 处即
 // 用户手感风险点。断言仅锁定当前行为，便于回归时一眼看出模型是否变了。
+// 本探针刻意 print 观测输出供人工复核（`flutter test` 时随 reporter 打印），
+// 非生产日志路径，故豁免 avoid_print。
+// ignore_for_file: avoid_print
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:goodshare/share/note_seg.dart' show NoteTextSeg;
 import 'package:goodshare/ui/composer_doc.dart' show ComposerDoc;
 import 'package:goodshare/ui/span_text_controller.dart'
     show SpanPasteNormalizeFormatter;

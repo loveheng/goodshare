@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:goodshare/share/note_seg.dart' show NoteTextSeg;
 import 'package:goodshare/ui/composer_doc.dart' show ComposerDoc;
 
 // 有序列表编辑期实时重排（治 #3「删整项留空洞序号」）回归：
@@ -10,7 +9,7 @@ import 'package:goodshare/ui/composer_doc.dart' show ComposerDoc;
 // 通过后，在内存中一次性合成重排文本，与本次编辑原子落盘、记单步撤销。
 void main() {
   // 确保活跃文本段 plain 已初始化为 [text]（构造若未解析则补同步）。
-  ComposerDoc _seed(String text) {
+  ComposerDoc seed(String text) {
     final doc = ComposerDoc([
       ['t', text]
     ]);
@@ -27,7 +26,7 @@ void main() {
   }
 
   test('选区删中间项：编辑期即重排（治 #3）', () {
-    final doc = _seed('1. a\n2. b\n3. c');
+    final doc = seed('1. a\n2. b\n3. c');
     final seg = doc.activeText!;
     // 选区删「2. b\n」(offset 5..11)，光标落删区后端
     seg.ctrl.value = const TextEditingValue(
@@ -41,7 +40,7 @@ void main() {
   });
 
   test('IME 组合态删中间项：绝热不重排（门禁1）', () {
-    final doc = _seed('1. a\n2. b\n3. c');
+    final doc = seed('1. a\n2. b\n3. c');
     final seg = doc.activeText!;
     seg.ctrl.value = TextEditingValue(
       text: '1. a\n3. c',
@@ -55,7 +54,7 @@ void main() {
   });
 
   test('跨多组删：全文本重排（闭环断组跨删边界）', () {
-    final doc = _seed('1. a\n2. b\n\n3. c\n4. d');
+    final doc = seed('1. a\n2. b\n\n3. c\n4. d');
     final seg = doc.activeText!;
     // 删「2. b\n\n3. c」(跨两个有序组)，剩「1. a\n4. d」→ 4 应重排为 2
     seg.ctrl.value = const TextEditingValue(
@@ -69,7 +68,7 @@ void main() {
   });
 
   test('选区删中间项：单步撤销还原（含原空洞序号）', () {
-    final doc = _seed('1. a\n2. b\n3. c');
+    final doc = seed('1. a\n2. b\n3. c');
     final seg = doc.activeText!;
     seg.ctrl.value = const TextEditingValue(
       text: '1. a\n3. c',
@@ -86,7 +85,7 @@ void main() {
   });
 
   test('纯中段删字：不触发重排（O(1) 放行，门禁2 充要）', () {
-    final doc = _seed('1. apple\n2. banana');
+    final doc = seed('1. apple\n2. banana');
     final seg = doc.activeText!;
     // 删「pple」(offset 2..7)，不跨行、不含 marker
     seg.ctrl.value = const TextEditingValue(

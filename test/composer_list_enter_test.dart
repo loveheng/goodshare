@@ -4,7 +4,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:goodshare/doc/rich_text.dart';
 import 'package:goodshare/share/quick_note_text_actions.dart'
     show seedTextTruth, serializeTextTruthSpans;
-import 'package:goodshare/share/note_seg.dart' show NoteTextSeg;
 import 'package:goodshare/ui/composer_doc.dart' show ComposerDoc;
 import 'package:goodshare/ui/note_composer_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';

@@ -43,9 +43,12 @@ flowchart LR
 2. **长按替换保留**：详情编辑长按图/视频卡=换文件、点音频卡=重录（`onMediaReplace` 钩子，
    就地改 `seg.url`，保存时一并落库；取消=不出编辑态整体丢弃）。媒体 alt/label 随段进出
    但编辑态不可改（与作曲页形态一致）。
-3. **死代码暂留标废弃**：`lib/doc/edit_session.dart`（EditSession 块模型/EditOp 家族）与
-   `lib/ui/format_toolbar.dart`（线性格式条）不再被 UI 消费，标 DEPRECATED 暂留（历史契约
-   与单测保留），清偿删除见 context/todos.md。
+3. ~~**死代码暂留标废弃**~~ → **2026-10-08 已清偿删除**：`lib/doc/edit_session.dart`
+   （EditSession 块模型/EditOp 家族）与 `lib/ui/format_toolbar.dart`（线性格式条）连同各自
+   单测一并删除；随转盘退役的 `lib/ui/smart_floating_hub.dart` 同批删除。
+   ⚠️ `lib/ui/format_dial.dart`（三级径向盘）**本体保留**——只删了编辑器内的调用，
+   组件零业务语义、可复用于其他宿主（单测 30 条守护）。
+   格式入口统一为「侧轨角标 + 贴键浮层」，见 note-format-guidance-layer.md。
 
 ## 3. 详情编辑链路（改造后）
 

@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -8,7 +7,6 @@ import 'package:flutter/services.dart';
 import '../app/lifecycle_manager.dart';
 import 'toast.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../doc/rich_text.dart'
     show InlineMark, MediaSuffix, SpanListKind, SpanListRun, classifyMediaUrl;
@@ -22,7 +20,6 @@ import '../share/quick_note_text_actions.dart'
 import 'theme/block_presentation.dart' show BlockKind, blockPresentationOf, lineKindOf;
 import 'audio_playback_service.dart';
 import 'audio_record_sheet.dart';
-import 'format_dial.dart';
 import 'goodshare_image.dart';
 import 'image_viewer.dart';
 import 'confirm_dialog.dart';
@@ -115,11 +112,6 @@ const double kListGutterWidth = 28;
 
 
 
-/// 悬浮球打字退隐后的恢复停顿（停笔多久渐显回来）。
-const Duration kHubDimRestoreDelay = Duration(milliseconds: 1500);
-
-
-
 /// 硬件键盘撤销/重做意图（挂编辑器顶层 Shortcuts，见 build）。
 class _UndoIntent extends Intent {
   const _UndoIntent();
@@ -128,14 +120,6 @@ class _UndoIntent extends Intent {
 class _RedoIntent extends Intent {
   const _RedoIntent();
 }
-
-/// 悬浮球停靠缘（四缘吸附持久化维度之一；另一维=缘上分数位置）。
-enum _DockEdge { left, right, top, bottom }
-
-/// 悬浮球边长（MD 最小触控 48dp；SmartFloatingHub.size 同值）。
-const double _hubSize = 48;
-
-
 
 class NoteComposerEditorState extends State<NoteComposerEditor> {
   /// 内容引擎（拆解 P1b）：段序列 + 撤销栈 + 文本/结构编辑纯逻辑；State
@@ -156,50 +140,21 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
   /// 作用，光标离开段即失效）。
   final Set<InlineMark> _activeMarks = {};
 
-  /// 转盘面板显隐：点圆钮展开；空选松手/选完生效即收；写作区失焦延时自动收。
-  // 原格式转盘「展开态」标志（2026-10-08 退役转盘后仅作常驻 false 守卫位，
-  // 保留以零成本还原——若日后重启用转盘，去掉 final 即可）。
-  final bool _formatSheetOpen = false;
-
   /// 贴键浮层打样面板（问题#1 引导层·Step 3）显隐：点聚焦段侧轨 chip 展开，
-  /// 选完/滚动/场景切换经 [_closeFormatDial] 收（原转盘退役，复用同一收盘入口）。
+  /// 选完/滚动/场景切换经 [_closeFormatDial] 收。
   bool _blockPanelOpen = false;
-
-  /// 转盘展开期写作区失焦自动闭合（2026-10-03 拍板「失去区域焦点一段时间
-  /// 之后闭合，而不是点击空白」）：任一文本段失焦且全场无焦点时武装一次性
-  /// 延时器，期间焦点回到写作区即撤销；替代旧「点空白收合」全屏命中层
-  ///（命中层吞掉列表滚动/点按，且语义上空白不该是唯一出口）。
-  Timer? _dialBlurTimer;
-  static const Duration _dialBlurCloseDelay = Duration(milliseconds: 1500);
-
-  /// 分级退场 pending（V11）：非 null = 转盘正播退场动画，播完（onExitDone）
-  /// 才摘除面板。打字即收=keyPressed（80ms）、失焦超时=timeout（400ms）。
-  DialDismissReason? _dialPendingClose;
-
-  /// 悬浮球停靠位（2026-10-04 四缘吸附拍板）：缘 + 缘上分数位置。持久化
-  /// key 与速记条历史同源（旧 `quick_note_dial_dock_left` 布尔键首次恢复
-  /// 时迁移）——速记与详情编辑共享同一停靠记忆。
-  static const String _kDialDockEdgeKey = 'quick_note_dial_dock_edge';
-  static const String _kDialDockFracKey = 'quick_note_dial_dock_frac';
-  static const String _kDialDockLeftLegacyKey = 'quick_note_dial_dock_left';
-  static (_DockEdge, double)? _dialDockPersisted;
-  _DockEdge _dialDockEdge = _dialDockPersisted?.$1 ?? _DockEdge.right;
-
-  /// 缘上分数（0=缘起点，1=缘终点；默认 1 = 右缘下段，与旧版默认位同址）。
-  double _dialDockFrac = _dialDockPersisted?.$2 ?? 1.0;
-
-  /// 悬浮球拖拽边界（顶层 Stack LayoutBuilder 实测写入；null=未布局）。
-  Rect? _hubBounds;
-
-  /// 悬浮球位置（SmartFloatingHub SSOT）：dx=-1 为未初始化哨兵，首次布局
-  /// 或边界尺寸变化时按 [_dialDockEdge]×[_dialDockFrac] 重播种（键盘起落
-  /// /旋转后相对位置随分数保持）；拖拽/吸附由组件写入，松手回写停靠位。
-  final ValueNotifier<Offset> _hubPos = ValueNotifier(const Offset(-1, 0));
 
   bool _sending = false;
 
   /// 相册长视频「仍要添加」确认后暂存的落盘路径（>5min 非阻断流专用）。
   String? _pendingVideoPath;
+
+  /// 动作行横滚区控制器（2026-10-08 拍板：钉住撤销/重做，其余横滚）。
+  final ScrollController _toolScroll = ScrollController();
+
+  /// 横滚区是否**真的**可滚（内容宽 > 视口）——决定右缘渐隐遮罩显隐：
+  /// affordance 不许骗人（不能滚却画渐隐，会被读成「UI 被截断」）。
+  bool _toolScrollable = false;
 
   @override
   void initState() {
@@ -207,60 +162,44 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     _lifecycleSub = AppLifecycleManager.instance.states.listen((s) {
       if (s == AppLifecycleState.resumed) _closeFormatDial();
     }); // ④ 切后台回来自动收盘
-    unawaited(_restoreDialDock());
     _doc = ComposerDoc(widget.initialRows); // 引擎构造即重建段序列 + 设撤销基线
     // 失焦自动闭合转盘：全局焦点变化 → 全场无焦点即武装延时器（期间回焦撤销）
     WidgetsBinding.instance.focusManager.addListener(_onFocusChanged);
+    // 动作行横滚区：可滚性需布局后实测（首帧 + 视口变化双路刷新，见
+    // [_syncToolScrollable]）。
+    _toolScroll.addListener(_syncToolScrollable);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncToolScrollable());
   }
 
-  /// 全场焦点扫描：任一文本段持有焦点=true（转盘手势/系统弹层不触发）。
-  bool _anyTextFocused() =>
-      _doc.segs.any((s) => s is NoteTextSeg && s.focus.hasFocus);
+  /// 动作行横滚区可滚性刷新：只在真能滚时才显右缘渐隐。视口变化（旋转 / 键盘
+  /// 起落 / 侧栏）由 [ScrollMetricsNotification] 转 post-frame 驱动——回调发生在
+  /// build/layout 期，直接 setState 会撞断言。
+  void _syncToolScrollable() {
+    if (!_toolScroll.hasClients) return;
+    final can = _toolScroll.position.maxScrollExtent > 1;
+    if (can != _toolScrollable && mounted) setState(() => _toolScrollable = can);
+  }
 
+  /// 焦点变化 → 记录活跃段 id（活跃段真相源；无焦点段时不改写，保留上次值）。
   void _onFocusChanged() {
-    // 记录当前焦点段 id（活跃段真相源）；无焦点段时不改写，保留上次值。
     for (final s in _doc.segs) {
       if (s is NoteTextSeg && s.focus.hasFocus) {
         _doc.activeSegId = s.id;
         break;
       }
     }
-    if (!_anyTextFocused()) _undimHub(); // 焦点离场：球恢复常显
-    if (!_formatSheetOpen) return;
-    if (_anyTextFocused()) {
-      _dialBlurTimer?.cancel();
-      _dialBlurTimer = null;
-    } else {
-      _dialBlurTimer ??= Timer(_dialBlurCloseDelay, () {
-        _dialBlurTimer = null;
-        if (mounted && _formatSheetOpen && !_anyTextFocused()) {
-          // 超时闭合（V11）：400ms 柔和收缩退场，播完摘除
-          setState(() => _dialPendingClose = DialDismissReason.timeout);
-        }
-      });
-    }
   }
 
-  /// 外部意图收盘（返回键/拖动滚动/动作行/切后台，2026-10-05 拍板四路径）：
-  /// 统一走分级退场管道（keyPressed 同级极速淡出），挂起反悔的「打断=强
-  /// 确认」由转盘内部处置——外部收盘绝不丢已选项。
+  /// 外部意图收盘（返回键/拖动滚动/动作行/切后台，2026-10-05 拍板四路径）。
   void _closeFormatDial() {
-    // 同时收新问题#1 引导层·Step 3 贴键浮层（原转盘退役，复用同一收盘入口）
     if (_blockPanelOpen && mounted) setState(() => _blockPanelOpen = false);
-    if (!_formatSheetOpen || _dialPendingClose != null) return;
-    _dialBlurTimer?.cancel();
-    _dialBlurTimer = null;
-    setState(() => _dialPendingClose = DialDismissReason.keyPressed);
   }
 
   @override
   void dispose() {
-    _dialDockPersisted = (_dialDockEdge, _dialDockFrac);
     _lifecycleSub?.cancel();
     WidgetsBinding.instance.focusManager.removeListener(_onFocusChanged);
-    _hubPos.dispose();
-    _hubDimTimer?.cancel();
-    _dialBlurTimer?.cancel();
+    _toolScroll.dispose();
     _doc.disposeAll();
     _ownAudioCtl?.dispose();
     super.dispose();
@@ -317,10 +256,7 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
   // ---------- 内部：段序列管理 ----------
 
 
-  /// 悬浮球打字退隐（输入阻碍审计 P3：球停在文字边缘会盖字/压选择手柄）：
-  /// 打字期间降透明度让位正文，停顿 [kHubDimRestoreDelay] 渐显回来。
-  bool _hubDimmed = false;
-  Timer? _hubDimTimer;
+
 
 
 
@@ -349,12 +285,11 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     return null;
   }
 
-  /// 把引擎 [EditOutcome] 反射为 UI 副作用：悬浮球退隐（打字）、重建（结构
-  /// 变更/撤销钮翻转）、焦点（经 segId 定位，绝不持有 FocusNode）、帧尾释放
-  /// 被并段、落盘/保存回调。引擎只认 id/offset（拆解 P1b 边界）。
+  /// 把引擎 [EditOutcome] 反射为 UI 副作用：重建（结构变更/撤销钮翻转）、
+  /// 焦点（经 segId 定位，绝不持有 FocusNode）、帧尾释放被并段、落盘/保存回调。
+  /// 引擎只认 id/offset（拆解 P1b 边界）。
   void _applyOutcome(EditOutcome? out, {bool textEdited = false}) {
     if (out == null) return;
-    if (textEdited || out.textEdited) _dimHubWhileTyping();
     if (out.clearActiveMarks) _activeMarks.clear();
     final rebuild = out.needsRebuild || out.undoRedoChanged;
     if (rebuild && mounted) setState(() {});
@@ -694,54 +629,13 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
 
   // ---------- 内部：格式状态机 ----------
 
-/*
-  /// 激活角标文本：mark 优先（2026-10-04 单选拍板后恒单项），无 mark 显
-  /// 档位（H1/H2）。
-  String? _dialBadge(int level) {
-    if (_activeMarks.isNotEmpty) {
-      const abbr = <InlineMark, String>{
-        InlineMark.bold: 'B',
-        InlineMark.italic: 'I',
-        InlineMark.underline: 'U',
-      };
-      return [
-        for (final m in _activeMarks)
-          if (abbr[m] != null) abbr[m]!,
-      ].join('·');
-    }
-    return switch (level) {
-      1 => 'H1',
-      2 => 'H2',
-      _ => null, // 正文档位不外显
-    };
-  }
-*/
-
-/*
-  /// 档位选择（转盘 标题扇区 H1/H2、正文直选）：纯逻辑委托 [_doc]，引擎写/删
-  /// `# ` 前缀——标记本就在文本里（文本真相），结果经 [EditOutcome] 反射
-  /// 焦点/重建/落盘。
-  void _pickLevel(int level) {
-    final seg = _doc.activeText;
-    if (seg == null) return;
-    _doc.setListLevel(seg, level);
-    _applyOutcome(_doc.consumeOutcome());
-  }
-*/
-
-/*
-  /// 行内 mark 开关（高困惑 #2 修复：选区与未来输入分流）：
-  /// - 有选区 → 直接套到选中文字（[ComposerDoc.applyMarkToSelection]），随即收转盘；
-  /// - 塌缩 → 激活 mark，作用于之后输入的文字（原「先选后打」模型保留）。
-  /// 单选制（B/I/U 互斥，新选替换旧选，再点同项关闭）不变。
+  /// 行内 mark 开关（先选后打；2026-10-08 拍板回归浮层 B/I 两档）。
+  ///
+  /// 口径受 pending-confirm D5 约束（格式模型＝**先选后打**，明确不做「给已有
+  /// 文字套格式、无选区交互」），故只保留激活态切换：点亮后作用于**之后输入**
+  /// 的文字；再点同项关闭。**单选制**（B/I 互斥，新选替换旧选）不变——
+  /// 与档位型「选完即收」不同，mark 切换后浮层**保持展开**（可连点试错）。
   void _toggleMark(InlineMark mark) {
-    final seg = _doc.activeText;
-    if (seg != null && !seg.ctrl.selection.isCollapsed) {
-      _doc.applyMarkToSelection(seg, mark);
-      _applyOutcome(_doc.consumeOutcome());
-      _closeFormatDial();
-      return;
-    }
     setState(() {
       if (!_activeMarks.remove(mark)) {
         _activeMarks
@@ -749,105 +643,8 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
           ..add(mark);
       }
     });
-    _dialFocusWriting();
-  }
-*/
-
-/*
-  /// 转盘手势期把焦点拉回写作区（键盘保持弹出）：三级联动瞬间与选完格式
-  /// 之后调用——2026-10-03 拍板「选完格式有键盘事件，转盘自动闭合」的
-  /// 键盘侧实现（转盘闭合由选择回调内的收合完成）。
-  void _dialFocusWriting() {
+    // 焦点回写作区（键盘保持弹出）：选完格式即可接着打字。
     _activeText?.focus.requestFocus();
-  }
-*/
-
-  /// 悬浮球打字退隐：打字即降透明度让位正文，停顿后渐显恢复。
-  void _dimHubWhileTyping() {
-    _hubDimTimer?.cancel();
-    if (!_hubDimmed) setState(() => _hubDimmed = true);
-    _hubDimTimer = Timer(kHubDimRestoreDelay, () {
-      if (mounted && _hubDimmed) setState(() => _hubDimmed = false);
-    });
-  }
-
-  void _undimHub() {
-    _hubDimTimer?.cancel();
-    _hubDimTimer = null;
-    if (_hubDimmed) setState(() => _hubDimmed = false);
-  }
-
-  // ---------- 内部：转盘停靠（四缘吸附） ----------
-
-  /// 停靠位 → 球左上角坐标（相对拖拽边界顶左；分数沿缘映射到可动程）。
-  Offset _dockOffset(Rect bounds) {
-    final maxX = (bounds.width - _hubSize).clamp(0.0, double.infinity);
-    final maxY = (bounds.height - _hubSize).clamp(0.0, double.infinity);
-    final along = _dialDockFrac.clamp(0.0, 1.0);
-    return switch (_dialDockEdge) {
-      _DockEdge.left => Offset(0, maxY * along),
-      _DockEdge.right => Offset(maxX, maxY * along),
-      _DockEdge.top => Offset(maxX * along, 0),
-      _DockEdge.bottom => Offset(maxX * along, maxY),
-    };
-  }
-
-  /*
-  /// 球位（吸附后）→ 停靠位（缘=球心距最近边，分数=另一轴可动程占比）。
-  void _syncDockFromHubPos() {
-    final b = _hubBounds;
-    if (b == null) return;
-    final p = _hubPos.value;
-    final maxX = (b.width - _hubSize).clamp(0.0, double.infinity);
-    final maxY = (b.height - _hubSize).clamp(0.0, double.infinity);
-    final dLeft = p.dx, dRight = maxX - p.dx;
-    final dTop = p.dy, dBottom = maxY - p.dy;
-    if (math.min(dLeft, dRight) <= math.min(dTop, dBottom)) {
-      _dialDockEdge = dLeft <= dRight ? _DockEdge.left : _DockEdge.right;
-      _dialDockFrac = maxY <= 0 ? 0 : (p.dy / maxY).clamp(0.0, 1.0);
-    } else {
-      _dialDockEdge = dTop <= dBottom ? _DockEdge.top : _DockEdge.bottom;
-      _dialDockFrac = maxX <= 0 ? 0 : (p.dx / maxX).clamp(0.0, 1.0);
-    }
-  }
-  */
-
-/*
-  /// 拖拽松手（吸附落定）→ 回写停靠位并持久化（SmartFloatingHub.onDragEnd）。
-  Future<void> _persistDialDock() async {
-    _syncDockFromHubPos();
-    _dialDockPersisted = (_dialDockEdge, _dialDockFrac);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kDialDockEdgeKey, _dialDockEdge.name);
-    await prefs.setDouble(_kDialDockFracKey, _dialDockFrac);
-  }
-*/
-
-  /// 恢复停靠位（新键缺失时迁移旧布尔键；无历史保持默认右下=旧默认位）。
-  Future<void> _restoreDialDock() async {
-    final prefs = await SharedPreferences.getInstance();
-    final edgeName = prefs.getString(_kDialDockEdgeKey);
-    _DockEdge? edge;
-    double frac = 1.0;
-    if (edgeName != null) {
-      for (final v in _DockEdge.values) {
-        if (v.name == edgeName) edge = v;
-      }
-      frac = prefs.getDouble(_kDialDockFracKey) ?? 1.0;
-    } else {
-      final legacyLeft = prefs.getBool(_kDialDockLeftLegacyKey);
-      if (legacyLeft != null) {
-        edge = legacyLeft ? _DockEdge.left : _DockEdge.right;
-      }
-    }
-    final resolved = edge;
-    if (resolved == null || !mounted) return;
-    setState(() {
-      _dialDockEdge = resolved;
-      _dialDockFrac = frac;
-      final b = _hubBounds;
-      if (b != null) _hubPos.value = _dockOffset(b);
-    });
   }
 
   // ---------- 渲染 ----------
@@ -873,29 +670,13 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
           _RedoIntent: CallbackAction<_RedoIntent>(onInvoke: (_) => _redo()),
         },
         child: PopScope(
-          // ① 返回键/侧滑手势：转盘开着先收盘（分级退场），再按才走页面返回
-          canPop: !_formatSheetOpen,
+          // ① 返回键/侧滑手势：格式浮层开着先收盘，再按才走页面返回
+          canPop: !_blockPanelOpen,
           onPopInvokedWithResult: (didPop, _) {
             if (!didPop) _closeFormatDial();
           },
           child: LayoutBuilder(
             builder: (context, cons) {
-              // 悬浮球拖拽边界 = 作曲层视口（工具层上沿以上）：四缘吸附的「缘」
-              // 即写作区四边——底缘吸附落在动作行上沿，永不遮动作行图标
-              final bounds = Rect.fromLTWH(
-                0,
-                0,
-                cons.maxWidth,
-                math.max(0, cons.maxHeight - kComposerToolLayerHeight),
-              );
-              // 首次布局（哨兵 dx=-1）或边界尺寸变化（键盘起落/旋转）：按停靠
-              // 位（缘×分数）重播种，相对位置随分数保持；拖拽期边界不变不抢拽
-              if (_hubPos.value.dx < 0 ||
-                  _hubBounds == null ||
-                  _hubBounds!.size != bounds.size) {
-                _hubPos.value = _dockOffset(bounds);
-              }
-              _hubBounds = bounds;
               return Stack(
                 children: [
                   // 作曲层：满幅铺到工具层背后，内容超出内部滚动。
@@ -949,21 +730,8 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
                     bottom: 0,
                     child: _toolLayer(scheme),
                   ),
-                  // 选区口径明示条（骑在工具层上沿）。**必须恒为 Positioned**——
-                  // Stack 里出现非 Positioned 的子节点会改变 Stack 自身尺寸
-                  // 计算，整层命中测试随之失效（空白点击/点球双双哑火，实测）。
-                  _selectionHint(scheme),
-                  // 悬浮球（收起态常驻「Tt」，全域拖动四缘吸附——2026-10-04 拍板）
-                  // 问题#1 引导层：原格式转盘已退役，格式选择改由聚焦段侧轨 chip
-                  // （_withFocusBadge）+ 贴键浮层（_blockFormatPanel）承接。
-                  // _hub(bounds, scheme, Theme.of(context).textTheme),
-                  // 转盘面板挂顶层 Stack（bounded + Clip.none 约束已封装在本组件内）。
-                  // 收合出口：空选松手/选完生效/hub 回根 + 失焦 1.5s 自动闭合
-                  //（2026-10-03 拍板：不再用「点空白」全屏命中层——它吞列表滚动与
-                  // 外部点按，且语义上闭合不该依赖点空白）。
-                  // 转盘面板退役（见 _hub 注释）。格式选择改由 _blockFormatPanel 承接：
-                  // _formatDialPanel(scheme, bounds),
-                  // 问题#1 引导层·Step 3 贴键浮层打样面板：点 chip 弹出，WYSIWYG 选块，对接 setLineKind
+                  // 问题#1 引导层·Step 3 贴键浮层打样面板：点侧轨 chip 弹出，
+                  // WYSIWYG 选块（含行内 B/I），对接 setLineKind。
                   if (_blockPanelOpen) _blockFormatPanel(scheme),
                 ],
               );
@@ -974,51 +742,6 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     );
   }
 
-  /// 提示条的「隐藏态」：占位必须是 **Positioned + 零尺寸**（见 Stack 命中
-  /// 纪律），绝不能退化成裸 SizedBox——那会被 Stack 当成非定位子节点。
-  static const Widget _hintPlaceholder = Positioned(
-    left: 0,
-    top: 0,
-    child: SizedBox.shrink(),
-  );
-
-  /// 格式口径提示条（高困惑 #2 修复后口径更新）：
-  /// - 有选区：标记直接套到选中文字，无需提示；
-  /// - 塌缩：说明「格式将作用于之后输入的文字」（先选后打模型保留）。
-  /// 只在转盘展开期出现，不打扰平时书写。
-  Widget _selectionHint(ColorScheme scheme) {
-    if (!_formatSheetOpen) return _hintPlaceholder;
-    final seg = _activeText;
-    if (seg == null) return _hintPlaceholder;
-    return ListenableBuilder(
-      listenable: seg.ctrl,
-      builder: (context, _) {
-        if (!seg.ctrl.selection.isCollapsed) return _hintPlaceholder;
-        return Positioned(
-          left: 0,
-          right: 0,
-          bottom: kComposerToolLayerHeight,
-          child: IgnorePointer(
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(
-                horizontal: Insets.lg,
-                vertical: Insets.sm,
-              ),
-              color: scheme.surfaceContainerHighest,
-              child: Text(
-                '格式将作用于之后输入的文字',
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: scheme.onSurfaceVariant,
-                ),
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
 
   /// 文本段输入框（无边界，段间自然衔接；首段空态给提示语）。
   ///
@@ -1042,13 +765,6 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
         maxLines: null,
         onChanged: (_) {
           _onSegChanged(seg); // 文字变更：段状态随动 + 脏通知交宿主
-          // 打字即时收（V11）：指尖触键菜单即灭——80ms 极速淡出退场，
-          // 不挡光标处候选框；播完（onExitDone）才真正摘除
-          if (_formatSheetOpen && _dialPendingClose == null) {
-            _dialBlurTimer?.cancel();
-            _dialBlurTimer = null;
-            setState(() => _dialPendingClose = DialDismissReason.keyPressed);
-          }
         },
         inputFormatters: const [SpanPasteNormalizeFormatter()],
         keyboardType: TextInputType.multiline,
@@ -1066,16 +782,19 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     return _withFocusBadge(seg, _withListGutter(seg, field));
   }
 
-  /// 聚焦段语义角标（问题#1 引导层·Step 1 只读侧轨）：仅当前段获得焦点时在段首
-  /// 呈现 24dp 弱化角标（H1 / H2 / ▎ / T），失焦宽度收为 0，绝不挤压 360dp 正文。
-  /// 列表/待办行已有常驻左侧凹槽（•/☑/序号，见 [_withListGutter]），不重复占宽。
+  /// 聚焦段语义角标（问题#1 引导层·Step 1，兼浮层入口）：仅当前段获得焦点时在
+  /// 段首呈现 24dp 弱化角标（H1 / H2 / ▎ / T），失焦宽度收为 0。
+  ///
+  /// 2026-10-08 拍板：**列表/待办段同样显示角标**（原为「凹槽已占宽，不重复」
+  /// 而隐藏）。原因：待办/引用/标题档齐全后，列表行若不给角标就**没有任何改
+  /// 类型的出口**（凹槽只认 • 与 ☑，改不回正文/标题），入口一致性优先于省
+  /// 24dp——代价是列表段左侧共 52dp（角标 24 + 凹槽 28），331dp 窄屏正文余
+  /// 279dp，可接受（原设计余 303dp）。
   Widget _withFocusBadge(NoteTextSeg seg, Widget child) {
     return ListenableBuilder(
       listenable: seg.focus,
       builder: (context, _) {
-        final focused = seg.focus.hasFocus;
-        final isList = seg.spans.listRuns.isNotEmpty;
-        final show = focused && !isList;
+        final show = seg.focus.hasFocus;
         return Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -1127,8 +846,9 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
   }
 
   /// 选块落地（问题#1 引导层·Step 3）：chip 浮层选中的语义 → [LineKindTarget] →
-  /// [ComposerDoc.setLineKind]（已含 IME 组合态守卫 _finalizeComposing）。待办不在
-  /// 显式口径（走 toggleTodo），落 bullet 仅作占位；结果经 [EditOutcome] 反射重建。
+  /// [ComposerDoc.setLineKind]（已含 IME 组合态守卫 _finalizeComposing）。待办
+  /// 2026-10-08 拍板回归显式档（写 `- [ ] `，翻勾选仍走 toggleTodo）；结果经
+  /// [EditOutcome] 反射重建。
   void _applyBlockKind(BlockKind kind) {
     final seg = _activeText;
     if (seg == null) return;
@@ -1138,7 +858,8 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
       BlockKind.h2 => LineKindTarget.h2,
       BlockKind.bullet => LineKindTarget.bullet,
       BlockKind.quote => LineKindTarget.quote,
-      BlockKind.todo => LineKindTarget.bullet,
+      // 2026-10-08 拍板：待办回归浮层显式档（原落 bullet 占位），写 `- [ ] `
+      BlockKind.todo => LineKindTarget.todo,
     };
     _doc.setLineKind(seg, target);
     _applyOutcome(_doc.consumeOutcome());
@@ -1148,7 +869,11 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
 
   /// 贴键浮层打样面板（问题#1 引导层·Step 3）：点 Step 1 chip 弹出，WYSIWYG 选块，
   /// 正式对接 [ComposerDoc.setLineKind]。锚在工具层上沿、软键盘上方，绝不挤占正文
-  /// （横向滚动容 5 档）。样式源 = 正文渲染同源的 [blockPresentationOf]，所见即所选。
+  ///（横向滚动容 6 档）。样式源 = 正文渲染同源的 [blockPresentationOf]，所见即所选。
+  ///
+  /// 档位序 = **语义层级**（正文 → 标题 → 列表 → 待办 → 引用），不按频次排：
+  /// 用户是「按语义找档」而非「按肌肉记忆找位置」，语义序可预测性更高；正文
+  /// 作回退档置首（错误预防）。
   Widget _blockFormatPanel(ColorScheme scheme) {
     final theme = Theme.of(context).textTheme;
     final seg = _activeText;
@@ -1171,12 +896,41 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
           padding: const EdgeInsets.all(Insets.sm),
           child: Row(
             children: [
+              // 结构档：正文 → 标题（语义序，正文为回退档置首）
               for (final k in const [
+                BlockKind.plain,
                 BlockKind.h1,
                 BlockKind.h2,
+              ])
+                Padding(
+                  padding: const EdgeInsets.only(right: Insets.xs),
+                  child: _blockTile(k, k == current, scheme, theme),
+                ),
+              // 行内档（2026-10-08 拍板：B/I 紧跟标题二）：与结构档间加一道
+              // 细分隔——两类语义不同（块级=整行，行内=之后输入的文字），
+              // 视觉分组防混读。
+              Container(
+                width: 1,
+                height: 22,
+                margin: const EdgeInsets.only(right: Insets.xs),
+                color: scheme.outlineVariant,
+              ),
+              for (final m in const [InlineMark.bold, InlineMark.italic])
+                Padding(
+                  padding: const EdgeInsets.only(right: Insets.xs),
+                  child: _markTile(m, _activeMarks.contains(m), scheme, theme),
+                ),
+              Container(
+                width: 1,
+                height: 22,
+                margin: const EdgeInsets.only(right: Insets.xs),
+                color: scheme.outlineVariant,
+              ),
+              // 结构档（续）：列表 → 待办 → 引用
+              for (final k in const [
                 BlockKind.bullet,
+                BlockKind.todo,
                 BlockKind.quote,
-                BlockKind.plain,
               ])
                 Padding(
                   padding: const EdgeInsets.only(right: Insets.xs),
@@ -1222,6 +976,38 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
               Text(_blockSample(kind), style: style),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  /// 行内格式瓦片（B / I，2026-10-08 拍板）：**字母本体即样式预览**（B 加粗、
+  /// I 斜体），激活高亮 primaryContainer。
+  ///
+  /// **开关型**：切换后浮层**保持展开**（可连点试错 / 再点关闭），与档位型
+  /// 「选完即收」区分——沿用 format_toolbar 既有口径：块级是一次性选择，行内
+  /// 是可连续启停的状态。语义受 D5 约束＝先选后打（作用于之后输入的文字）。
+  Widget _markTile(
+    InlineMark mark,
+    bool active,
+    ColorScheme scheme,
+    TextTheme theme,
+  ) {
+    final letter = mark == InlineMark.bold ? 'B' : 'I';
+    final style = (theme.titleMedium ?? const TextStyle()).copyWith(
+      fontWeight: mark == InlineMark.bold ? FontWeight.w700 : FontWeight.w400,
+      fontStyle: mark == InlineMark.italic ? FontStyle.italic : FontStyle.normal,
+      color: active ? scheme.onPrimaryContainer : scheme.onSurface,
+    );
+    return Material(
+      color: active ? scheme.primaryContainer : scheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(Radii.md),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(Radii.md),
+        onTap: () => _toggleMark(mark),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          child: Text(letter, style: style),
         ),
       ),
     );
@@ -1519,184 +1305,6 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     );
   }
 
-/*
-  /// 悬浮球：SmartFloatingHub 全域拖动 + 四缘吸附（收起态常驻「Tt」）——
-  /// 拖拽/磁吸/tap 分流在通用组件，本层只剩业务接线：点按开合转盘、
-  /// 松手回写停靠位并持久化。展开期藏球（转盘 hub 即格式按钮本体）。
-  Widget _hub(Rect bounds, ColorScheme scheme, TextTheme textTheme) {
-    final active = _activeText;
-    final seg = active?.spans;
-    final caret = seg == null ? 0 : (seg.selExtent).clamp(0, seg.plain.length);
-    final level = seg == null ? 0 : quickNoteLevelAt(seg, caret);
-    final badge = _dialBadge(level);
-    final litNow = level > 0 || _activeMarks.isNotEmpty;
-    return SmartFloatingHub(
-      positionNotifier: _hubPos,
-      bounds: bounds,
-      size: const Size(_hubSize, _hubSize),
-      onTap: () {
-        _undimHub(); // 主动点球 = 要用它，立即恢复常显可点（否则退隐期吞点击）
-        setState(() => _formatSheetOpen = !_formatSheetOpen);
-        _activeText?.focus.requestFocus(); // 点按抢焦点，拉回写作区
-      },
-      onDragEnd: _persistDialDock, // 吸附落定 → 停靠位回写+持久化
-      child: ListenableBuilder(
-        listenable: Listenable.merge([if (active != null) active.ctrl]),
-        builder: (context, _) {
-          // 展开期藏球：转盘内整圆 hub 即格式按钮本体（同位同职责，
-          // 双显会重叠出「两个按钮」——真机实证）
-          if (_formatSheetOpen) return const SizedBox.shrink();
-          // 退隐期不仅「看不见」，还必须**不可命中**：球压住选择手柄或吞掉
-          // 正文点击，比视觉遮挡更致命（P3-2 的真实痛点）。
-          return IgnorePointer(
-            ignoring: _hubDimmed,
-            child: AnimatedOpacity(
-              opacity: _hubDimmed ? 0.0 : 1.0,
-              duration: const Duration(milliseconds: 240),
-              child: Stack(
-            clipBehavior: Clip.none,
-            children: [
-              // 球面本体：激活点亮 primaryContainer
-              Semantics(
-                // 无障碍（ui-spec §6.0）：自绘 hub 无语义文本，补中文 label
-                button: true,
-                label: '格式工具，点按展开格式转盘',
-                child: Container(
-                  alignment: Alignment.center,
-                  decoration: ShapeDecoration(
-                    color: litNow
-                        ? scheme.primaryContainer
-                        : scheme.surfaceContainerHighest,
-                    shape: const CircleBorder(),
-                  ),
-                  child: Text(
-                    'Tt',
-                    // 装饰字形（非正文排版）：整档取 M3 titleSmall（=14，与原
-                    // 裸字面量同值），不写 fontSize 字面量（arch-guard R7）
-                    style: (textTheme.titleSmall ?? const TextStyle()).copyWith(
-                      fontWeight: FontWeight.w700,
-                      color: litNow
-                          ? scheme.onPrimaryContainer
-                          : scheme.onSurfaceVariant,
-                    ),
-                  ),
-                ),
-              ),
-              // 激活角标（收起后仍可见）
-              if (badge != null)
-                Positioned(
-                  right: -4,
-                  top: -4,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 4,
-                      vertical: 1,
-                    ),
-                    decoration: ShapeDecoration(
-                      color: scheme.primary,
-                      // 全系统去胶囊（ui-spec §2.3）：Stadium 退役，角标属小件走
-                      // Radii.sm——高度约 13px，md12 会超过半径一半成伪装胶囊。
-                      shape: const RoundedRectangleBorder(
-                        borderRadius: BorderRadius.all(
-                          Radius.circular(Radii.sm),
-                        ),
-                      ),
-                    ),
-                    child: Text(
-                      badge,
-                      style: TextStyle(
-                        fontSize: 9,
-                        fontWeight: FontWeight.w700,
-                        height: 1.2,
-                        color: scheme.onPrimary,
-                      ),
-                    ),
-                  ),
-                ),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-*/
-
-/*
-  /// 格式转盘面板（点圆钮展开、点空白/空选松手收合）。
-  ///
-  /// 组件已配置化（DialSpec，缺省=默认菜单与真机定标几何）；宿主只负责
-  /// 语义映射：分类/叶子 index → 档位与 mark 落地（Aa=0 直选正文、
-  /// H=0 三级 H1/H2、BIU=2 三级 B/I/U）。
-  Widget? _formatDialPanel(ColorScheme scheme, Rect bounds) {
-    final active = _activeText;
-    if (!_formatSheetOpen || active == null) return null;
-    final seg = active.spans;
-    final caret = (seg.selExtent).clamp(0, seg.plain.length);
-    final level = quickNoteLevelAt(seg, caret);
-    final badge = _dialBadge(level);
-    const inlineMarks = [
-      InlineMark.bold,
-      InlineMark.italic,
-      InlineMark.underline,
-    ];
-    // 面板定位（2026-10-04 四缘吸附）：hub 圆心 = 悬浮球球心，面板内锚点
-    // 位置由象限给（FormatDial.anchorInPanel 同一数学，不宿主重推）；扇出
-    // 象限 = 水平/竖直各取朝屏内半区（向手心泛化到四缘）
-    final hubCenter = _hubPos.value + const Offset(_hubSize / 2, _hubSize / 2);
-    final openRight = hubCenter.dx < bounds.center.dx;
-    final openDown = hubCenter.dy < bounds.center.dy;
-    final side = switch ((openRight, openDown)) {
-      (true, true) => DialSide.downRight,
-      (true, false) => DialSide.upRight,
-      (false, true) => DialSide.downLeft,
-      (false, false) => DialSide.upLeft,
-    };
-    const geo = DialGeometry();
-    final panelSize = FormatDial.panelSize(geo);
-    final anchor = FormatDial.anchorInPanel(panelSize, side, geo);
-    return Positioned(
-      left: hubCenter.dx - anchor.dx,
-      top: hubCenter.dy - anchor.dy,
-      child: Material(
-        color: Colors.transparent,
-        child: FormatDial(
-          side: side,
-          currentLabel: badge ?? 'Aa', // hub 盘面字：正文档位业界标识
-          hubLit: level > 0 || _activeMarks.isNotEmpty,
-          disabledCategories: level > 0 ? const {2} : null, // 互斥：标题行行内盘置灰
-          onCategorySelect: (_) => _pickLevel(0), // Aa 直选正文
-          onLeafSelect: (cat, leaf) => switch (cat) {
-            0 => _pickLevel(leaf == 0 ? 1 : 2), // H → H1/H2
-            _ => _toggleMark(inlineMarks[leaf]), // BIU → B/I/U
-          },
-          appliedInner: {
-            if (level > 0) 0 else 1,
-            if (_activeMarks.isNotEmpty) 2,
-          },
-          appliedLeaf: {
-            0: {if (level == 1) 0, if (level == 2) 1},
-            2: {
-              for (var i = 0; i < inlineMarks.length; i++)
-                if (_activeMarks.contains(inlineMarks[i])) i,
-            },
-          },
-          // 三级随二级联动瞬间 + 选完生效时拉回键盘（2026-10-03 拍板）
-          onLeavesChanged: _dialFocusWriting,
-          // 分级退场（V11）：带原因进 pending，转盘播完动画再摘除
-          onDismiss: (reason) => setState(() => _dialPendingClose = reason),
-          closing: _dialPendingClose,
-          onExitDone: () => setState(() {
-            _formatSheetOpen = false;
-            _dialPendingClose = null;
-          }),
-        ),
-      ),
-    );
-  }
-*/
-
   /// 「导入 Markdown」弹框（2026-10-06 拍板）：用户在**受控输入框**里粘贴/输入
   /// md 片段 → [seedTextTruth] 解析为文本真相态（线级标记留文本，与段播种同
   /// 口径——旧播种剥掉线级标记会让导进来的待办点勾选框无字面可翻）
@@ -1748,15 +1356,29 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     );
   }
 
-  /// 动作行：拍照 / 相册 / 录音 / 视频（/ 标签——速记条启用）。
-  /// 拍照与相册是**就地插图**；视频入口收敛为二选一面板（相册首位）。
+  /// 动作行（2026-10-08 拍板：**钉住高频 + 其余横滚**）。
+  ///
+  /// 窄屏 331dp 装不下 9 个图标（实测溢出，末尾 Spacer/标签文本先被压成 0），
+  /// 故拆两段：
+  /// - **钉住区**（恒可见、绝不进滚动）：撤销 / 重做——误操作救命键，藏进滚动
+  ///   区等于「找不到后悔药」；
+  /// - **横滚区**：拍照 / 相册 / 录音 / 视频 / **md 导入** / 软换行 / 标签，
+  ///   按「插入类聚合」排序（md 紧跟视频，语义同类相邻）。
+  ///
+  /// 可滚时右缘渐隐作 affordance（提示后面还有），不可滚时**不画**——假的截断
+  /// 感比没有提示更糟。渐隐 IgnorePointer，绝不吞点击。
   Widget _actionRow(ColorScheme scheme) {
     final pendingTags = widget.pendingTags;
     final showTags = widget.onPendingTagsChanged != null;
+    final hasTags = pendingTags != null && pendingTags.isNotEmpty;
+    final tags = pendingTags ?? const <String>[];
     return SizedBox(
       height: kComposerToolLayerHeight,
       child: Row(
         children: [
+          // ---- 钉住区 ----
+          // （本行无待办入口：整段逐行转待办的保存期模式 2026-10-03 已废弃且
+          // 2026-10-08 收窄推翻时**未恢复**；建行级待办档走浮层，见 BlockKind.todo）
           IconButton(
             onPressed: _doc.canUndo ? _undo : null,
             icon: const Icon(Icons.undo_outlined),
@@ -1767,66 +1389,110 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
             icon: const Icon(Icons.redo_outlined),
             tooltip: '重做',
           ),
-          IconButton(
-            onPressed: _softBreak,
-            icon: const Icon(Icons.wrap_text),
-            tooltip: '换行（列表内续行）',
-          ),
-          IconButton(
-            onPressed: _sending ? null : _photo,
-            icon: const Icon(Icons.photo_camera_outlined),
-            tooltip: '拍照插入',
-          ),
-          IconButton(
-            onPressed: _sending ? null : _pickAlbumImage,
-            icon: const Icon(Icons.photo_outlined),
-            tooltip: '相册插图',
-          ),
-          IconButton(
-            onPressed: _sending ? null : _record,
-            icon: const Icon(Icons.mic_none),
-            tooltip: '录音插入',
-          ),
-          IconButton(
-            onPressed: _sending ? null : _pickVideoSource,
-            icon: const Icon(Icons.movie_creation_outlined),
-            tooltip: '视频插入',
-          ),
-          IconButton(
-            onPressed: _sending ? null : _openMdImport,
-            icon: const Icon(Icons.note_add_outlined),
-            tooltip: '导入 Markdown 片段',
-          ),
-          if (showTags)
-            IconButton(
-              onPressed: _sending ? null : _pickTags,
-              icon: Badge(
-                isLabelVisible: pendingTags != null && pendingTags.isNotEmpty,
-                label: Text('${pendingTags?.length ?? 0}'),
-                child: const Icon(Icons.tag),
-              ),
-              tooltip: '标签',
+          // ---- 横滚区（插入类聚合；md 导入紧跟视频） ----
+          Expanded(
+            child: Stack(
+              children: [
+                NotificationListener<ScrollMetricsNotification>(
+                  onNotification: (_) {
+                    // metrics 变化（旋转/键盘起落）转 post-frame 再判可滚性
+                    WidgetsBinding.instance.addPostFrameCallback(
+                      (_) => _syncToolScrollable(),
+                    );
+                    return false;
+                  },
+                  child: SingleChildScrollView(
+                    controller: _toolScroll,
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.only(right: Insets.sm),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          onPressed: _sending ? null : _photo,
+                          icon: const Icon(Icons.photo_camera_outlined),
+                          tooltip: '拍照插入',
+                        ),
+                        IconButton(
+                          onPressed: _sending ? null : _pickAlbumImage,
+                          icon: const Icon(Icons.photo_outlined),
+                          tooltip: '相册插图',
+                        ),
+                        IconButton(
+                          onPressed: _sending ? null : _record,
+                          icon: const Icon(Icons.mic_none),
+                          tooltip: '录音插入',
+                        ),
+                        IconButton(
+                          onPressed: _sending ? null : _pickVideoSource,
+                          icon: const Icon(Icons.movie_creation_outlined),
+                          tooltip: '视频插入',
+                        ),
+                        IconButton(
+                          onPressed: _sending ? null : _openMdImport,
+                          icon: const Icon(Icons.note_add_outlined),
+                          tooltip: '导入 Markdown 片段',
+                        ),
+                        IconButton(
+                          onPressed: _softBreak,
+                          icon: const Icon(Icons.wrap_text),
+                          tooltip: '换行（列表内续行）',
+                        ),
+                        if (showTags)
+                          IconButton(
+                            onPressed: _sending ? null : _pickTags,
+                            icon: Badge(
+                              isLabelVisible: hasTags,
+                              label: Text('${pendingTags?.length ?? 0}'),
+                              child: const Icon(Icons.tag),
+                            ),
+                            tooltip: '标签',
+                          ),
+                        // 标签文本：滚动区内**不给 Expanded**（无界宽会让滚动
+                        // 区撑满、滚动失效），限宽截断即可——数量已在 Badge 上
+                        if (showTags && hasTags)
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 88),
+                            child: Text(
+                              tags.map((t) => '#$t').join(' '),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.right,
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(color: scheme.onSurfaceVariant),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (_toolScrollable)
+                  Positioned(
+                    right: 0,
+                    top: 0,
+                    bottom: 0,
+                    child: IgnorePointer(child: _toolScrollFade(scheme)),
+                  ),
+              ],
             ),
-          // 待办模式入口已移除（2026-10-03 用户拍板「去掉待办列表」）。
-          // 标签文本吃剩余空间（Expanded）：窄屏下恒不溢出——固定子项过多
-          // 时文本收缩为 0，比 ConstrainedBox 的硬宽度安全。
-          if (showTags && pendingTags != null && pendingTags.isNotEmpty)
-            Expanded(
-              child: Text(
-                pendingTags.map((t) => '#$t').join(' '),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.right,
-                style: Theme.of(context).textTheme.bodySmall
-                    ?.copyWith(color: scheme.onSurfaceVariant),
-              ),
-            )
-          else
-            const Spacer(),
+          ),
         ],
       ),
     );
   }
+
+  /// 横滚区右缘渐隐（可滚 affordance）：透明 → 底色，纯装饰不吞点击。
+  Widget _toolScrollFade(ColorScheme scheme) => Container(
+    width: 16,
+    decoration: BoxDecoration(
+      gradient: LinearGradient(
+        colors: [
+          scheme.surface.withValues(alpha: 0),
+          scheme.surface,
+        ],
+      ),
+    ),
+  );
 }
 
 /// 「导入 Markdown」弹框本体（2026-10-06 拍板）：自持 TextEditingController，

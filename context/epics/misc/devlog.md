@@ -22,3 +22,20 @@ last-merge: none
 - [2026-10-03] [验证]: flutter analyze → 0 issue；quick_note_bar_test → 12 绿
 - [2026-10-03] [变更]: 视频封面（用户拍板「视频加封面」）：MediaBridge 增 videoCover（MediaMetadataRetriever 首帧 SYNC→CLOSEST 回落，JPEG 压缩宽≤720 等比降采样，字节透传，null 非阻断契约不变）+ MediaToolkit.videoCover 接口；新建 VideoCoverImage（url 进程级缓存含失败缓存防重试、inflight 去重、本地文件存在性预判），作曲层视频卡与 InlineMediaVideo 行内块接入（封面+中央播放钮+label 阴影叠字，点按仍全屏播放）；无新第三方依赖（走 media-native 能力接口）
 - [2026-10-03] [验证]: flutter analyze → 0 issue；全量 flutter test → 462 绿（+videoCover 契约单测）；compileDebugKotlin ✓
+- [2026-10-08] [变更]: 编辑器格式档位收口：待办 2026-10-08 拍板回归浮层显式档（LineKindTarget 增 todo，直设写 '- [ ] ' 前缀），档位 5→6 按语义序排（plain/h1/h2/bullet/todo/quote，正文回退档置首），列表与待办段同样显示侧轨角标（入口一致性，左缘共 52dp），设计稿 note-format-guidance-layer 同步
+- [2026-10-08] [验证]: flutter analyze → No issues found (8.8s); flutter test --timeout 60s (set_line_kind + op_log + ordered_deletion + block_presentation) → 29/29 All tests passed
+- [2026-10-08] [SSOT 修正]: 旧结论「去掉待办列表」（2026-10-03，动作行待办入口移除）已废弃 ➔ 新结论：待办保留，2026-10-08 回归浮层建行档（BlockKind.todo → LineKindTarget.todo，直设写 '- [ ] '）；保存期整段逐行转待办的 _todoMode 入口仍不恢复
+- [2026-10-08] [变更]: 标题标记区显隐回归隐藏态：废弃中困惑 #G 淡显，标题与列表/引用/待办同口径走透明占位隐藏（编辑区不再显示 '# '），判据方法公开包装 hiddenMarkerRangesFor 供单测钉住，新增 test/span_text_controller_marker_test.dart 7 条
+- [2026-10-08] [验证]: flutter analyze → No issues found (8.7s); flutter test --timeout 60s (span_text_controller_marker 新增 7 + quick_note_text_actions + composer_list_enter) → 74/74 All tests passed
+- [2026-10-08] [变更]: 动作行改造（2026-10-08 拍板：钉住高频 + 其余横滚）：撤销/重做钉左端恒可见；拍照/相册/录音/视频/导入md/软换行/标签进横向滚动区（插入类聚合，md 紧跟视频）；可滚时右缘 16dp 渐隐作 affordance（IgnorePointer 不吞点击，不可滚不画）；标签文本改限宽截断，避免 Expanded 撑满使滚动失效
+- [2026-10-08] [验证]: flutter analyze → No issues found (8.6s); flutter test --timeout 60s 全量 → 547 passed / 5 failed（5 条均属转盘退役遗留死测试，见同日 [暂停] 行，与本轮改动无因果关系）
+- [2026-10-08] [暂停]: 越界失败自动暂停：全量测试 5 红 = composer_input_friction_test 4 条 + underline_roundtrip_test 1 条，断言均为 Found 0 widgets（悬浮球/转盘 widget 已于格式引导层改造中注释退役），失败文件不在本会话 diff 且与本轮动作行/显隐改动无因果链 → 未越界修改，挂待办待用户确认后整段清偿
+- [2026-10-08] [变更]: 死代码清偿 + 行内格式回归：删除转盘体系（format_dial/smart_floating_hub/format_toolbar/edit_session 四组件与各自单测、编辑器内转盘注释块与停靠持久化）并清 10 条遗留死测试；浮层新增 B/I 行内档（标题二之后，细分隔分组，开关型先选后打单选制），新增 test/composer_inline_mark_test.dart 4 条，设计稿与 ui-spec/unification 同步
+- [2026-10-08] [验证]: flutter analyze → No issues found; flutter test --timeout 60s 全量 → 702 passed / 2 failed（2 红为 quick_note_bar 保存路由既有脆弱 + 其连带的保存按钮感知；已用 git stash 对照验证：回到清理前 HEAD 状态该用例同样失败，非本次引入）
+- [2026-10-08] [订正]: 同日早先 [暂停] 行统计有误（输出被 head 截断）：转盘遗留死测试实为 10 条 = quick_note_bar 5 + composer_input_friction 4 + underline_roundtrip 1，非 5 条；现已全部清偿
+- [2026-10-08] [变更]: 恢复转盘组件本体（用户拍板「组件留着、只删编辑区调用」）：git checkout 还原 lib/ui/format_dial.dart 与 test/format_dial_test.dart，编辑器调用侧保持已清理；三处文档口径由「已删除」改回「组件保留待复用」
+- [2026-10-08] [验证]: flutter analyze → No issues found; flutter test --timeout 60s test/format_dial_test.dart → 30/30 All tests passed
+- [2026-10-08] [变更]: 恢复 smart_floating_hub 组件与单测（用户拍板「组件留着」）；H2 辨识度：改 block_presentation 为字号档+w700+主色（md 编辑器三件套），标记隐藏后仍一眼可辨，设计稿 §2 同步
+- [2026-10-08] [验证]: flutter analyze → No issues found; flutter test --timeout 60s (block_presentation + span_text_controller_marker + composer_inline_mark) → 15/15 All tests passed; smart_floating_hub_test → 3/3 All tests passed
+- [2026-10-08] [变更]: 按 R5 拆分 quick_note_bar「保存路由」：UI 侧改用 _FakeCollector 替身（只守内容交动作层唯一写入口+反馈+清空，不碰真实 sqlite），落库断言搬到数据侧 test/text_collector_test.dart 普通 test（速记保存=单条 note 且 preview 含原文）；pumpShell 支持注入 collector
+- [2026-10-08] [验证]: flutter analyze → No issues found; flutter test --timeout 60s 全量 → 738/738 All tests passed（此前 2 红已消）

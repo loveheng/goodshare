@@ -8,7 +8,7 @@ import 'package:flutter/services.dart' show TextEditingValue, TextSelection;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:goodshare/ui/composer_doc.dart'
-    show ComposerDoc, DeleteOp, EditOp, FormatRangeOp, InsertTextOp, StructureOp;
+    show ComposerDoc, DeleteOp, FormatRangeOp, InsertTextOp, StructureOp;
 import 'package:goodshare/doc/rich_text.dart'
     show InlineMark, SpanListKind, SpanListRun;
 import 'package:goodshare/share/note_seg.dart' show NoteTextSeg;

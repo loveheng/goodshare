@@ -917,8 +917,9 @@ class ComposerDoc {
   }
 
   /// 段类型直设（问题#1 引导层·语义侧轨/浮层选块）：把光标行整行直设为 [kind]
-  /// 语义（plain/H1/H2/bullet/quote）。待办/有序是列表自动派生变体，不由面板
-  /// 直设（待办走 [toggleTodo]、有序走回车续号），故显式类型只这五种。复用
+  /// 语义（plain/H1/H2/bullet/quote/todo）。有序是列表自动派生变体，不由面板
+  /// 直设（有序走回车续号）；待办 2026-10-08 拍板回归浮层（建行走本方法写
+  /// `- [ ] `，翻勾选仍走 [toggleTodo]），故显式类型共六种。复用
   /// [parseLine].markerEnd 原子替换行首标记区（与 [setListLevel] 同源，零坐标
   /// 搬运），单步撤销 + op-log 记账；IME 组合态经 [_finalizeComposing] 守卫。
   void setLineKind(NoteTextSeg seg, LineKindTarget kind) {

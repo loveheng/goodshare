@@ -501,13 +501,17 @@ int _prefixDelta(String oldLine, String newLine) {
 
 int _orderedPrefixLen(String line) => parseLine(line).markerEnd;
 
-/// 浮层选块·目标类型（问题#1 引导层）：把光标行直设为下列之一。待办/有序是列表
-/// 的自动派生变体，不由面板直设（待办走 [toggleTodo]、有序走回车续号），故面板
-/// 只暴露这五个显式类型。
-enum LineKindTarget { plain, h1, h2, bullet, quote }
+/// 浮层选块·目标类型（问题#1 引导层）：把光标行直设为下列之一。有序是列表
+/// 的自动派生变体，不由面板直设（有序走回车续号），故面板暴露这六个显式类型。
+///
+/// 待办 2026-10-08 拍板**回归浮层**（推翻 2026-10-03「去掉待办列表」）：收集
+/// 场景「待看/待买/待办」是高频诉求，此前只能手打 `- [ ] ` 或 md 导入产出，
+/// 无显式入口；勾选态切换仍走 [toggleTodo]（二者分工：建行走本枚举、翻勾选
+/// 走 toggleTodo）。
+enum LineKindTarget { plain, h1, h2, bullet, quote, todo }
 
 /// 段类型直设（文本真相，与 [setLineLevel] 同源）：把 [caret] 所在行整行直设为
-/// [target] 语义（普通/一级/二级/无序/引用）。标题与列表/引用互斥，统一走
+/// [target] 语义（普通/一级/二级/无序/引用/待办）。标题与列表/引用互斥，统一走
 /// 「替换行首标记区」——[parseLine] 派生 `markerEnd` 原子定位旧标记宽度，零坐标
 /// 搬运（与阶段二「标记本就在文本里」不变量一致）。返回 null = 已是目标
 /// （无变化，调用方不记撤销步）。
@@ -524,6 +528,7 @@ TextActionResult? setLineKindAction(String text, int caret, LineKindTarget targe
     LineKindTarget.h2 => '## ',
     LineKindTarget.bullet => '- ',
     LineKindTarget.quote => '> ',
+    LineKindTarget.todo => '- [ ] ',
   };
   // 已是目标（含裸勾选框 `[ ] `/todo/有序等非显式类型——需显式转才清）：仅当旧
   // 标记区字面等于目标前缀才视为无变化，避免重复改写搅动 undo。

@@ -79,6 +79,8 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
 
   /// 待办模式：开 = 保存时文本段逐行转 `- [ ]` 待办。入口已移除
   ///（2026-10-03 拍板「去掉待办列表」），仅存量待办草稿恢复后保留口径。
+  /// 2026-10-08 收窄：本字段是「保存期整段转待办」，与浮层**建行级待办档**
+  ///（BlockKind.todo）是两回事——后者已回归，前者仍不恢复入口。
   bool _todoMode = false;
 
   bool _sending = false;
