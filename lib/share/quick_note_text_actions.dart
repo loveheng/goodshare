@@ -500,3 +500,35 @@ int _prefixDelta(String oldLine, String newLine) {
 }
 
 int _orderedPrefixLen(String line) => parseLine(line).markerEnd;
+
+/// 浮层选块·目标类型（问题#1 引导层）：把光标行直设为下列之一。待办/有序是列表
+/// 的自动派生变体，不由面板直设（待办走 [toggleTodo]、有序走回车续号），故面板
+/// 只暴露这五个显式类型。
+enum LineKindTarget { plain, h1, h2, bullet, quote }
+
+/// 段类型直设（文本真相，与 [setLineLevel] 同源）：把 [caret] 所在行整行直设为
+/// [target] 语义（普通/一级/二级/无序/引用）。标题与列表/引用互斥，统一走
+/// 「替换行首标记区」——[parseLine] 派生 `markerEnd` 原子定位旧标记宽度，零坐标
+/// 搬运（与阶段二「标记本就在文本里」不变量一致）。返回 null = 已是目标
+/// （无变化，调用方不记撤销步）。
+TextActionResult? setLineKindAction(String text, int caret, LineKindTarget target) {
+  if (caret < 0 || caret > text.length) return null;
+  final range = _lineRangeAt(text, caret);
+  if (range == null) return null;
+  final (start, end) = range;
+  final line = text.substring(start, end);
+  final shape = parseLine(line);
+  final desired = switch (target) {
+    LineKindTarget.plain => '',
+    LineKindTarget.h1 => '# ',
+    LineKindTarget.h2 => '## ',
+    LineKindTarget.bullet => '- ',
+    LineKindTarget.quote => '> ',
+  };
+  // 已是目标（含裸勾选框 `[ ] `/todo/有序等非显式类型——需显式转才清）：仅当旧
+  // 标记区字面等于目标前缀才视为无变化，避免重复改写搅动 undo。
+  if (line.substring(0, shape.markerEnd) == desired) return null;
+  final newText = text.replaceRange(start, start + shape.markerEnd, desired);
+  final newCaret = (caret - shape.markerEnd + desired.length).clamp(0, newText.length);
+  return TextActionResult(newText, newCaret);
+}

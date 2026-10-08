@@ -34,6 +34,7 @@ import '../share/quick_note_span_codec.dart';
 import '../share/quick_note_line_shape.dart' show parseLine;
 import '../share/quick_note_text_actions.dart'
     show
+        LineKindTarget,
         TextActionResult,
         TextEditKind,
         backspaceOutdent,
@@ -41,6 +42,7 @@ import '../share/quick_note_text_actions.dart'
         enterWithMarker,
         planTextEdit,
         renumberOrderedGroup,
+        setLineKindAction,
         setLineLevel;
 import '../share/quick_note_text_actions.dart' as qa
     show detectStructuralDeletion, toggleTodo;
@@ -848,6 +850,7 @@ class ComposerDoc {
   // ---------- 动作行格式按钮（段变换内核） ----------
   /// 待办勾选切换（文本真相）：改写行内 `[ ]`/`[x]` 字面，不动坐标 run。
   void toggleTodo(NoteTextSeg seg, SpanListRun target) {
+    _finalizeComposing(seg); // #2 IME 守卫：点击勾选框前强制拼音落地
     final r = qa.toggleTodo(seg.spans.plain, target.start);
     if (r == null) return; // 非待办行（标记已被剥掉，文本真相下不应发生）
     beginStructuralStep();
@@ -869,6 +872,7 @@ class ComposerDoc {
   /// 档位选择（转盘 标题扇区 H1/H2、正文直选）：光标行整行直设（0 回正文），
   /// 选择区不丢；焦点拉回写作区。
   void setListLevel(NoteTextSeg seg, int level) {
+    _finalizeComposing(seg); // #2 IME 守卫：转盘档位切换前强制拼音落地
     final caret = seg.spans.selExtent;
     final r = setLineLevel(seg.spans.plain, caret, level);
     if (r == null) return;
@@ -890,10 +894,61 @@ class ComposerDoc {
     ));
   }
 
+  /// IME 组合态强制落地守卫（#2 前置，浮层选块/勾选框等手势触发结构动作前调用）：
+  /// 用户拼音组合态（下划线挂着 nǐhǎo 未上屏）时点击格式选块，若直接改写
+  /// controller 文本，Android InputConnection 遭内存突变→吞字或 IndexOutOfBounds
+  /// 崩溃收起。故在第 0 毫秒先强制组合区落地（composing 区字符本已在 text 内，仅
+  /// 清 composing 标记 + 收拢选区到段末），再执行原子置换。[setLineKind] /
+  /// [toggleTodo] / [setListLevel] / [applyMarkToSelection] 等手势触发动作统一经
+  /// 此守卫；非组合态为空操作，不影响打字链路。
+  void _finalizeComposing(NoteTextSeg seg) {
+    final v = seg.ctrl.value;
+    if (!v.composing.isValid || v.composing.isCollapsed) return;
+    final end = v.selection.isValid ? v.selection.end : v.text.length;
+    // 程序化赋值不触发 onChanged（仅用户编辑触发），spans 已随组合输入随动，
+    // 此处仅清 composing 视觉标记并收拢选区（composing 字符已并入纯文本）。
+    seg.ctrl.value = v.copyWith(
+      selection: TextSelection.collapsed(offset: end),
+      composing: TextRange.empty,
+    );
+    seg.spans
+      ..selBase = end
+      ..selExtent = end;
+  }
+
+  /// 段类型直设（问题#1 引导层·语义侧轨/浮层选块）：把光标行整行直设为 [kind]
+  /// 语义（plain/H1/H2/bullet/quote）。待办/有序是列表自动派生变体，不由面板
+  /// 直设（待办走 [toggleTodo]、有序走回车续号），故显式类型只这五种。复用
+  /// [parseLine].markerEnd 原子替换行首标记区（与 [setListLevel] 同源，零坐标
+  /// 搬运），单步撤销 + op-log 记账；IME 组合态经 [_finalizeComposing] 守卫。
+  void setLineKind(NoteTextSeg seg, LineKindTarget kind) {
+    _finalizeComposing(seg);
+    final caret = seg.spans.selExtent;
+    final r = setLineKindAction(seg.spans.plain, caret, kind);
+    if (r == null) return; // 已是目标（无变化，不记撤销步）
+    beginStructuralStep();
+    seg.ctrl
+      ..text = r.text
+      ..selection = TextSelection.collapsed(offset: r.caret);
+    seg.spans
+      ..plain = r.text
+      ..selBase = r.caret
+      ..selExtent = r.caret;
+    deriveLineRuns(seg.spans);
+    _recordOp(StructureOp(seg.id, 'setLineKind', detail: kind.name));
+    _mergePending(EditOutcome(
+      focusSegId: seg.id,
+      focusCaret: r.caret,
+      needsRebuild: true,
+      clearActiveMarks: true,
+    ));
+  }
+
   /// 选区套格式（高困惑 #2 修复）：在选中区间 [start,end) 上切换 [mark]。
   /// 选区塌缩则无操作（调用方应回退到激活未来输入）。复用 [toggleInlineMarkRuns]
   /// 的坐标 run 数学；选区保持以便连续切多个 mark。
   void applyMarkToSelection(NoteTextSeg seg, InlineMark mark) {
+    _finalizeComposing(seg); // #2 IME 守卫：划词套格式前强制拼音落地
     final sel = seg.ctrl.selection;
     if (sel.isCollapsed) return;
     final s = sel.start.clamp(0, seg.spans.plain.length);
