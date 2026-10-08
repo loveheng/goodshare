@@ -20,6 +20,7 @@ import '../share/note_composer.dart' show NoteSegment;
 import '../share/note_video_policy.dart';
 import '../share/quick_note_span_codec.dart';
 import '../share/quick_note_text_actions.dart' show deriveLineRuns, seedTextTruth;
+import 'theme/block_presentation.dart' show BlockKind, blockPresentationOf, lineKindOf;
 import 'audio_playback_service.dart';
 import 'audio_record_sheet.dart';
 import 'format_dial.dart';
@@ -1038,7 +1039,59 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
       ),
     );
     // 列表/待办行才加左侧凹槽（无列表段直接原样返回，排版零变化）。
-    return _withListGutter(seg, field);
+    return _withFocusBadge(seg, _withListGutter(seg, field));
+  }
+
+  /// 聚焦段语义角标（问题#1 引导层·Step 1 只读侧轨）：仅当前段获得焦点时在段首
+  /// 呈现 24dp 弱化角标（H1 / H2 / ▎ / T），失焦宽度收为 0，绝不挤压 360dp 正文。
+  /// 列表/待办行已有常驻左侧凹槽（•/☑/序号，见 [_withListGutter]），不重复占宽。
+  Widget _withFocusBadge(NoteTextSeg seg, Widget child) {
+    return ListenableBuilder(
+      listenable: seg.focus,
+      builder: (context, _) {
+        final focused = seg.focus.hasFocus;
+        final isList = seg.spans.listRuns.isNotEmpty;
+        final show = focused && !isList;
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 120),
+              width: show ? 24 : 0,
+              child: show ? _focusBadge(seg) : null,
+            ),
+            Expanded(child: child),
+          ],
+        );
+      },
+    );
+  }
+
+  /// 角标内容：取光标所在行的 [BlockKind]，用统一规约渲染低对比徽标。光标在段内
+  /// 移动时经 [seg.ctrl] 监听实时重算（多行段切换行即换类型）。样式源 = 正文渲染
+  /// 同源的 [blockPresentationOf]（arch-guard R7：不写裸 fontSize 字面量）。
+  Widget _focusBadge(NoteTextSeg seg) {
+    final scheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context).textTheme;
+    return ListenableBuilder(
+      listenable: seg.ctrl,
+      builder: (context, _) {
+        final caret = seg.ctrl.selection.isValid
+            ? seg.ctrl.selection.extentOffset
+            : 0;
+        final kind = lineKindOf(seg.ctrl.text, caret);
+        final spec = blockPresentationOf(kind);
+        final badgeStyle = (theme.labelSmall ?? const TextStyle()).copyWith(
+          fontWeight: FontWeight.w700,
+          color: scheme.onSurfaceVariant,
+        );
+        return SizedBox(
+          width: 24,
+          height: 24,
+          child: Center(child: Text(spec.badge, style: badgeStyle, maxLines: 1)),
+        );
+      },
+    );
   }
 
   /// 列表凹槽：一行是一个列表项，标记必须**逐行对齐正文**——单个 TextField
