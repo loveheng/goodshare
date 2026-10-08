@@ -5,8 +5,6 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'smart_floating_hub.dart';
-
 import '../app/lifecycle_manager.dart';
 import 'toast.dart';
 import 'package:image_picker/image_picker.dart';
@@ -159,7 +157,9 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
   final Set<InlineMark> _activeMarks = {};
 
   /// 转盘面板显隐：点圆钮展开；空选松手/选完生效即收；写作区失焦延时自动收。
-  bool _formatSheetOpen = false;
+  // 原格式转盘「展开态」标志（2026-10-08 退役转盘后仅作常驻 false 守卫位，
+  // 保留以零成本还原——若日后重启用转盘，去掉 final 即可）。
+  final bool _formatSheetOpen = false;
 
   /// 贴键浮层打样面板（问题#1 引导层·Step 3）显隐：点聚焦段侧轨 chip 展开，
   /// 选完/滚动/场景切换经 [_closeFormatDial] 收（原转盘退役，复用同一收盘入口）。
@@ -694,6 +694,7 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
 
   // ---------- 内部：格式状态机 ----------
 
+/*
   /// 激活角标文本：mark 优先（2026-10-04 单选拍板后恒单项），无 mark 显
   /// 档位（H1/H2）。
   String? _dialBadge(int level) {
@@ -714,7 +715,9 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
       _ => null, // 正文档位不外显
     };
   }
+*/
 
+/*
   /// 档位选择（转盘 标题扇区 H1/H2、正文直选）：纯逻辑委托 [_doc]，引擎写/删
   /// `# ` 前缀——标记本就在文本里（文本真相），结果经 [EditOutcome] 反射
   /// 焦点/重建/落盘。
@@ -724,7 +727,9 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     _doc.setListLevel(seg, level);
     _applyOutcome(_doc.consumeOutcome());
   }
+*/
 
+/*
   /// 行内 mark 开关（高困惑 #2 修复：选区与未来输入分流）：
   /// - 有选区 → 直接套到选中文字（[ComposerDoc.applyMarkToSelection]），随即收转盘；
   /// - 塌缩 → 激活 mark，作用于之后输入的文字（原「先选后打」模型保留）。
@@ -746,13 +751,16 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     });
     _dialFocusWriting();
   }
+*/
 
+/*
   /// 转盘手势期把焦点拉回写作区（键盘保持弹出）：三级联动瞬间与选完格式
   /// 之后调用——2026-10-03 拍板「选完格式有键盘事件，转盘自动闭合」的
   /// 键盘侧实现（转盘闭合由选择回调内的收合完成）。
   void _dialFocusWriting() {
     _activeText?.focus.requestFocus();
   }
+*/
 
   /// 悬浮球打字退隐：打字即降透明度让位正文，停顿后渐显恢复。
   void _dimHubWhileTyping() {
@@ -784,6 +792,7 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     };
   }
 
+  /*
   /// 球位（吸附后）→ 停靠位（缘=球心距最近边，分数=另一轴可动程占比）。
   void _syncDockFromHubPos() {
     final b = _hubBounds;
@@ -801,7 +810,9 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
       _dialDockFrac = maxX <= 0 ? 0 : (p.dx / maxX).clamp(0.0, 1.0);
     }
   }
+  */
 
+/*
   /// 拖拽松手（吸附落定）→ 回写停靠位并持久化（SmartFloatingHub.onDragEnd）。
   Future<void> _persistDialDock() async {
     _syncDockFromHubPos();
@@ -810,6 +821,7 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     await prefs.setString(_kDialDockEdgeKey, _dialDockEdge.name);
     await prefs.setDouble(_kDialDockFracKey, _dialDockFrac);
   }
+*/
 
   /// 恢复停靠位（新键缺失时迁移旧布尔键；无历史保持默认右下=旧默认位）。
   Future<void> _restoreDialDock() async {
@@ -1507,6 +1519,7 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     );
   }
 
+/*
   /// 悬浮球：SmartFloatingHub 全域拖动 + 四缘吸附（收起态常驻「Tt」）——
   /// 拖拽/磁吸/tap 分流在通用组件，本层只剩业务接线：点按开合转盘、
   /// 松手回写停靠位并持久化。展开期藏球（转盘 hub 即格式按钮本体）。
@@ -1608,7 +1621,9 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
       ),
     );
   }
+*/
 
+/*
   /// 格式转盘面板（点圆钮展开、点空白/空选松手收合）。
   ///
   /// 组件已配置化（DialSpec，缺省=默认菜单与真机定标几何）；宿主只负责
@@ -1680,6 +1695,7 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
       ),
     );
   }
+*/
 
   /// 「导入 Markdown」弹框（2026-10-06 拍板）：用户在**受控输入框**里粘贴/输入
   /// md 片段 → [seedTextTruth] 解析为文本真相态（线级标记留文本，与段播种同
