@@ -19,7 +19,8 @@ import '../share/attachments.dart'
 import '../share/note_composer.dart' show NoteSegment;
 import '../share/note_video_policy.dart';
 import '../share/quick_note_span_codec.dart';
-import '../share/quick_note_text_actions.dart' show deriveLineRuns, seedTextTruth;
+import '../share/quick_note_text_actions.dart'
+    show deriveLineRuns, seedTextTruth, LineKindTarget;
 import 'theme/block_presentation.dart' show BlockKind, blockPresentationOf, lineKindOf;
 import 'audio_playback_service.dart';
 import 'audio_record_sheet.dart';
@@ -160,6 +161,10 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
   /// 转盘面板显隐：点圆钮展开；空选松手/选完生效即收；写作区失焦延时自动收。
   bool _formatSheetOpen = false;
 
+  /// 贴键浮层打样面板（问题#1 引导层·Step 3）显隐：点聚焦段侧轨 chip 展开，
+  /// 选完/滚动/场景切换经 [_closeFormatDial] 收（原转盘退役，复用同一收盘入口）。
+  bool _blockPanelOpen = false;
+
   /// 转盘展开期写作区失焦自动闭合（2026-10-03 拍板「失去区域焦点一段时间
   /// 之后闭合，而不是点击空白」）：任一文本段失焦且全场无焦点时武装一次性
   /// 延时器，期间焦点回到写作区即撤销；替代旧「点空白收合」全屏命中层
@@ -240,6 +245,8 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
   /// 统一走分级退场管道（keyPressed 同级极速淡出），挂起反悔的「打断=强
   /// 确认」由转盘内部处置——外部收盘绝不丢已选项。
   void _closeFormatDial() {
+    // 同时收新问题#1 引导层·Step 3 贴键浮层（原转盘退役，复用同一收盘入口）
+    if (_blockPanelOpen && mounted) setState(() => _blockPanelOpen = false);
     if (!_formatSheetOpen || _dialPendingClose != null) return;
     _dialBlurTimer?.cancel();
     _dialBlurTimer = null;
@@ -935,12 +942,17 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
                   // 计算，整层命中测试随之失效（空白点击/点球双双哑火，实测）。
                   _selectionHint(scheme),
                   // 悬浮球（收起态常驻「Tt」，全域拖动四缘吸附——2026-10-04 拍板）
-                  _hub(bounds, scheme, Theme.of(context).textTheme),
+                  // 问题#1 引导层：原格式转盘已退役，格式选择改由聚焦段侧轨 chip
+                  // （_withFocusBadge）+ 贴键浮层（_blockFormatPanel）承接。
+                  // _hub(bounds, scheme, Theme.of(context).textTheme),
                   // 转盘面板挂顶层 Stack（bounded + Clip.none 约束已封装在本组件内）。
                   // 收合出口：空选松手/选完生效/hub 回根 + 失焦 1.5s 自动闭合
                   //（2026-10-03 拍板：不再用「点空白」全屏命中层——它吞列表滚动与
                   // 外部点按，且语义上闭合不该依赖点空白）。
-                  ?_formatDialPanel(scheme, bounds),
+                  // 转盘面板退役（见 _hub 注释）。格式选择改由 _blockFormatPanel 承接：
+                  // _formatDialPanel(scheme, bounds),
+                  // 问题#1 引导层·Step 3 贴键浮层打样面板：点 chip 弹出，WYSIWYG 选块，对接 setLineKind
+                  if (_blockPanelOpen) _blockFormatPanel(scheme),
                 ],
               );
             },
@@ -1085,14 +1097,133 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
           fontWeight: FontWeight.w700,
           color: scheme.onSurfaceVariant,
         );
-        return SizedBox(
-          width: 24,
-          height: 24,
-          child: Center(child: Text(spec.badge, style: badgeStyle, maxLines: 1)),
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () {
+            // 点 chip 拉起贴键浮层（问题#1 引导层·Step 3）：保持段聚焦，展开打样面板
+            seg.focus.requestFocus();
+            if (mounted) setState(() => _blockPanelOpen = true);
+          },
+          child: SizedBox(
+            width: 24,
+            height: 24,
+            child: Center(child: Text(spec.badge, style: badgeStyle, maxLines: 1)),
+          ),
         );
       },
     );
   }
+
+  /// 选块落地（问题#1 引导层·Step 3）：chip 浮层选中的语义 → [LineKindTarget] →
+  /// [ComposerDoc.setLineKind]（已含 IME 组合态守卫 _finalizeComposing）。待办不在
+  /// 显式口径（走 toggleTodo），落 bullet 仅作占位；结果经 [EditOutcome] 反射重建。
+  void _applyBlockKind(BlockKind kind) {
+    final seg = _activeText;
+    if (seg == null) return;
+    final target = switch (kind) {
+      BlockKind.plain => LineKindTarget.plain,
+      BlockKind.h1 => LineKindTarget.h1,
+      BlockKind.h2 => LineKindTarget.h2,
+      BlockKind.bullet => LineKindTarget.bullet,
+      BlockKind.quote => LineKindTarget.quote,
+      BlockKind.todo => LineKindTarget.bullet,
+    };
+    _doc.setLineKind(seg, target);
+    _applyOutcome(_doc.consumeOutcome());
+    if (mounted) setState(() => _blockPanelOpen = false);
+    seg.focus.requestFocus();
+  }
+
+  /// 贴键浮层打样面板（问题#1 引导层·Step 3）：点 Step 1 chip 弹出，WYSIWYG 选块，
+  /// 正式对接 [ComposerDoc.setLineKind]。锚在工具层上沿、软键盘上方，绝不挤占正文
+  /// （横向滚动容 5 档）。样式源 = 正文渲染同源的 [blockPresentationOf]，所见即所选。
+  Widget _blockFormatPanel(ColorScheme scheme) {
+    final theme = Theme.of(context).textTheme;
+    final seg = _activeText;
+    final current = seg == null
+        ? BlockKind.plain
+        : lineKindOf(
+            seg.ctrl.text,
+            seg.ctrl.selection.isValid ? seg.ctrl.selection.extentOffset : 0,
+          );
+    return Positioned(
+      left: Insets.sm,
+      right: Insets.sm,
+      bottom: kComposerToolLayerHeight + Insets.sm,
+      child: Material(
+        elevation: 6,
+        borderRadius: BorderRadius.circular(Radii.md),
+        color: scheme.surfaceContainerHigh,
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.all(Insets.sm),
+          child: Row(
+            children: [
+              for (final k in const [
+                BlockKind.h1,
+                BlockKind.h2,
+                BlockKind.bullet,
+                BlockKind.quote,
+                BlockKind.plain,
+              ])
+                Padding(
+                  padding: const EdgeInsets.only(right: Insets.xs),
+                  child: _blockTile(k, k == current, scheme, theme),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 单档打样瓦片：徽标 + 用统一规约渲染的样例文字（所见即所选），选中高亮 primaryContainer。
+  Widget _blockTile(BlockKind kind, bool selected, ColorScheme scheme, TextTheme theme) {
+    final spec = blockPresentationOf(kind);
+    final style = spec.resolveStyle(theme, scheme);
+    final badgeStyle = (theme.labelSmall ?? const TextStyle()).copyWith(
+      fontWeight: FontWeight.w700,
+      color: scheme.onSurfaceVariant,
+    );
+    return Material(
+      color: selected ? scheme.primaryContainer : scheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(Radii.md),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(Radii.md),
+        onTap: () => _applyBlockKind(kind),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 22,
+                height: 22,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: scheme.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(Radii.sm),
+                ),
+                child: Text(spec.badge, style: badgeStyle, maxLines: 1),
+              ),
+              const SizedBox(width: 8),
+              Text(_blockSample(kind), style: style),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 瓦片样例文字（WYSIWYG 预览用，与真实正文同字号/行高）。
+  String _blockSample(BlockKind kind) => switch (kind) {
+        BlockKind.h1 => '标题一',
+        BlockKind.h2 => '标题二',
+        BlockKind.bullet => '列表项',
+        BlockKind.quote => '引用文字',
+        BlockKind.plain => '正文',
+        BlockKind.todo => '待办项',
+      };
 
   /// 列表凹槽：一行是一个列表项，标记必须**逐行对齐正文**——单个 TextField
   /// 无法内嵌可点勾选框（`buildSpanTextSpan` 加字形会让光标几何错位），故
