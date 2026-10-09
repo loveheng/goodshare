@@ -25,4 +25,4 @@ last-merge: none
 - [2026-10-09] epic 立项（::bind 自 goodshare 切出；一期已收官归并，工作树净 8eac00b）。先解决前置项 D1–D4 拍板，再开工 R1。
 
 ## 断点
-- [断点] 下一步：D1–D4 拍板落盘 → 开工 R1（LlmReconstructor 认领 parse_chatlog/summarize_url，R2 打码层挂动作层）
+- [断点] **R1+R2+D4 已落码**（提交 8c7b2f9）：chatlog/URL 接 LLM、打码通用出口、两开关+链式触发全通，全量 772 绿。下一步：①真机验证（模型包在位 + 断网：chatlog 降噪、URL 摘要+打标、敏感号打码、超长占位）②按实施排序推 **R3 通用截图解析**（OCR → LLM 领域 Schema：invoice.v1/contact.v1/event.v1 字段定义补全）。
