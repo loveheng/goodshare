@@ -2,8 +2,8 @@
 dev-loop: lessons
 format: v1
 epic: global
-total-merged: 3
-last-merge: 2026-10-05
+total-merged: 4
+last-merge: 2026-10-09
 ---
 
 # lessons

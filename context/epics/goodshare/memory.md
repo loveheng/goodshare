@@ -2,8 +2,8 @@
 dev-loop: memory
 format: v1
 epic: goodshare
-total-merged: 9
-last-merge: 2026-10-03
+total-merged: 11
+last-merge: 2026-10-09
 ---
 
 # goodshare · Android 分享收集器 + 内嵌 MCP 服务
@@ -101,9 +101,6 @@ last-merge: 2026-10-03
 
 - [2026-10-03] F3 就地编辑去工具栏整体改造（slice 1-4 全落地）：数据层（inlineSpansOf/adjustRuns/applySpanInput/CommitSpansOp 纯 Dart，EditSession 无 Flutter 依赖）+ FormatToolbar 行内三钮（激活态同源 _inlineMarks）+ 粘贴归一（空行折叠单换行不拆块）+ 渲染层终版=**原生 buildTextSpan 单控件 `_SpanEditingController`**（叠层 Stack 退役——粗体 run 字宽差致双层两次排版系统性位移，架构内物理不可解；逐字符 Set 合并样式+IME composing 哨兵接回下划线；StrutStyle.fromTextStyle 抹 monospace 基线差；buildTextSpan 内禁正则/解析，超长单块 O(n) 重建留记忆化防线候选）；block-format-input.md 转 active。全量 406 绿 / analyze 0 / arch-guard 过。剩：真机验收（§4.2 四项：span 归属手感/粘贴归一/长块滚动/IME 下划线）→ 收尾（其余蓝本转 active + ::audit）
 
-## 断点
-- [断点] 下一步：下划线同源链 + AI 回写护城河等本批富文本代码全在**未提交工作树**，待用户拍板提交；真机复验仍待（本机无设备）——下划线端到端、划选开转盘明示条、返回键收盘、切片弹框等前序待验项沿用。2026-10-05 问答收尾：确认下划线修复未引入新字体（同源渲染链打通），经验四条入 devlog
-
 ## 进度（追加 6）
 - [2026-09-30] 面板头部锚定（用户拍板两轮：先 B1 搜索框水平带+sm，后看真机改「顶到状态栏」）：展开态顶缘 = 状态栏下沿，topInset = statusBar——状态栏高度改取 View 原始 padding（Scaffold 消费 body 的 MediaQuery.padding 是「避让失效」根因）+ _morphSheet 静止展开分支补显式 height。回归 test/quick_note_topbar_test.dart。analyze 0 / test 219 绿
 - [2026-09-30] 修「首页内容区不能点击和滑动」：QuickNoteBar 顶层 Material(color: transparent) 全屏吸收命中（transparent 颜色不透传命中测试），改 MaterialType.transparency 一行修复；此 bug 自速记条替换悬浮球起即存在。教训入 lessons（transparent≠透传命中）。analyze 0 / test 218 绿
@@ -181,3 +178,21 @@ last-merge: 2026-10-03
 - [2026-10-05] **块附件通道设计稿六轮评审闭合**（docs/design/block-artifact-workflow.md draft，待用户过稿开工）：起因=三级视频卡转写报「类型是 note」根因=块类型与条目类型错配。九项拍板（独立派生表 block_artifacts schema v16/手动即授权/全能力范围/一步双产物/锚点切换/应用+导出动词拆分/字幕挂播放器/页面只换芯等）+六轮增量：payload 改 `|` 分段（local:// 自带冒号，split(':') 会拦腰截断）、UpdateItemCommand diff block_key 集合孤儿 GC、翻译产物覆盖不存多语历史（kind translation:<lang> 留档）、应用=就近插入源媒体行下方引用块、MCP 门禁 actor=ai/pipeline 校验 aiProcess、双产物单事务原子落库、block_key 按路径寻址抗剪贴（行号寻址禁止）、重复媒体引用合法共享同一产物集、文件产物磁盘联动删除（BlockArtifactStore 五路径统一入口）、入队互斥键=动作头（同 item+blockKey+动作头 pending/processing 即拒）、get_item 增 block_tasks 兄弟字段（模型软引导自我抑制）、字幕→播放跳帧联动、翻译选源嵌入式 segmented control。外部方案四红线不照搬（页内直跑 Workflow.run/renderUI 内联/Artifact.actions[] 携操作/Sticky 预览均否决入 §3.1 边界）。
 - [2026-10-04] [坑] 并行会话同文件实时编辑覆盖已落改动（本窗口两次中招）——落改后须立即验证，核对靠特征串 grep。
 - [2026-10-05] **块附件通道 Step 8 MCP 契约落地**（block-artifact-workflow.md §7 + §9 14a）：`get_item` 的 `block_tasks` 与 §6.6 互斥**共用同一数据源** `Repository.activeBlockTasksOf`（active-only，一处收口防两处口径漂移）；块能力工具**按用户拍板铺开为五种**（`block_transcribe/ocr/translate/summarize/extract_audio_item`，与三级页五步骤一一对应，工具总数 34；`batch_items` 同名 op 通道保留不废弃）——先收敛只开转写一种的口径作废：模型不该为对称而背 `batch_items` 的载荷格式。五工具共用 `_blockQueued` 返回契约（queued+task_id+message 融合 CommandResult）。硬纪律不变：门禁（AI 须 aiProcess）与互斥（动作头+blockKey）逻辑一律不进 MCP 层，避免同一种校验散落两处实现。
+
+## 进度（追加 11，2026-10-06~09 归并提炼）
+- [2026-10-06] **闭环节点修复三批**（全页面闭环盘点 9 组断链的收口）：①顶级图片块通道放行（`_blockMediaOf` 顶级分支增 image，OCR/翻译/摘要/分类/条码全链解锁）+ cue 跳帧顶级条目传绝对路径 + PDF 分享 scope 真消费（灵感区勾选裁剪）+ 块任务失败盲区（`_waitForBlockTask` 成败消费 + `_reload` 回刷）；②QuickNoteSheet 五条收集路径 try/catch + 录音退出防护（PopScope 确认弃录）+ 附件迁移批量失败回填 + recent_deleted/task_queue/mcp_page/update_page 四页显式 × 出口 + `supportedOps` 摘 set_ai_*；③重分类白名单放宽「方向二」——人工（ui）跨类型全放开、AI 维持 image→document 窄白名单、管线特权不变。全量 659 绿。
+- [2026-10-06] **体验收口三件**：①纯文本预览剥壳（规则层 `markdownToPlain`/`titleToPlain` 纯函数，列表卡/搜索/详情顶栏不再露 md 标记残壳）；②三级页图片卡三点拍板落地（文本产物卡摘「应用」chip、翻译入队前同文预检、图片摘要源收窄为识别文字）；③**全局 Toast 替代 SnackBar 退役**（`ToastManager` 单例三档 success 1.5s/info 3s/error 驻留+action，fling-up 手势，挂根 overlay；迁移 22 文件 67 处；教训：flutter_test invariant 在 tearDown 前查 pending Timer，`resetForTest` 须硬停且用例内调用）。全量 657 绿。
+- [2026-10-06] **转写链路三连修**：①消费侧超时门控错配——转写任务 60s→600s（与引擎上限一致，此前「每次转写都失败」根因）；②content:// 引用条目解码失败——原生 `MediaBridge.decodeMonoPcm` 增 ContentResolver 数据源分支 + Dart 侧门控放行 URI；③失败原因透传——`transcribeToCues` 返回 `(cues, error)`，worker 真实异常不再丢弃。
+- [2026-10-06] 分享摄入分型直存拍板落地：图片/音频分享直接复制 owned（不进迁移清单），视频维持 ref+迁移兜底，PDF 恒持有不变。
+- [2026-10-08] **离线转写「零文本」根因可辨 + 兜底**：`AsrCueResult{cues,error,diag}` 音频体检（时长/峰值/RMS/VAD 段数）三档根因一眼可辨；整段兜底识别（峰值≥0.01 且 ≤300s）；VAD 逐窗喂入（修 100s 环形缓冲顶爆零分段）；修 VAD 资产 ByteData 偏移写坏 .onnx 隐患。
+- [2026-10-08] 块转写「重跑即重算」：空载荷清该块旧 transcript+subtitle（行+盘，`ReconstructResult.blockResetKinds` + `BlockArtifactStore.deleteKinds`），audio_file 不连坐。
+- [2026-10-09] **一期收官清债**：`.mcp.json`（含 token）入 .gitignore；arch-guard R2 清偿——数据层新增 `BlockArtifactMeta` 编解码出口（详情页三处内联 json 改走出口），`mermaid_view`（在线渲染请求载荷）/`item_view_template`（machine_json 渲染出口）按「规则不适用」入白名单。提交 846f895（46 文件），全量 755 绿。
+
+## 断点
+- [断点] **一期（V1+全链路增量大块）收官**：工作树已全部提交（846f895）；V2 两个前置配套（document 归一化接线、MCP 媒体加工工具补齐）已提前落地。**下一步=二期 V2 R1（摄入自动双态重构管线，R2 打码随上）**，动工前置：pending-confirm 台账 D1-D4 拍板（打码作用面/自动打标落点/超长截断/URL 自动摘要）。真机待验族沿用：下划线端到端、块产物卡头耗时、Toast 三档观感、长文分段截图拼接、mermaid 在线渲染（已停用待复用）。
+
+## 挂载
+- [挂载] docs/product/product-requirements.md
+
+## 挂载索引（辅助锚点）
+- 主线设计 SSOT：docs/product/v2-requirements.md（V2 需求）· docs/architecture/human-ai-parity.md（无头架构）· docs/design/block-artifact-workflow.md（块附件通道）· docs/design/content-pipeline.md（内容管线）· docs/design/ui-spec.md（UI 规范）· docs/guide/mcp-integration.md（MCP 接入）

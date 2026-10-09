@@ -30,16 +30,13 @@ format: v3
 - [ ] (风险)(层:L1)(重:轻) 自更新 release 包当前用 debug 签名（模板默认），正式分发前配置 release keystore 并在 shorebird 流程中统一
 - [ ] (优化)(层:L4)(重:轻) 更新页增加「强制最低版本」逻辑（清单 minVersionCode，低于即全屏提示必须升级）
 - [ ] (优化)(暂缓)(层:L0)(重:轻) ASR 模型源迁移 R2 + 换新版（低优先/暂缓）：模型改为 csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2025-09-09（model.int8.onnx 237,115,547 / tokens.txt 315,894）+ csukuangfj/sherpa-onnx-paraformer-zh-int8-2025-10-07（238,429,929 / 75,756，川渝方言版）；分发方式改为 Cloudflare R2 自托管 tar.gz 包（域名 https://r2.oklhj.eu.org，包的完整 URL 待用户提供），lib/ai/asr_model.dart 改「单包 + entries」结构、lib/ai/model_manager.dart 改下载→解压→逐文件校验→删包（需加 archive 依赖）。未决：是否保留 whisper-small 多语种档、方言版是否契合场景（否则换 paraformer-zh-2024-03-09，227,330,205 / 75,354）。现状可用（hf-mirror 三档已能下载），无需紧急处理
-- [ ] [2026-10-03] (环境)(层:L0)(重:轻) @todo-groom 洗盘：待办 35 条 > 30 阈值（context-lint GROOM 告警），归并去重、清理陈条 (src: ai, media-native ::done 审计)
-- [ ] [2026-10-03] (环境)(层:L0)(重:轻) goodshare epic memory.md 157 行 > 150 软上限（context-lint SIZE 告警）：考虑 ::done 收尾或拆分新 epic (src: ai, media-native ::done 审计)
+- [ ] [2026-10-03] (环境)(层:L0)(重:轻) goodshare epic memory.md 198 行 > 150 软上限（context-lint SIZE 告警，2026-10-09 归并后仍超）：V2 开工时新 epic 承接，本 epic 届时归档 (src: ai, 2026-10-09 ::done 审计)
 - [ ] [2026-10-03] (文档)(层:L0)(重:轻) 收敛复盘提议待确认：lessons「Scaffold body 内避让/高度手算」三连坑多次复现且表述稳定，拟固化进 goodshare-ui skill，确认后原条目降级 Ref (src: ai, media-native ::done 收敛复盘)
 - [ ] [2026-10-03] (功能)(候)(层:L3)(重:轻) 录音弹框语言选择：参考稿的「中文 ▼」暂未做——转写语言现状=ASR 模型档位 SSOT（asr.dart language:'auto'），「语言随条目走」管线未建，不做假下拉；待 item 级语言标注→transcribe 任务透传落地后补 (src: 用户参考稿, ai 权衡)
-- [ ] [2026-10-03] (环境)(层:L0)(重:轻) 编辑器统一死代码清偿：lib/doc/edit_session.dart（块模型/EditOp 家族，edit_session_test 约 40 钉子）与 lib/ui/format_toolbar.dart 已标 DEPRECATED 无 UI 消费，下一轮连同其单测删除；SSOT：docs/design/note-editor-unification.md §2 (src: 用户拍板「暂留标废弃」)
 - [ ] [2026-10-08] (功能)(候)(层:L4)(重:轻) 行内加粗 B 档是否进浮层：受 pending-confirm D5 约束（格式模型＝先选后打，不做给已有文字套格式/选区交互），只能做成「先选后打」开关瓦片而非选区菜单；待用户拍板 (src: 2026-10-08 格式档位评估)
 - [ ] [2026-10-08] (功能)(候)(层:L4)(重:轻) lib/ui/rotary_dial.dart（可旋转圆盘，stepped/continuous 双模式）从未接入消费方，有独立单测——与已恢复的 format_dial / smart_floating_hub 同为「零业务语义待复用件」；长期无宿主则再评估清偿 (src: 2026-10-08 死代码清偿)
 - [ ] [2026-10-08] (功能)(候)(层:L4)(重:轻) lib/ui/format_dial.dart（三级径向盘）保留但**当前无消费方**：零业务语义可复用件（DialSpec 三节注入），单测 30 条守护；若长期找不到宿主会退化成新死代码——复用或再次清偿二选一。同源的 smart_floating_hub.dart 已删 (src: 2026-10-08 死代码清偿)
 - [ ] [2026-10-08] (优化)(候)(层:L4)(重:中) 标题标记透明隐藏后的 H2 辨识度：H2=titleMedium w600 与正文 bodyLarge(16sp) 仅差字重，标记隐去后非焦点行几乎看不出是标题；待真机确认，必要时拉开 H2（字重 700 / 换字号档 / 主色） (src: 2026-10-08 标题标记显隐拍板)
-- [ ] [2026-10-09] (功能)(暂缓)(层:L2)(重:中) mermaid 在线渲染的**隐私口径待收紧**（随渲染件停用而暂缓，重新启用时生效）：当前把 mermaid 块源码明文发给第三方 mermaid.ink 且不区分条目（用户拍板「先试效果」）。上线前须补：保险箱/上锁条目禁发（直接退代码块）+ 设置项开关 + 端点可换自建 kroki (src: 2026-10-09 在线方案拍板)
-- [ ] [2026-10-09] (优化)(暂缓)(层:L1)(重:中) mermaid.ink 第三方可用性兜底（随渲染件停用而暂缓）：服务不可用/限流时全量退代码块，需评估自建 kroki 或本地兜底（含超时与重试策略），避免「图全变码」(src: 2026-10-09 在线方案拍板)
+- [ ] [2026-10-09] (功能)(暂缓)(层:L2)(重:中) mermaid 在线渲染的**隐私口径待收紧**（随渲染件停用而暂缓，重新启用时生效）：当前把 mermaid 块源码明文发给第三方 mermaid.ink 且不区分条目（用户拍板「先试效果」）。上线前须补：保险箱/上锁条目禁发（直接退代码块）+ 设置项开关 + 端点可换自建 kroki (src: 2026-10-09 在线方案拍板)；可用性兜底同批：服务不可用/限流时全量退代码块，需评估自建 kroki（超时与重试策略），避免「图全变码」
 - [ ] [2026-10-09] (功能)(候)(层:L4)(重:轻) mermaid 在线载荷真机确认：pako（zlib+base64）若为 400 会自动退回明文 base64 重试一次——真机需确认哪种载荷实际生效，锁定后删掉另一条 (src: 2026-10-09 在线方案拍板)
 - [ ] [2026-10-09] (功能)(候)(层:L4)(重:轻) `lib/ui/mermaid_view.dart`（mermaid 在线渲染件）**已摘出渲染路径、零消费方**：用户拍板「加载好慢」改回代码块显示，组件保留待复用（在线方案完整）；与 rotary_dial / format_dial 同为「零业务语义待复用件」，长期无宿主则清偿 (src: 2026-10-09 mermaid 还原拍板)
