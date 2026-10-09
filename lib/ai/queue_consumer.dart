@@ -14,16 +14,31 @@ import 'reconstructor.dart';
 /// 经 ReconstructorRegistry 取实现做双态重构，把产出写回条目。
 /// 失败：任务置 failed、条目 is_processed=-1（退避重试/死信属 V2 §3.5 范畴）。
 class QueueConsumer {
-  QueueConsumer(this._repo, this._registry, this._handler, {this.pollInterval = const Duration(seconds: 3)});
+  QueueConsumer(this._repo, this._registry, this._handler,
+      {this.pollInterval = const Duration(seconds: 3),
+      this.isAutoSummarize,
+      this.onEnqueued});
 
   final Repository _repo;
   final ReconstructorRegistry _registry;
   final ItemActionHandler _handler;
   final Duration pollInterval;
 
+  /// D4 自动摘要开关（2026-10-09 拍板）：URL 抓取成功后链 LLM 摘要+打标。
+  /// null = 恒不链（测试默认关闭，避免测试机无引擎时白跑任务）。
+  final bool Function()? isAutoSummarize;
+
+  /// 链式入队回调（触发 AI 队列立即处理）；main 装配注入。
+  final void Function()? onEnqueued;
+
   /// 推理门控（第 3 档设备状态感知调度）：返回 false 时本次 poll 停止认领新任务，
   /// 任务停留 pending 等待时机（如低电量 / 内存压力下暂停，不抛异常）。null = 不门控。
   Future<bool> Function()? canProcess;
+
+  /// 本轮 pollOnce 内已链入的摘要任务数（D4 防自链死循环的第二道闸）：
+  /// 测试/异常实现可能让链任务也被「抓取器」认领（产出无 summaryMd），单靠
+  /// 产出特征闸不封闭——每轮最多链 1 次，绝对封闭。
+  bool _chainedThisPoll = false;
 
   Timer? _timer;
   bool _running = false;
@@ -53,6 +68,7 @@ class QueueConsumer {
   Future<int> pollOnce({bool force = false}) async {
     if (_busy) return 0;
     _busy = true;
+    _chainedThisPoll = false; // D4 链闸按轮重置
     var processed = 0;
     try {
       while (true) {
@@ -220,6 +236,27 @@ class QueueConsumer {
       await _handler.execute(ApplyAiResultCommand(item.id!, result), actor: CommandActor.pipeline);
       // 完成也带 note：「跑完了但没产出」必须有原因，否则用户分不清成功与失败
       await _repo.finishTask(taskId, 'completed', note: result.note);
+      // D4（2026-10-09）：URL 抓取成功后自动链 LLM 摘要+打标（summarize_url 任务）。
+      // 链式而非同任务双跑：抓取（OcrReconstructor）与摘要（LlmReconstructor）
+      // 共用 summarize_url 动作串（队列无参数列），区分靠**产出特征**——抓取
+      // 产出无 summaryMd、LLM 摘要产出有。链条件=本次是抓取（无 summaryMd）
+      // 且开关开且抓取真有正文：LLM 摘要任务完成后 summaryMd 非空，天然不再链，
+      // 自链死循环被产出特征闸死（pending 查闸不够——同轮即被消费）。
+      if (taskAction == Repository.taskSummarizeUrl &&
+          isAutoSummarize?.call() == true &&
+          !_chainedThisPoll && // 每轮最多链 1 次（绝对封闭，防异常实现自链死循环）
+          (result.humanMd.trim().isNotEmpty) &&
+          result.note == null &&
+          result.summaryMd == null) {
+        final alreadyPending = (await _repo.pendingTasks(limit: 100))
+            .any((t) => t['item_id'] == itemId && t['task_action'] == Repository.taskSummarizeUrl);
+        if (!alreadyPending) {
+          _chainedThisPoll = true;
+          await _repo.enqueueTask(itemId, Repository.taskSummarizeUrl);
+          onEnqueued?.call();
+          debugPrint('[QueueConsumer] url fetched → chained summarize_url (item=$itemId)');
+        }
+      }
     } catch (e) {
       debugPrint('[QueueConsumer] task failed: $e');
       // 块任务不写条目 is_processed（§2.5「条目字段零触碰」）：块产物在块级，

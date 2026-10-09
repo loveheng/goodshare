@@ -266,6 +266,20 @@ class _SettingsPageState extends State<SettingsPage> {
             onChanged: (v) => caps.setUrlFetchEnabled(v),
           ),
           SwitchListTile(
+            secondary: const Icon(Icons.auto_awesome_outlined),
+            title: const Text('链接自动摘要'),
+            subtitle: const Text('抓取正文后自动生成摘要并打标签（需端侧大模型）'),
+            value: caps.autoSummarizeEnabled,
+            onChanged: (v) => caps.setAutoSummarizeEnabled(v),
+          ),
+          SwitchListTile(
+            secondary: const Icon(Icons.visibility_off_outlined),
+            title: const Text('身份证 / 银行卡默认打码'),
+            subtitle: const Text('AI 产出的文本自动掩码敏感号码（原文保留明文）'),
+            value: caps.maskEnabled,
+            onChanged: (v) => caps.setMaskEnabled(v),
+          ),
+          SwitchListTile(
             secondary: const Icon(Icons.mic_external_on),
             title: const Text('录音/音频 端侧转写'),
             subtitle: Text(_asrSubtitle()),

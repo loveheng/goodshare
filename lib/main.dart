@@ -58,11 +58,17 @@ Future<void> main() async {
   await repo.purgeDeleted();
   // 动作层先建：摄入（TextCollector/ShareIntake）与 MCP 共用同一写入口
   // aiQueue 用 late：handler 的 onEnqueued 闭包延迟引用，装配期（下方）才赋值
+  // caps 用 late 同理（isMaskEnabled 闭包延迟引用）
   late final AiQueueService aiQueue;
-  final handler = ItemActionHandler(repo, onEnqueued: () => aiQueue.kick());
+  late final AiCapabilities caps;
+  final handler = ItemActionHandler(
+    repo,
+    onEnqueued: () => aiQueue.kick(),
+    isMaskEnabled: () => caps.maskEnabled, // R2/D1：AI 产出通用出口打码
+  );
   final collector = TextCollector(handler);
   await collector.load();
-  final caps = AiCapabilities();
+  caps = AiCapabilities();
   await caps.load();
   // 本机能力检测：首次执行后持久化，此后不再检测
   await caps.ensureDetected();
@@ -144,6 +150,9 @@ Future<void> main() async {
       const PlaceholderReconstructor(),
     ]),
     handler,
+    // D4：URL 抓正文后自动链 LLM 摘要+打标（开关默认开，与 urlFetchEnabled 同构）
+    isAutoSummarize: () => caps.autoSummarizeEnabled,
+    onEnqueued: () => aiQueue.kick(),
   );
   consumer.start();
   // 第 3 档：前台服务保活 + 设备状态感知调度 + 内存压力优雅中断

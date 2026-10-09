@@ -1,9 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:sqflite/sqflite.dart';
 
 import '../ai/language_codes.dart';
+import '../ai/privacy_mask.dart';
 import '../data/block_artifacts.dart' show BlockArtifactKind;
 import '../data/repository.dart';
 import '../doc/rich_text.dart'
@@ -53,9 +55,13 @@ class ItemActionHandler {
     this._repo, {
     this.mergeWindow = _defaultMergeWindow,
     this.onEnqueued,
+    this.isMaskEnabled,
   });
 
   final Repository _repo;
+
+  /// R2 隐私打码开关（D1 拍板 2026-10-09：AI 产出通用出口打码；null = 恒开启）。
+  final bool Function()? isMaskEnabled;
 
   /// 合并链追加窗口（设计 §4.9 / F6：同源连续收集在窗口内并链）。
   /// 单一事实源——`TextCollector` 的选链窗口直接取本值，避免两处窗口漂移。
@@ -1187,8 +1193,17 @@ class ItemActionHandler {
     // 影响（既有口径：占位重跑必须覆盖旧产出）。
     final rawEcho = incoming == (item.rawContent ?? '');
     final keepHuman = (item.humanMd?.isNotEmpty ?? false) && rawEcho;
+    // R2 隐私打码（D1 拍板 2026-10-09：通用出口——human_md 落库前必经，覆盖所有
+    // AI 写路径含占位回退；raw_content 保留明文）。占位回退若源自 raw_content，
+    // 打码会改变其与 rawEcho 的相等性——先判 keepHuman 再打码，语义不变。
+    final maskOn = isMaskEnabled?.call() ?? true;
+    final maskedIncoming = maskSensitiveText(incoming, enabled: maskOn);
+    final masked = maskOn && maskedIncoming != incoming;
+    if (masked) {
+      debugPrint('[Mask] AI 产出含敏感号已打码 (item=${cmd.id})');
+    }
     final values = <String, Object?>{
-      if (!keepHuman) 'human_md': incoming,
+      if (!keepHuman) 'human_md': maskedIncoming,
       'is_processed': 1,
     };
     if (r.machineJson != null) {
@@ -1197,7 +1212,8 @@ class ItemActionHandler {
       if (err != null) {
         throw ActionException('AI 产出 machine_json 校验不过：$err', code: ActionErrorCode.schemaInvalid);
       }
-      values['machine_json'] = raw;
+      // machine_json 与 human_md 同口径打码（v2-requirements §4）
+      values['machine_json'] = maskOn ? maskSensitiveText(raw) : raw;
     }
     if (r.tags.isNotEmpty) {
       // 并集合并（2026-10-01 拍板）：AI 重新提取只增不删——标签的用户权威

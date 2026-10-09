@@ -8,12 +8,6 @@ import 'package:goodshare/data/repository.dart';
 /// 同步 unavailableReason 是桥层兜底文案（llm.dart:62），曾把「引擎初始化失败」
 /// 误报成「未下载模型」（2026-10-02 实测：qwen 模型在机仍报未下载）。
 void main() {
-  ReconstructInput input(String action) => ReconstructInput(
-        itemId: 'it-1',
-        itemType: 'note',
-        rawContent: '正文内容',
-        taskAction: action,
-      );
 
   test('引擎不可用：note 取 unavailableReasonAsync 真值而非同步兜底文案', () async {
     final engine = _FakeLlmEngine(
@@ -52,7 +46,74 @@ void main() {
     expect(r.note, contains('可重试'));
     expect(r.summaryMd, isNull);
   });
+
+  // ─── R1 摄入自动双态重构（2026-10-09 D1-D4 拍板） ───
+
+  test('R1 parse_chatlog：改写 human_md + TAGS 尾行解析进 tags（并集不覆盖人工）', () async {
+    final engine = _FakeLlmEngine(
+      available: true,
+      output: '# 会议纪要\n\n张三：周三交稿\n\nTAGS: 工作、排期',
+    );
+    final r = await LlmReconstructor(engine: engine)
+        .reconstruct(input(Repository.taskParseChatlog, humanTags: ['手动标签']));
+    expect(r.humanMd, '# 会议纪要\n\n张三：周三交稿', reason: 'TAGS 尾行剥出，正文不混入');
+    expect(r.tags, containsAll(['手动标签', '工作', '排期']),
+        reason: 'D2：并集只增不删，人工标签保留');
+    expect(r.tags.length, 3);
+  });
+
+  test('R1 parse_chatlog：无 TAGS 行时正文照常应用、标签不造假', () async {
+    final r = await LlmReconstructor(engine: _FakeLlmEngine(
+      available: true,
+      output: '整理后的内容',
+    )).reconstruct(input(Repository.taskParseChatlog));
+    expect(r.humanMd, '整理后的内容');
+    expect(r.tags, isEmpty);
+  });
+
+  test('R1 summarize_url：正文不改写、摘要进 summary_md + 打标', () async {
+    final engine = _FakeLlmEngine(
+      available: true,
+      output: 'TL;DR：这篇文章讲 X。\n\nTAGS: 前端、性能',
+    );
+    final r = await LlmReconstructor(engine: engine).reconstruct(
+        input(Repository.taskSummarizeUrl, humanMd: '抓取的网页正文'));
+    expect(r.humanMd, '抓取的网页正文', reason: '叠加层：不改写抓取正文（事实源）');
+    expect(r.summaryMd, 'TL;DR：这篇文章讲 X。');
+    expect(r.tags, containsAll(['前端', '性能']));
+  });
+
+  test('R1 D3 超长：超 3000 字符回退占位 + note 明示，不截断照跑', () async {
+    final long = 'x' * 3001;
+    final r = await LlmReconstructor(engine: _FakeLlmEngine(available: true, output: '不该被调用'))
+        .reconstruct(input(Repository.taskParseChatlog, rawContent: long));
+    expect(r.humanMd, long, reason: '占位回退原样保留');
+    expect(r.note, contains('内容超长'));
+    expect(r.note, contains('3001'));
+  });
+
+  test('R1 引擎不可用：note 带真值原因、human_md 原样', () async {
+    final r = await LlmReconstructor(engine: _FakeLlmEngine(
+      available: false,
+      asyncReason: '模型未下载',
+    )).reconstruct(input(Repository.taskSummarizeUrl, humanMd: '正文'));
+    expect(r.note, contains('模型未下载'));
+    expect(r.humanMd, '正文');
+    expect(r.summaryMd, isNull);
+  });
 }
+
+/// [_FakeLlmEngine] 的 input 辅助（可选 humanMd/humanTags/rawContent）。
+ReconstructInput input(String action,
+        {String? humanMd, List<String> humanTags = const [], String? rawContent}) =>
+    ReconstructInput(
+      itemId: 'it-1',
+      itemType: 'note',
+      rawContent: rawContent ?? '正文内容',
+      humanMd: humanMd,
+      humanTags: humanTags,
+      taskAction: action,
+    );
 
 class _FakeLlmEngine implements OnDeviceLlmEngine {
   const _FakeLlmEngine({

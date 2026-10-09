@@ -836,6 +836,19 @@ class Repository extends ChangeNotifier {
     return rows.isEmpty ? null : rows.first;
   }
 
+  /// 条目最近的任务历史（含 completed/failed；D4 链式防重用——链任务在同一
+  /// pollOnce 轮内即被消费，只查 pending 挡不住自链死循环）。
+  Future<List<Map<String, Object?>>> recentTasksOf(String itemId, {int limit = 20}) async {
+    final db = await _database();
+    return db.query(
+      'ai_task_queue',
+      where: 'item_id = ?',
+      whereArgs: [itemId],
+      orderBy: 'rowid DESC',
+      limit: limit,
+    );
+  }
+
   /// 按 task_id 查单个任务（MCP `get_job_status` 用；条目已删也能查到）。
   Future<Map<String, Object?>?> taskById(String taskId) async {
     final db = await _database();

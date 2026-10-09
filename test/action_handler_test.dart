@@ -547,6 +547,50 @@ void main() {
         reason: '回填原文不算 AI 动笔，不该挂出「还原后毫无变化」的空会话（§3.1）');
   });
 
+  test('R2/D1 打码通用出口：AI 产出含敏感号 → human_md/machine_json 打码，raw_content 明文保留', () async {
+    final it = await repo.add(InboxItem(
+      itemType: InboxItem.typeChatlog,
+      sourceType: InboxItem.typeNote,
+      rawContent: '张三：我卡号 4111111111111111 身份证 11010519491231002X',
+      createdAt: 1,
+    ));
+    await handler.execute(
+      ApplyAiResultCommand(
+        it.id!,
+        const ReconstructResult(
+          humanMd: '整理：卡号 4111111111111111，身份证 11010519491231002X',
+          machineJson: {'schema': 'og.v1', 'title': '卡号 4111111111111111'},
+        ),
+      ),
+      actor: CommandActor.pipeline,
+    );
+    final after = (await repo.byId(it.id!))!;
+    expect(after.humanMd, contains('4111****1111'));
+    expect(after.humanMd, contains('1101**********002X'));
+    expect(after.humanMd, isNot(contains('4111111111111111')));
+    expect(after.machineJson, contains('4111****1111'));
+    expect(after.rawContent, contains('4111111111111111'),
+        reason: 'D1：raw_content 保留明文（原文事实源）');
+  });
+
+  test('R2/D1 打码开关关闭：AI 产出明文落库', () async {
+    final off = ItemActionHandler(repo, isMaskEnabled: () => false);
+    final it = await repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      sourceType: InboxItem.typeNote,
+      rawContent: 'r',
+      createdAt: 2,
+    ));
+    await off.execute(
+      ApplyAiResultCommand(
+        it.id!,
+        const ReconstructResult(humanMd: '卡号 4111111111111111'),
+      ),
+      actor: CommandActor.pipeline,
+    );
+    expect((await repo.byId(it.id!))!.humanMd, contains('4111111111111111'));
+  });
+
   test('管线回写不再要「允许 AI 处理」授权（2026-10-05 拍板）：未授权直接落库', () async {
     final it = await repo.add(InboxItem(
       itemType: InboxItem.typeNote,
