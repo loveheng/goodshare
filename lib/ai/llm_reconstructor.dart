@@ -8,25 +8,17 @@ import 'reconstructor.dart';
 /// 端侧 LLM 重构器（2026-09-28）：处理 `task_action=llm_summarize` / `llm_tags`
 /// 两类显式入队任务（SummarizeCommand / ExtractTagsCommand，均手动触发）。
 ///
-/// **R1 摄入自动重构（2026-10-09 落码；同日收敛拍板收窄，v2-requirements §1.1a）**：
-/// 增认领 `summarize_url`——URL 摄入抓取正文后自动跑 TL;DR 摘要 + 2–3 标签
-/// （D4 拍板收窄：叠加层，**不改写** OcrReconstructor 抓取的正文——那是事实源，
-/// 摘要写 summary_md + 自动标签）。~~chatlog 议题整理~~已砍除：1.5B 理不清
-/// 长 OCR 碎片的逻辑，整理产出不可信，重活归桌面 MCP。
-///
-/// D3 超长口径保留（同时服务 URL 摘要）：输入超 `_maxPromptChars`（≈4096 token 档）
-/// 回退占位 + note 明示，不截断照跑（防失真产出）。
-///
-/// 与 TranslationReconstructor 同构：URL 摘要写入 `summary_md`（并列不覆盖）；
-/// 引擎不可用 / 空产出 → 占位完成 + note 明说原因（「降级不卡死 + 结果可观测」）。
+/// **R1 URL 摘要（2026-10-09 二次收敛：串联式单任务）**：不再认领
+/// `summarize_url` 队列任务（抓取与摘要合并为 OcrReconstructor 内的单任务
+/// 两步走，见 ocr_reconstructor.summarizeHead）——本类只提供 [summarizeUrlHead]
+/// 纯函数供组装点回调：**头部 1500 字符截断直出**（真实长文 3000-8000 字，
+/// 一刀切回退会让功能大面积哑火；网页核心论点集中在前 2-3 段，头部摘要
+/// 以极低成本覆盖 80% 场景），模型不在位返回 null 静默跳过。
+/// ~~chatlog 议题整理~~已砍除：1.5B 理不清长 OCR 碎片的逻辑，重活归桌面 MCP。
 class LlmReconstructor implements AiReconstructor {
   const LlmReconstructor({required this.engine});
 
   final OnDeviceLlmEngine engine;
-
-  /// 输入上限（D3 拍板）：超出即回退占位。Qwen 档 4096 token ≈ 2-4k 汉字，
-  /// 中文按 1 字 ≈ 1 token 计取保守值 3000 字符（含指令开销余量）。
-  static const int _maxPromptChars = 3000;
 
   @override
   Future<bool> get isAvailable async => true; // 恒 true：失败只是无产出，不能死信
@@ -37,9 +29,35 @@ class LlmReconstructor implements AiReconstructor {
     final block = Repository.parseBlockAction(input.taskAction);
     if (block != null) return block.$1 == 'block_summarize';
     return input.taskAction == Repository.taskLlmSummarize ||
-        input.taskAction == Repository.taskLlmTags ||
-        // R1 摄入自动重构（2026-10-09 收敛后仅 URL）
-        input.taskAction == Repository.taskSummarizeUrl;
+        input.taskAction == Repository.taskLlmTags;
+  }
+
+  /// R1：URL 抓取正文后产 TL;DR + 标签（串联步，组装点回调）。
+  ///
+  /// 头部 1500 字符截断直出（二次收敛拍板：不搞分块、不一刀切回退）；
+  /// 模型不可用 / 空产出 → null（抓取方静默跳过摘要，正文照常落库）。
+  /// 标签解析复用 [_splitTagsSuffix]（D2：并集由调用方合并，本函数只给增量）。
+  Future<({String summary, List<String> tags})?> summarizeUrlHead(String body) async {
+    final text = body.trim();
+    if (text.isEmpty) return null;
+    if (!await engine.isAvailable) return null;
+    final head = text.length > _kHeadChars
+        ? '${text.substring(0, _kHeadChars)}…'
+        : text;
+    try {
+      final out = await engine.generate(
+        '请根据以下文章开头概述要点（3-5 句 TL;DR，忠实原文，不要编造）。'
+        '摘要完成后，另起一行输出「TAGS:」加 2-3 个标签（顿号分隔，优先用常见短词）：\n\n$head',
+        maxTokens: 512,
+      );
+      if (out == null || out.trim().isEmpty) return null;
+      final parsed = _splitTagsSuffix(out.trim());
+      return (summary: parsed.text, tags: parsed.tags);
+    } catch (e) {
+      // DEGRADE: 摘要步失败静默降级，不拖垮抓取任务
+      debugPrint('[DEGRADE] [Llm] summarizeUrlHead failed: $e');
+      return null;
+    }
   }
 
   @override
@@ -112,50 +130,9 @@ class LlmReconstructor implements AiReconstructor {
       return ReconstructResult(humanMd: base, note: '未生成：$reason');
     }
 
-    // ─── R1 摄入自动重构（2026-10-09 收敛拍板：仅 URL 摘要+打标，chatlog 已砍）───
-    final isUrlSummary = input.taskAction == Repository.taskSummarizeUrl;
-    if (isUrlSummary) {
-      // D3 超长口径：回退占位 + note 明示，不截断照跑（防失真产出）。
-      if (text.length > _maxPromptChars) {
-        return ReconstructResult(
-          humanMd: base,
-          note: '内容超长（${text.length} 字符 > $_maxPromptChars），'
-              '本次未执行 AI 摘要（不截断照跑防失真）',
-        );
-      }
-      if (!await engine.isAvailable) {
-        final reason = (await engine.unavailableReasonAsync()) ??
-            engine.unavailableReason ??
-            '端侧大模型引擎不可用';
-        debugPrint('[Llm] r1 unavailable (item=${input.itemId}): $reason');
-        return ReconstructResult(humanMd: base, note: '未生成：$reason');
-      }
-      try {
-        // 叠加层——不改写抓取正文（事实源），摘要 + 自动标签。
-        // 正文为空（抓取失败已由 OcrReconstructor 落占位）时无从摘要，直接明说。
-        if (text.isEmpty) {
-          return ReconstructResult(humanMd: base, note: '链接正文为空（抓取未产出），无法生成摘要');
-        }
-        final out = await engine.generate(
-          '请为以下网页正文写一段简明摘要（3-5 句，忠实原文，不要编造）。'
-          '摘要完成后，另起一行输出「TAGS:」加 2-3 个标签（顿号分隔，优先用常见短词）：\n\n$text',
-          maxTokens: 512,
-        );
-        if (out == null || out.trim().isEmpty) {
-          return ReconstructResult(humanMd: base, note: '端侧大模型未产出结果（模型未就绪或生成失败），可重试');
-        }
-        final parsed = _splitTagsSuffix(out.trim());
-        return ReconstructResult(
-          humanMd: base,
-          summaryMd: parsed.text,
-          tags: <String>{...input.humanTags, ...parsed.tags}.toList(),
-        );
-      } catch (e) {
-        // DEGRADE: 引擎异常按「占位完成 + 明说原因」处理，不置死信不重入队。
-        debugPrint('[Llm] r1 generate failed (item=${input.itemId}): $e');
-        return ReconstructResult(humanMd: base, note: '端侧大模型生成异常：$e（可重试）');
-      }
-    }
+    // ─── R1 URL 摘要已改串联式单任务（summarizeUrlHead，由 OcrReconstructor
+    // 组装点原地调用）——summarize_url 队列任务落回占位消化（taskActionFor
+    // 不再映射，历史遗留任务由占位兜底）───
 
     final isSummary = input.taskAction == Repository.taskLlmSummarize;
     final prompt = isSummary
@@ -186,6 +163,10 @@ class LlmReconstructor implements AiReconstructor {
       return ReconstructResult(humanMd: base, note: '端侧大模型生成异常：$e（可重试）');
     }
   }
+
+  /// 头部截断长度（二次收敛拍板）：真实网页长文 3000-8000 字，核心论点集中
+  /// 在开头——取 1500 字符（≈1500 汉字 / 3000 token 内）保证功能不哑火。
+  static const int _kHeadChars = 1500;
 
   /// 解析 R1 产出尾部的「TAGS: a、b」标签行（D2：直接进 tags）。
   /// 无 TAGS 行 = 标签产出失败不造假，正文/摘要照常应用。

@@ -18,13 +18,25 @@ import 'url_extract.dart';
 /// 音频转写不做（2026-09-27 用户拍板去掉边录边转），录音仅存音频文件。
 /// 无 GMS 设备的 bundled OCR 变体适配为后续项（先支持标准设备）。
 class OcrReconstructor implements AiReconstructor {
-  const OcrReconstructor({this.isOcrEnabled, this.isUrlFetchEnabled});
+  const OcrReconstructor({
+    this.isOcrEnabled,
+    this.isUrlFetchEnabled,
+    this.summarizeHead,
+  });
 
   /// 是否允许 OCR（设置开关门控）；null = 恒允许。
   final bool Function()? isOcrEnabled;
 
   /// 是否允许链接离线抓取网页正文（设置开关门控）；null = 恒允许。
   final bool Function()? isUrlFetchEnabled;
+
+  /// R1 URL 摘要（2026-10-09 二次收敛：**串联式单任务** Composite Pipeline）——
+  /// 抓取正文后**原地**调端侧 LLM 产 TL;DR+标签，**同一任务、一次落库**：
+  /// 不拆两个 Task、无跨任务链、无防环闸（链式+双闸版本经评估属分布式调度
+  /// 重型思维，本地 SQLite 队列串联执行物理归零死循环）。
+  /// 回调 null / 返回 null = 模型不在位或未产出，正文照常落库（静默跳过摘要，
+  /// 不占 note——「模型没下」不是本任务的失败）。
+  final Future<({String summary, List<String> tags})?> Function(String body)? summarizeHead;
 
   @override
   Future<bool> get isAvailable async => true;
@@ -110,15 +122,25 @@ class OcrReconstructor implements AiReconstructor {
           if (!doc.isEmpty) {
             // OG 元数据富化（rich-text-component.md §6.1 V2）：复用同一份 HTML
             // 顺带解析 og:*，url 条目从「一坨正文」变卡片；无 OG 标签则不写。
+            final step = await _summarize(doc.markdown);
             return ReconstructResult(
               humanMd: doc.markdown,
               docMetaJson: jsonEncode(doc.meta.toJson()),
               machineJson: ogMachineJson(html),
+              summaryMd: step?.summary,
+              tags: step?.tags ?? const [],
             );
           }
         }
         final content = await fetchReadable(url);
-        if (content != null) return ReconstructResult(humanMd: content);
+        if (content != null) {
+          final step = await _summarize(content);
+          return ReconstructResult(
+            humanMd: content,
+            summaryMd: step?.summary,
+            tags: step?.tags ?? const [],
+          );
+        }
       }
       return ReconstructResult(
         humanMd: input.rawContent ?? '',
@@ -126,6 +148,20 @@ class OcrReconstructor implements AiReconstructor {
       );
     }
     return ReconstructResult(humanMd: input.rawContent ?? '');
+  }
+
+  /// R1 串联摘要步：回调不在位（模型未接/未下）即返回 null 静默跳过；
+  /// 回调内部异常也按「无摘要」降级（DEGRADE），绝不卡抓取任务本身。
+  Future<({String summary, List<String> tags})?> _summarize(String body) async {
+    final step = summarizeHead;
+    if (step == null) return null;
+    try {
+      return await step(body);
+    } catch (e) {
+      // DEGRADE: 摘要步失败不拖垮抓取产物，正文照常落库
+      debugPrint('[DEGRADE] [OcrR1] summarize step failed: $e');
+      return null;
+    }
   }
 
   Future<String?> _ocr(String path) async {

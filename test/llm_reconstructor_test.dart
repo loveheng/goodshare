@@ -55,25 +55,26 @@ void main() {
     expect(r.humanMd, '正文内容', reason: '收敛后 chatlog 降噪砍除，LlmReconstructor 不认领（由占位兜底）');
   });
 
-  test('R1 summarize_url：正文不改写、摘要进 summary_md + 打标', () async {
-    final engine = _FakeLlmEngine(
-      available: true,
-      output: 'TL;DR：这篇文章讲 X。\n\nTAGS: 前端、性能',
-    );
-    final r = await LlmReconstructor(engine: engine).reconstruct(
-        input(Repository.taskSummarizeUrl, humanMd: '抓取的网页正文'));
-    expect(r.humanMd, '抓取的网页正文', reason: '叠加层：不改写抓取正文（事实源）');
-    expect(r.summaryMd, 'TL;DR：这篇文章讲 X。');
-    expect(r.tags, containsAll(['前端', '性能']));
+  test('R1 串联收敛：summarize_url 不再被认领（摘要走 summarizeHead 串联步）', () async {
+    final r = await LlmReconstructor(engine: _FakeLlmEngine(available: true, output: '不该被调用'))
+        .reconstruct(input(Repository.taskSummarizeUrl, humanMd: '抓取的正文'));
+    expect(r.humanMd, '抓取的正文', reason: '不认领即占位复制');
+    expect(r.summaryMd, isNull);
   });
 
-  test('R1 D3 超长：超 3000 字符回退占位 + note 明示，不截断照跑', () async {
-    final long = 'x' * 3001;
-    final r = await LlmReconstructor(engine: _FakeLlmEngine(available: true, output: '不该被调用'))
-        .reconstruct(input(Repository.taskSummarizeUrl, humanMd: long));
-    expect(r.humanMd, long, reason: '占位回退原样保留');
-    expect(r.note, contains('内容超长'));
-    expect(r.note, contains('3001'));
+  test('R1 summarizeUrlHead：头部 1500 截断直出 + TAGS 解析（替代 D3 一刀切）', () async {
+    final step = LlmReconstructor(engine: _FakeLlmEngine(
+      available: true,
+      output: 'TL;DR：这篇文章讲 X。\n\nTAGS: 前端、性能',
+    ));
+    // 短文
+    final short = await step.summarizeUrlHead('正文');
+    expect(short, isNotNull);
+    expect(short!.summary, 'TL;DR：这篇文章讲 X。');
+    expect(short.tags, ['前端', '性能']);
+    // 长文：5000 字符仍出摘要（不哑火）
+    final long = await step.summarizeUrlHead('x' * 5000);
+    expect(long, isNotNull, reason: '头部截断直出，真实长文不回退');
   });
 
   test('R1 引擎不可用：note 带真值原因、human_md 原样', () async {

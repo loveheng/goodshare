@@ -365,7 +365,11 @@ class Repository extends ChangeNotifier {
 
   /// item_type → 默认队列动作；note 无专属动作返回 null（消费者按类型通用重构）。
   static String? taskActionFor(String itemType) => switch (itemType) {
-        InboxItem.typeUrl => taskSummarizeUrl,
+        // URL 摘要改串联式单任务（2026-10-09 二次收敛）：抓取与摘要在同一任务内
+        // 顺序执行（OcrReconstructor.summarizeHead），不再按类型入队独立摘要任务
+        // ——跨任务链+防环闸属分布式调度重型思维，本地队列串联物理归零死循环。
+        // summarize_url 常量保留（历史任务行兼容，占位消化）。
+        // InboxItem.typeUrl => taskSummarizeUrl,
         // chatlog 收敛（2026-10-09 §1.1a）：端侧 1.5B 理不清长 OCR 碎片，
         // 议题整理产出不可信——回归占位消化，重活归桌面 MCP。
         // InboxItem.typeChatlog => taskParseChatlog,

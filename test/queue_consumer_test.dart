@@ -272,70 +272,17 @@ void main() {
     expect(task?['status'], isNot('skipped'), reason: '门禁已移除，任务不再被 skip');
   });
 
-  test('D4 URL 摘要链：抓取成功且开关开 → 链入 summarize_url；开关关/失败不链', () async {
-    // 开关开 + 抓取成功（note=null、human_md 非空）→ 链入摘要任务
-    // 用真实摄入路径（CollectCommand → taskActionFor(url)=summarize_url 自动入队）：
-    // repo.add 裸方法不入队，链检查永远不触发。
-    final c1r = await handler.execute(
+  test('R1 串联收敛：URL 摄入不再入独立摘要任务（抓取+摘要在同一任务内）', () async {
+    // taskActionFor(url) 已回归 null（2026-10-09 二次收敛：串联式单任务）——
+    // 摄入不再自动入队 summarize_url，抓取+摘要在 OcrReconstructor.summarizeHead
+    // 同一任务内顺序执行（摘要步行为由 ocr_reconstructor 测试守）。
+    await handler.execute(
       const CollectCommand(itemType: InboxItem.typeUrl, rawContent: 'https://example.com/a'),
     );
-    final it1 = c1r.item!;
-    final chained = <String>[];
-    final c1 = QueueConsumer(
-      repo,
-      ReconstructorRegistry([fake(available: true, result: const ReconstructResult(humanMd: '抓到的正文'))]),
-      handler,
-      isAutoSummarize: () => true,
-      onEnqueued: () => chained.add(it1.id!),
-    );
-    await c1.pollOnce();
-    // 链入的摘要在同一 pollOnce 轮内即被 while 循环消费完（pending 已清），
-    // 断言查任务历史：链任务存在且由本轮产生。
-    final hist1 = await repo.recentTasksOf(it1.id!);
     expect(
-      hist1.where((t) => t['task_action'] == Repository.taskSummarizeUrl).length,
-      2,
-      reason: '抓取任务 + 链入的摘要任务（消费后 completed，仍在历史中）',
-    );
-    expect(chained, [it1.id]);
-
-    // 开关关 → 不链
-    final c2r = await handler.execute(
-      const CollectCommand(itemType: InboxItem.typeUrl, rawContent: 'https://example.com/b'),
-    );
-    final it2 = c2r.item!;
-    final c2 = QueueConsumer(
-      repo,
-      ReconstructorRegistry([fake(available: true, result: const ReconstructResult(humanMd: '正文2'))]),
-      handler,
-      isAutoSummarize: () => false,
-    );
-    await c2.pollOnce();
-    expect(
-      (await repo.pendingTasks()).any((t) => t['item_id'] == it2.id),
-      isFalse,
-      reason: 'D4 开关关闭时抓取后不链摘要',
-    );
-
-    // 抓取失败（note 非空占位）→ 不链
-    final c3r = await handler.execute(
-      const CollectCommand(itemType: InboxItem.typeUrl, rawContent: 'https://example.com/c'),
-    );
-    final it3 = c3r.item!;
-    final c3 = QueueConsumer(
-      repo,
-      ReconstructorRegistry([fake(
-        available: true,
-        result: const ReconstructResult(humanMd: 'https://example.com/c', note: '链接正文抓取未产出'),
-      )]),
-      handler,
-      isAutoSummarize: () => true,
-    );
-    await c3.pollOnce();
-    expect(
-      (await repo.pendingTasks()).any((t) => t['item_id'] == it3.id),
-      isFalse,
-      reason: '抓取失败（占位）不链摘要，防无效任务空耗',
+      (await repo.pendingTasks()).where((t) => t['task_action'] == Repository.taskSummarizeUrl),
+      isEmpty,
+      reason: '串联收敛后 URL 摄入无独立摘要任务（无跨任务链）',
     );
   });
 

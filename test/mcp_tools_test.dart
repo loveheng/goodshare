@@ -125,7 +125,9 @@ void main() {
     await callTool('reprocess_item', {'id': r.id}, repo);
     final tasks = await repo.pendingTasks();
     expect(tasks.length, 1);
-    expect(tasks.first['task_action'], Repository.taskSummarizeUrl);
+    // 2026-10-09 二次收敛：taskActionFor(url) 回归 null（串联式单任务，抓取+摘要
+    // 同任务内），reprocess_item 入队 task_action=null（占位消化，摘要走 summarizeHead）
+    expect(tasks.first['task_action'], isNull);
   });
 
   test('set_vault：MCP 可移入；移出被拒绝；移入后对 MCP 不可见', () async {

@@ -18,8 +18,6 @@ import 'document_scan_capability.dart';
 class AiCapabilities extends ChangeNotifier {
   static const _prefOcrEnabled = 'ai_ocr_enabled';
   static const _prefUrlFetchEnabled = 'ai_url_fetch_enabled';
-  static const _prefAutoSummarize = 'ai_auto_summarize';
-  static const _prefMaskEnabled = 'ai_mask_enabled';
   static const _prefAsrEnabled = 'ai_asr_enabled';
   static const _prefDetected = 'ai_capability_detected';
   static const _prefOcrAvailable = 'ai_ocr_available';
@@ -29,8 +27,8 @@ class AiCapabilities extends ChangeNotifier {
 
   bool ocrEnabled = true; // 用户开关
   bool urlFetchEnabled = true; // 链接离线抓取网页正文（无设备能力依赖，不需要检测）
-  bool autoSummarizeEnabled = true; // R1/D4（2026-10-09）：URL 抓正文后自动 LLM 摘要+打标
-  bool maskEnabled = true; // R2/D1（2026-10-09）：身份证/银行卡默认打码（AI 产出通用出口）
+  // R1/R2 开关已删（2026-10-09 二次收敛）：自动摘要随模型在位自动生效；
+  // 打码为核心隐私防御硬编码生效（正常用户不会要求保留明文卡号）。
   bool asrEnabled = true; // 录音/音频端侧转写（Sherpa 离线，无 GMS 依赖）
   bool? ocrAvailable; // 本机检测结果（null = 尚未检测）
 
@@ -60,8 +58,6 @@ class AiCapabilities extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     ocrEnabled = prefs.getBool(_prefOcrEnabled) ?? true;
     urlFetchEnabled = prefs.getBool(_prefUrlFetchEnabled) ?? true;
-    autoSummarizeEnabled = prefs.getBool(_prefAutoSummarize) ?? true;
-    maskEnabled = prefs.getBool(_prefMaskEnabled) ?? true;
     asrEnabled = prefs.getBool(_prefAsrEnabled) ?? true;
     translationEnabled = prefs.getBool(_prefTranslationEnabled) ?? true;
     targetLang = prefs.getString(_prefTargetLang) ?? 'zh';
@@ -113,22 +109,6 @@ class AiCapabilities extends ChangeNotifier {
     urlFetchEnabled = v;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_prefUrlFetchEnabled, v);
-    notifyListeners();
-  }
-
-  /// D4（2026-10-09）：URL 抓正文后自动 LLM 摘要+打标。
-  Future<void> setAutoSummarizeEnabled(bool v) async {
-    autoSummarizeEnabled = v;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_prefAutoSummarize, v);
-    notifyListeners();
-  }
-
-  /// D1（2026-10-09）：身份证/银行卡默认打码（AI 产出通用出口）。
-  Future<void> setMaskEnabled(bool v) async {
-    maskEnabled = v;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_prefMaskEnabled, v);
     notifyListeners();
   }
 

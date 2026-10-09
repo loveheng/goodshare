@@ -58,17 +58,16 @@ Future<void> main() async {
   await repo.purgeDeleted();
   // 动作层先建：摄入（TextCollector/ShareIntake）与 MCP 共用同一写入口
   // aiQueue 用 late：handler 的 onEnqueued 闭包延迟引用，装配期（下方）才赋值
-  // caps 用 late 同理（isMaskEnabled 闭包延迟引用）
   late final AiQueueService aiQueue;
-  late final AiCapabilities caps;
   final handler = ItemActionHandler(
     repo,
     onEnqueued: () => aiQueue.kick(),
-    isMaskEnabled: () => caps.maskEnabled, // R2/D1：AI 产出通用出口打码
+    // R2/D1 打码恒开（2026-10-09 二次收敛：核心隐私防御不做开关）
+    isMaskEnabled: () => true,
   );
   final collector = TextCollector(handler);
   await collector.load();
-  caps = AiCapabilities();
+  final caps = AiCapabilities();
   await caps.load();
   // 本机能力检测：首次执行后持久化，此后不再检测
   await caps.ensureDetected();
@@ -100,6 +99,8 @@ Future<void> main() async {
   // AI 队列消费者：v1 = 图片 ML Kit OCR + 音频 Sherpa 离线转写（均受设置开关门控）
   // + 链接离线抓取 + 其余占位复制
   final llmEngine = ChannelLlmEngine();
+  // R1 串联摘要步持有者（与 consumer registry 里的 LlmReconstructor 同引擎实例）
+  final llmR1 = LlmReconstructor(engine: llmEngine);
   // 文档扫描能力实例：同时注入 caps（UI 取用）与注册表（能力清单），保持单例
   final docScan = DocumentScanCapability();
   caps.documentScan = docScan;
@@ -109,6 +110,9 @@ Future<void> main() async {
       OcrReconstructor(
         isOcrEnabled: () => caps.ocrEnabled,
         isUrlFetchEnabled: () => caps.urlFetchEnabled,
+        // R1 串联摘要步（2026-10-09 二次收敛）：抓取后原地调 LLM（头部 1500 截断），
+        // 模型不在位静默跳过——无独立任务、无开关、无链
+        summarizeHead: llmR1.summarizeUrlHead,
       ),
       // 图片分类（ML Kit Image Labeling，2026-09-29）：仅手动触发，base 模型离线可用
       ImageLabelCapability(),
@@ -150,9 +154,6 @@ Future<void> main() async {
       const PlaceholderReconstructor(),
     ]),
     handler,
-    // D4：URL 抓正文后自动链 LLM 摘要+打标（开关默认开，与 urlFetchEnabled 同构）
-    isAutoSummarize: () => caps.autoSummarizeEnabled,
-    onEnqueued: () => aiQueue.kick(),
   );
   consumer.start();
   // 第 3 档：前台服务保活 + 设备状态感知调度 + 内存压力优雅中断
