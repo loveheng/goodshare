@@ -48,8 +48,12 @@ final List<BlockPresentation> kBlockPresentations = [
     kind: BlockKind.h1,
     badge: 'H1',
     markerPrefix: '# ',
-    resolveStyle: (t, _) =>
-        (t.titleLarge ?? const TextStyle()).copyWith(fontWeight: FontWeight.w700),
+    // 2026-10-08：统一"标题=主色"语言——H1/H2 皆主色，层级仅靠字号档
+    // （titleLarge 22 vs titleMedium 16）区分，正文(bodyLarge)为常规黑，三档一眼可分。
+    resolveStyle: (t, s) => (t.titleLarge ?? const TextStyle()).copyWith(
+      fontWeight: FontWeight.w700,
+      color: s.primary,
+    ),
   ),
   BlockPresentation(
     kind: BlockKind.h2,

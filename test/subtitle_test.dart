@@ -55,6 +55,52 @@ void main() {
       expect(r.length, 3);
       expect(r.every((c) => c.text.trim().isNotEmpty), isTrue);
     });
+
+    test('过滤纯标点 cue（ASR 无语音段只吐标点，如单个 .）', () {
+      const dotCues = [
+        AsrCue(start: 0.0, duration: 1.0, text: '.'),
+        AsrCue(start: 1.5, duration: 1.0, text: '。。。'),
+        AsrCue(start: 3.0, duration: 1.0, text: '！？…“”'),
+        AsrCue(start: 4.0, duration: 1.0, text: '好'),
+      ];
+      final r = usableCues(dotCues);
+      expect(r.single.text, '好');
+    });
+
+    test('含字母/数字的 cue 保留（含标点包裹）', () {
+      const mixed = [
+        AsrCue(start: 0.0, duration: 1.0, text: '3 个'),
+        AsrCue(start: 1.0, duration: 1.0, text: '(a)'),
+        AsrCue(start: 2.0, duration: 1.0, text: '👍'), // 无字母数字：纯符号
+      ];
+      final r = usableCues(mixed);
+      expect(r.map((c) => c.text), ['3 个', '(a)']);
+    });
+  });
+
+  group('parseSrtVtt', () {
+    test('纯标点 cue 块被丢弃（与 usableCues 同口径，序号对齐）', () {
+      const srt = '''
+1
+00:00:00,000 --> 00:00:01,000
+.
+
+2
+00:00:01,000 --> 00:00:02,000
+你好
+''';
+      final r = parseSrtVtt(srt);
+      expect(r.single.text, '你好');
+    });
+
+    test('与 serializeSrt 往返一致', () {
+      const src = [
+        AsrCue(start: 0.0, duration: 1.0, text: '.'),
+        AsrCue(start: 1.0, duration: 1.0, text: 'end'),
+      ];
+      final r = parseSrtVtt(serializeSrt(src));
+      expect(r.map((c) => c.text), ['end']);
+    });
   });
 
   group('serializeSrt', () {

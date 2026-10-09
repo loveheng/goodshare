@@ -5,7 +5,8 @@ import 'package:goodshare/action/commands.dart';
 import 'package:goodshare/action/item_action_handler.dart';
 import 'package:goodshare/ai/reconstructor.dart';
 import 'package:goodshare/data/db.dart';
-import 'package:goodshare/data/block_artifacts.dart' show BlockArtifactKind;
+import 'package:goodshare/data/block_artifacts.dart'
+    show BlockArtifactInput, BlockArtifactKind;
 import 'package:goodshare/data/repository.dart';
 import 'package:goodshare/models/item.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -113,52 +114,30 @@ void main() {
     expect(after.item!.machineJson, ok);
   });
 
-  test('重分类白名单（2026-10-05 方向二）：AI 维持 image→document，人工全放开', () async {
-    final shot = await repo.add(newItem(type: InboxItem.typeImage, sourceType: InboxItem.typeImage));
-    final moved = await handler.execute(ReclassifyCommand(shot.id!, InboxItem.typeDocument));
-    expect(moved.item!.itemType, InboxItem.typeDocument);
+  test('重分类退役（2026-10-09）：UI/MCP 主体 item_type 改判一律拒绝，仅管线保留', () async {
+    final note = await repo.add(newItem());
 
-    // AI（MCP）：白名单维持——非 image 来源 / 非白名单目标均拒
-    final note = await repo.add(newItem(aiEditable: true));
+    // UI 主体：ReclassifyCommand 已随命令类删除，update 的 item_type 分支拒绝
     expect(
-      () => handler.execute(
-        ReclassifyCommand(note.id!, InboxItem.typeDocument),
-        actor: CommandActor.ai,
-      ),
+      () => handler.execute(UpdateItemCommand(id: note.id!, itemType: InboxItem.typeDocument)),
       throwsA(isA<ActionException>()),
     );
-    final img2 = await repo.add(newItem(type: InboxItem.typeImage, sourceType: InboxItem.typeImage));
+
+    // AI（MCP）主体：同拒（白名单随退役一并摘除）
     expect(
       () => handler.execute(
-        ReclassifyCommand(img2.id!, InboxItem.typeUrl),
-        actor: CommandActor.ai,
-      ),
-      throwsA(isA<ActionException>()),
-    );
-    // 聊天场景取消（2026-10-02 拍板）：chatlog 不再是 AI 可改判目标
-    expect(
-      () => handler.execute(
-        ReclassifyCommand(img2.id!, InboxItem.typeChatlog),
+        UpdateItemCommand(id: note.id!, itemType: InboxItem.typeDocument),
         actor: CommandActor.ai,
       ),
       throwsA(isA<ActionException>()),
     );
 
-    // 人工（ui，默认 actor）：同一些转移全放开（方向二拍板）
-    final note2 = await repo.add(newItem());
-    expect(
-      () => handler.execute(ReclassifyCommand(note2.id!, InboxItem.typeDocument)),
-      returnsNormally,
+    // 管线回写（AI 管线自动纠偏，内部机制）：保留放行
+    final r = await handler.execute(
+      UpdateItemCommand(id: note.id!, itemType: InboxItem.typeDocument),
+      actor: CommandActor.pipeline,
     );
-    expect(
-      () => handler.execute(ReclassifyCommand(img2.id!, InboxItem.typeChatlog)),
-      returnsNormally,
-    );
-    // update 的 item_type 路径走同一校验（ui 主体同口径放开）
-    expect(
-      () => handler.execute(UpdateItemCommand(id: img2.id!, itemType: InboxItem.typeDocument)),
-      returnsNormally,
-    );
+    expect(r.item!.itemType, InboxItem.typeDocument);
   });
 
   test('setVault 进出保险箱；非 vaultContext 动作对 Vault 条目不可见', () async {
@@ -694,6 +673,92 @@ void main() {
     }
     expect((await repo.pendingTasks()), isEmpty, reason: '拒绝不入队');
   });
+
+  // ───────── 块转写空载荷「重跑即重算」（2026-10-08）─────────
+
+  test('块转写空载荷+清空清单：删该块 transcript+subtitle 旧产物，audio_file 不连坐', () async {
+    final it = await repo.add(newItem(type: InboxItem.typeVideo));
+    const key = 'local://v.mp4';
+    // 字幕文件由被测路径按纪律 7 删盘（下方断言），不另挂 tearDown 二次删除
+    final f = File('${Directory.systemTemp.path}/reset_sub_${DateTime.now().millisecondsSinceEpoch}.srt')
+      ..writeAsStringSync('WEBVTT');
+    await repo.blockArtifacts.upsertAll(it.id!, key, [
+      BlockArtifactInput(BlockArtifactKind.transcript, text: '.'),
+      BlockArtifactInput(BlockArtifactKind.subtitle, text: '.', filePath: f.path),
+      BlockArtifactInput(BlockArtifactKind.audioFile, filePath: '${f.path}.m4a'),
+    ]);
+
+    await handler.execute(
+      ApplyAiResultCommand(
+        it.id!,
+        ReconstructResult(
+          humanMd: 'raw body',
+          blockKey: key,
+          blockArtifacts: const [],
+          blockResetKinds:
+              const [BlockArtifactKind.transcript, BlockArtifactKind.subtitle],
+          note: '未识别出任何语音内容',
+        ),
+      ),
+      actor: CommandActor.pipeline,
+    );
+
+    final rest = await repo.blockArtifacts.listForItem(it.id!, blockKey: key);
+    expect(rest.map((a) => a.kind), [BlockArtifactKind.audioFile],
+        reason: '被清 kind 删行，audio_file（提取音轨独立产物）不连坐');
+    expect(f.existsSync(), isFalse, reason: 'subtitle 文件产物删行必删盘（纪律 7）');
+  });
+
+  test('块转写成功载荷走 upsert 覆盖：blockResetKinds 被忽略（不误清空）', () async {
+    final it = await repo.add(newItem(type: InboxItem.typeVideo));
+    const key = 'local://v.mp4';
+    await repo.blockArtifacts.upsertAll(it.id!, key, [
+      BlockArtifactInput(BlockArtifactKind.transcript, text: '.'),
+    ]);
+
+    await handler.execute(
+      ApplyAiResultCommand(
+        it.id!,
+        ReconstructResult(
+          humanMd: 'raw body',
+          blockKey: key,
+          blockArtifacts: const [
+            BlockArtifactInput(BlockArtifactKind.transcript, text: '你好'),
+          ],
+          // 成功载荷下声明了清空清单也必须忽略——upsert 覆盖路径优先
+          blockResetKinds: const [BlockArtifactKind.transcript],
+        ),
+      ),
+      actor: CommandActor.pipeline,
+    );
+
+    final tr = await repo.blockArtifacts.get(it.id!, key, BlockArtifactKind.transcript);
+    expect(tr?.text, '你好');
+  });
+
+  test('空载荷未声明清空清单：旧产物保留（其他能力/旧调用方不连坐）', () async {
+    final it = await repo.add(newItem(type: InboxItem.typeVideo));
+    const key = 'local://v.mp4';
+    await repo.blockArtifacts.upsertAll(it.id!, key, [
+      BlockArtifactInput(BlockArtifactKind.transcript, text: '旧'),
+    ]);
+
+    await handler.execute(
+      ApplyAiResultCommand(
+        it.id!,
+        ReconstructResult(
+          humanMd: 'raw body',
+          blockKey: key,
+          blockArtifacts: const [],
+        ),
+      ),
+      actor: CommandActor.pipeline,
+    );
+
+    final tr = await repo.blockArtifacts.get(it.id!, key, BlockArtifactKind.transcript);
+    expect(tr?.text, '旧');
+  });
+
   // ───────── 待办勾选（todo_state_json，2026-10-05 接线）─────────
 
   test('update todoState：勾选状态平行落库、不碰正文；空表=清空', () async {
@@ -749,54 +814,19 @@ void main() {
         full.item!.todoState.map((m) => m.hash), reason: 'AI update 不动勾选本');
   });
 
-  // ───────── 重分类白名单放宽（2026-10-05 拍板「方向二」）─────────
+  // ───────── 重分类退役（2026-10-09 拍板，取代「方向二」放宽）─────────
 
-  test('重分类方向二：人工（ui）跨类型全放开，含媒体→文本', () async {
-    final chat = await repo.add(newItem(type: InboxItem.typeChatlog));
-    // AI 误判 chatlog，人工改回 note——此前被白名单锁死的核心场景
-    final r = await handler.execute(
-      ReclassifyCommand(chat.id!, InboxItem.typeNote),
-    );
-    expect(r.item!.itemType, InboxItem.typeNote);
-
-    // 媒体→文本也放行（渲染后果由 UI 确认弹窗承担，动作层不禁死）
-    final img = await repo.add(newItem(type: InboxItem.typeImage));
-    final r2 = await handler.execute(
-      ReclassifyCommand(img.id!, InboxItem.typeNote),
-    );
-    expect(r2.item!.itemType, InboxItem.typeNote);
-
-    // update 命令的 item_type 分支同口径（ui 主体不再受限）
-    final note = await repo.add(newItem());
-    final r3 = await handler.execute(
-      UpdateItemCommand(id: note.id!, itemType: InboxItem.typeDocument),
-    );
-    expect(r3.item!.itemType, InboxItem.typeDocument);
-  });
-
-  test('重分类方向二：AI（MCP）白名单不放宽——非 image 来源仍拒', () async {
+  test('重分类退役：ai 主体 update 改判 item_type 被拒（forbidden）', () async {
     final note = await repo.add(newItem(aiEditable: true));
     try {
       await handler.execute(
-        ReclassifyCommand(note.id!, InboxItem.typeNote),
+        UpdateItemCommand(id: note.id!, itemType: InboxItem.typeDocument),
         actor: CommandActor.ai,
       );
-      fail('应抛 reclassify_denied');
+      fail('应抛 forbidden');
     } on ActionException catch (e) {
-      expect(e.code, ActionErrorCode.reclassifyDenied);
-      expect(e.hint, contains('可选目标：document'));
+      expect(e.code, ActionErrorCode.forbidden);
     }
-
-    // 白名单内（image 来源 image 类型 → document）AI 仍可通过
-    final img = await repo.add(newItem(
-      type: InboxItem.typeImage,
-      sourceType: InboxItem.typeImage,
-    ));
-    final r = await handler.execute(
-      ReclassifyCommand(img.id!, InboxItem.typeDocument),
-      actor: CommandActor.ai,
-    );
-    expect(r.item!.itemType, InboxItem.typeDocument);
   });
 
 }

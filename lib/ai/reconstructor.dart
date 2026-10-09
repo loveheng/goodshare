@@ -65,6 +65,7 @@ class ReconstructResult {
     this.docMetaJson,
     this.blockKey,
     this.blockArtifacts,
+    this.blockResetKinds,
   });
 
   final String humanMd;
@@ -103,6 +104,12 @@ class ReconstructResult {
   /// 此时 humanMd 应为 input.rawContent（走 ApplyAiResult 的 rawEcho 保护保留现正文）。
   final String? blockKey;
   final List<BlockArtifactInput>? blockArtifacts;
+
+  /// 块产物「重跑即重算」清空清单（2026-10-08）：本次块任务**无产出**时，handler
+  /// 删掉该块这些 kind 的旧产物行 + 磁盘文件（转写空/失败清 transcript+subtitle，
+  /// 避免 1 字符 dot 这类旧产物滞留三级页误导）。**仅当 [blockArtifacts] 为空才
+  /// 生效**——成功载荷走 upsert 覆盖路径，此字段被忽略。
+  final List<String>? blockResetKinds;
 
   final bool masked; // 是否已执行隐私打码（V2 §3.4；占位实现恒 false）
   final String? itemType; // AI 重分类（如 image→chatlog）；null = 不改

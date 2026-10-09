@@ -12,6 +12,23 @@ import 'package:flutter/foundation.dart';
 class AttachUriChannel {
   static const _channel = MethodChannel('goodshare/attach');
 
+  /// 检测 content:// / file:// URI 当前是否可读（引用态可达性判定）。
+  /// 平台桥缺失或异常时保守返回 true（缺失平台检测 ≠ 已失效，不误报 lost）。
+  Future<bool> checkReachable(String uriOrPath) async {
+    if (!uriOrPath.startsWith('content://') && !uriOrPath.startsWith('file://')) {
+      return true;
+    }
+    try {
+      return await _channel.invokeMethod<bool>('uriReachable', uriOrPath) ?? true;
+    } on PlatformException catch (e) {
+      debugPrint('[DEGRADE] attach_check_reachable_failed uri=$uriOrPath error=${e.code}');
+      return true;
+    } on MissingPluginException {
+      debugPrint('[DEGRADE] attach_channel_missing uri=$uriOrPath');
+      return true;
+    }
+  }
+
   /// 尝试持久化 URI 读权限。返回是否生效（或本就无需持久化）。
   Future<bool> persistUri(String uriOrPath) async {
     if (!uriOrPath.startsWith('content://')) return true;

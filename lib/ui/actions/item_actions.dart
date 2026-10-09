@@ -186,21 +186,6 @@ abstract final class ItemActions {
     );
   }
 
-  /// 重分类（reclassify，2026-10-05 转正；同日拍板「方向二」人工全放开）：
-  /// 类型与标签同属用户权威元数据，UI 对全部条目收录「重分类…」选择器入口；
-  /// AI 客户端白名单仍在动作层 `_reclassifyError`（仅 image→document）。
-  /// 目标选择与「媒体→文本」后果确认由页面承担。
-  static ItemAction reclassify(
-    ItemActionContext ctx, {
-    required Future<void> Function() run,
-  }) =>
-      ItemAction(
-        id: 'reclassify',
-        icon: Icons.category_outlined,
-        label: '重分类…',
-        onInvoke: run,
-      );
-
   /// 对 AI 可见（ai-visibility v20）：人类笔记默认不可见；开启后 AI（MCP）方可读取。
   /// 仅人类笔记可切换（AI 自身笔记恒可见，无需开关）。
   static ItemAction? aiVisible(
@@ -238,8 +223,9 @@ abstract final class ItemActions {
   }
 
   /// `⋯` 功能面板的动作序列：权限开关类（保险箱 / 对AI可见 / 允许AI编辑 /
-  /// 机器码）连成连接按钮组；纠错类（重新处理 / 重分类）条件收录为独立项
-  /// （2026-10-05 转正，推翻 2026-10-02 摘除拍板——AI 误判需要人类干预出口）。
+  /// 机器码）连成连接按钮组；纠错类（重新处理）条件收录为独立项
+  /// （2026-10-05 转正——AI 误判需要人类干预出口）。
+  /// 重分类已退役（2026-10-09 拍板：被图片分类/保险箱/便签覆盖，见 ui-spec §4.6）。
   /// 分享、删除仍在详情页底栏常驻连接按钮组，不在此重复。
   /// 「允许 AI 处理」已删除（2026-10-05 拍板：管线回写授权不再要独立开关，
   /// 与 ai_editable 双开关冗余）。
@@ -250,7 +236,6 @@ abstract final class ItemActions {
     required Future<void> Function(bool on) onAiEditable,
     required VoidCallback onMachineToggle,
     required Future<void> Function() onReprocess,
-    required Future<void> Function() onReclassify,
   }) =>
       [
         vault(ctx, run: onVault, grouped: true),
@@ -258,7 +243,6 @@ abstract final class ItemActions {
         aiEditable(ctx, run: onAiEditable, grouped: true),
         machineMode(ctx, onToggle: onMachineToggle, grouped: true),
         reprocess(ctx, run: onReprocess),
-        reclassify(ctx, run: onReclassify),
       ].whereType<ItemAction>().toList();
 
   /// 列表批量操作栏动作集（§3.2 页面配置收敛于此，组合E 三页共用）：

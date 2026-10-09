@@ -49,6 +49,34 @@ class MainActivity : FlutterActivity() {
                             false
                         }
                     )
+                } else if (call.method == "uriReachable") {
+                    // 引用态可达性检测（content-pipeline §7）：
+                    // file:// 绝对路径直接 File.exists；
+                    // content:// 走 ContentResolver——openFileDescriptor 成功即可读，
+                    //FileNotFoundException / SecurityException（授权失效）→ 不可达。
+                    val uri = call.arguments as? String
+                    if (uri == null) {
+                        result.success(true)
+                        return@setMethodCallHandler
+                    }
+                    result.success(
+                        try {
+                            if (uri.startsWith("content://")) {
+                                contentResolver.openFileDescriptor(
+                                    android.net.Uri.parse(uri), "r",
+                                )?.close()
+                                true
+                            } else {
+                                java.io.File(android.net.Uri.parse(uri).path ?: "").exists()
+                            }
+                        } catch (_: java.io.FileNotFoundException) {
+                            false
+                        } catch (_: SecurityException) {
+                            false
+                        } catch (_: IllegalArgumentException) {
+                            false
+                        }
+                    )
                 } else {
                     result.notImplemented()
                 }

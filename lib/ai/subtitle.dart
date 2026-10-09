@@ -93,10 +93,16 @@ String formatTimestamp(double seconds, {required String decimal}) {
   return '${two(h)}:${two(m)}:${two(s)}$decimal${mmm.toString().padLeft(3, '0')}';
 }
 
-/// 过滤无信息 cue 后的有序列表（trim 空的丢弃；官方脚本还丢弃 `.` 一类
-/// 纯符号产物，本实现同样按「trim 后为空」口径跳过）。
+/// 文本是否含实义字符（字母/数字，Unicode 属性类）。ASR 对无语音段可能只
+/// 吐一个标点（如 `.`）——这类「纯符号 cue」无信息量，按官方脚本口径丢弃
+/// （此前只按 trim 非空过滤，`.` 漏过落库成 1 字符转写，2026-10-08 修复）。
+final RegExp _substantiveRe = RegExp(r'[\p{L}\p{N}]', unicode: true);
+
+bool hasSubstantiveText(String s) => _substantiveRe.hasMatch(s);
+
+/// 过滤无信息 cue 后的有序列表（空 / 纯标点 cue 均丢弃）。
 List<AsrCue> usableCues(List<AsrCue> cues) =>
-    cues.where((c) => c.text.trim().isNotEmpty).toList();
+    cues.where((c) => hasSubstantiveText(c.text.trim())).toList();
 
 /// cue 列表 → SRT 全文（序号从 1 起，条目间空行）。
 /// [mode] 决定是否带译文：bilingual 时每 cue 两行，separate 时取译文（缺则原文）。
@@ -157,7 +163,7 @@ List<AsrCue> parseSrtVtt(String content) {
     if (start == null) continue;
     final end = _parseTimestamp(m.group(2)!);
     final text = lines.skip(idx + 1).join('\n').trim();
-    if (text.isEmpty) continue;
+    if (!hasSubstantiveText(text)) continue;
     cues.add(AsrCue(
       start: start,
       duration: end == null ? 0 : (end - start).clamp(0, double.infinity).toDouble(),

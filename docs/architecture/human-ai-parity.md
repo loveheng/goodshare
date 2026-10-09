@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-09-28
+updated: 2026-10-09
 ---
 
 # Human-AI 对称性（无头架构）设计
@@ -44,7 +44,7 @@ flowchart LR
 - 落点：`lib/action/commands.dart`（`ItemCommand` sealed 家族 + `CommandResult` + `ActionException`）
 - 动作层只接收命令对象，不再有零散可选命名参数（`edit(id, title:, tldr:, ...)` 已废弃）
 - `ItemCommand.fromJson` 是 AI 侧唯一入口；`toJson` 供日志/回放/未来的聊天机器人外壳复用
-- 命令字：`update` `delete` `set_vault` `reclassify` `reprocess` `unlock_edit` `restore` `delete_forever` `collect` `append_segment` `apply_ai_result`
+- 命令字：`update` `delete` `set_vault` `reprocess` `unlock_edit` `restore` `delete_forever` `collect` `append_segment` `apply_ai_result`（~~`reclassify`~~ 已于 2026-10-09 退役——功能被图片分类/保险箱/便签覆盖，管线回写 itemType 分支保留在 `apply_ai_result` 路径）
 - **摄入路径同样命令化**（2026-09-28 补齐）：`ShareIntake`（分享附件/文本）与 `TextCollector`（分散/合并模式）不再直连 `Repository`，一律经 `CollectCommand` / `AppendSegmentCommand`。此前「人类连续速记能自动并链、AI 却不能」是不对称缺口，现已补齐——MCP `append_segment` 与手机端受**同一套**模式/窗口约束。
 
 ### §2 防呆下沉：领域规则只在动作层
@@ -57,7 +57,7 @@ UI 把按钮置灰只是**快路径**，不是安全边界——AI 是瞎子，�
 |---|---|---|
 | 条目可见性（Vault / 已删） | `_require` | `not_found` |
 | 编辑锁 `edit_locked=1` | `_update` | `edit_locked` |
-| 重分类白名单（image→document；UI 无入口，仅 AI 管线 / MCP 通道） | `_reclassifyError` | `reclassify_denied` |
+| ~~重分类白名单~~（2026-10-09 随 reclassify 命令退役摘除） | ~~`_reclassifyError`~~ | ~~`reclassify_denied`~~ |
 | machine_json 领域 Schema | `validateMachineJson` | `schema_invalid` |
 | 移出保险箱需 UI 主体 | `_setVault` | `forbidden` |
 | 彻底删除 / 管线回写 的主体门控 | `_gate` | `forbidden` |

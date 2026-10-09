@@ -139,7 +139,7 @@ List<Map<String, Object?>> toolSchemas() => [
       {
         'name': 'update_item',
         'description': '编辑条目（与手机 UI 编辑同一实现）。合并锁定的条目会拒绝写入，须先 unlock_edit；'
-            'machine_json 必须通过领域 Schema 校验；item_type 仅允许截图条目 image→chatlog/document。'
+            'machine_json 必须通过领域 Schema 校验；item_type 不接受改判（重分类已退役，类型由摄入源与端侧管线决定）。'
             '返回修改后的完整条目快照——后续推理请以该快照为准，不要用你记忆里的旧值。',
         'inputSchema': {
           'type': 'object',
@@ -155,7 +155,6 @@ List<Map<String, Object?>> toolSchemas() => [
                 'machine_json': {
                   'description': '机器态对象，须带 schema 字段并通过领域 Schema 校验（如 invoice.v1）',
                 },
-                'item_type': {'type': 'string', 'enum': [InboxItem.typeChatlog, InboxItem.typeDocument]},
               },
             },
             'expected_version': {
@@ -233,7 +232,7 @@ List<Map<String, Object?>> toolSchemas() => [
         'description': '原子批量执行多条条目操作（复合操作专用）：全部成功才一次性提交，任一条失败则整体回滚，'
             '不会出现「字改了但标签没打上」的半成品。适合一次完成解锁编辑 + 改标题 + 打标签这类组合改动。'
             '每条命令形如 {"op":"update","id":"<uuid>","title":"..."}，'
-            '可用 op：update / delete / set_vault / set_pin / reclassify / reprocess / unlock_edit / collect / restore；'
+            '可用 op：update / delete / set_vault / set_pin / reprocess / unlock_edit / collect / restore；'
             '不支持 delete_forever（不可逆）。返回每条命令的结果与最终条目快照。',
         'inputSchema': {
           'type': 'object',

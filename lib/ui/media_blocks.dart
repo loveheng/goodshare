@@ -169,16 +169,20 @@ class _InlineMediaImageState extends State<InlineMediaImage> {
 /// 只订阅 [AudioPlaybackController] 画 UI，绝不自持 `AudioPlayer`；无服务
 /// 作用域或后缀命中兼容性存疑档（.amr 等）时降级为静态文件卡。
 ///
-/// 手势（2026-10-04 拍板）：**整块点按 = 播放/暂停**，无例外——编辑态也不
-/// 再「点按即重录」（重录归宿主长按）。组件因此**不提供点按覆盖口**，
-/// 播放手势不允许被别的语义借走。
+/// 手势（2026-10-04 拍板 + 2026-10-09 整卡波形轨拍板）：**整块点按 =
+/// 播放/暂停**，无例外；**横拖进度轨 = seek**（点轨就近跳转不做——音频块
+/// 常嵌图文流，误触 seek 伤大于误触播放）。组件不提供点按覆盖口，播放
+/// 手势不允许被别的语义借走。
+///
+/// 形态（2026-10-09 拍板，rich-text-media.md §3）：整卡波形进度轨——已播区
+/// 实色高亮、未播区浅纹，进度是状态不走橘红（橘红只留播放图标）；原
+/// `showSlider` 参数退役（行内块也恒有进度轨）。
 class MediaAudioBar extends StatefulWidget {
   const MediaAudioBar({
     super.key,
     required this.blockId,
     required this.source,
     this.label,
-    this.showSlider = false,
     this.degrade = false,
     this.initialDuration,
     this.backgroundColor,
@@ -189,9 +193,6 @@ class MediaAudioBar extends StatefulWidget {
   final String blockId;
   final String source;
   final String? label;
-
-  /// 顶级区显示进度条；行内极简形态不显示。
-  final bool showSlider;
 
   /// true = 兼容性存疑格式，渲染静态文件卡不进播放器。
   final bool degrade;
@@ -306,20 +307,25 @@ class _MediaAudioBarState extends State<MediaAudioBar>
             ],
           );
         } else {
-          // 紧凑单行（2026-10-04 拍板）：原「label 行 + 44dp 大播放图标」
-          // 两段式近 100dp，与相邻内容失衡——收成
-          // [播放指示] 标题 …… 时长 一行，播放时下方接一条细进度条。
-          final bar = Column(
+          // 整卡波形进度轨（2026-10-09 拍板）：卡主体 = 全宽波形轨，已播区
+          // 实色高亮、未播区浅纹；上方浮一行小字（标题 · 当前/总时长）。
+          // 点卡=播放/暂停（2026-10-04 拍板不变），横拖=seek。
+          final hasDuration = shownDuration > Duration.zero;
+          final progress = active && controller.duration > Duration.zero
+              ? (controller.position.inMilliseconds /
+                      controller.duration.inMilliseconds)
+                  .clamp(0.0, 1.0)
+              : 0.0;
+          final audioBody = Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // 信息行：状态图标（动作语义走橘红）+ 标题 + 时长文本
               Row(
                 children: [
-                  // 状态指示（**非按钮**，整块可点按）：主色 = 动作语义
-                  //（ui-spec §2.1 橘红仅动作与选中），兼作「可播放」提示。
                   Icon(
                     playing ? Icons.pause : Icons.play_arrow,
-                    size: 22,
+                    size: 20,
                     color: scheme.primary,
                   ),
                   const SizedBox(width: Insets.sm),
@@ -339,7 +345,7 @@ class _MediaAudioBarState extends State<MediaAudioBar>
                         color: scheme.onSurfaceVariant,
                       ),
                     ),
-                  ] else if (shownDuration > Duration.zero) ...[
+                  ] else if (hasDuration) ...[
                     const SizedBox(width: Insets.sm),
                     Text(
                       _fmt(shownDuration),
@@ -350,17 +356,30 @@ class _MediaAudioBarState extends State<MediaAudioBar>
                   ],
                 ],
               ),
-              // 细进度条（仅 showSlider 的顶部区/录音；实时跟随 Ticker）
-              if (widget.showSlider &&
-                  active &&
-                  controller.duration > Duration.zero)
-                _compactSlider(context, controller),
+              const SizedBox(height: Insets.xs),
+              // 波形进度轨（卡主体）：横拖 seek；未探测到时长时只渲染浅纹
+              //（不可拖——无 max 的 seek 无意义）。Flexible：bounded 宿主
+              //（作曲器 64dp 卡）下轨随余量压缩不溢出，流式布局撑到自然高。
+              Flexible(
+                child: _WaveTrack(
+                  progress: progress,
+                  draggable: hasDuration,
+                  playedColor: scheme.onSurfaceVariant,
+                  unplayedColor: scheme.onSurfaceVariant.withValues(alpha: 0.25),
+                  onSeek: (frac) => controller.seek(
+                    Duration(
+                      milliseconds:
+                          (frac * shownDuration.inMilliseconds).round(),
+                    ),
+                  ),
+                ),
+              ),
             ],
           );
           final gestureArea = GestureDetector(
             onTap: () => controller.toggle(widget.blockId, widget.source),
             behavior: HitTestBehavior.opaque,
-            child: Center(child: bar),
+            child: audioBody,
           );
           // expandBody：手势区撑满卡片剩余高度（须宿主 bounded —— 作曲器
           // 卡）；阅读态流式布局无界，只包内容本身——无条件 Expanded 会抛
@@ -404,34 +423,6 @@ class _MediaAudioBarState extends State<MediaAudioBar>
             vertical: Insets.sm,
           ),
           child: Column(children: [child]),
-        ),
-      ),
-    );
-  }
-
-  /// 细进度条：Slider 默认 48dp 高（含拇指热区），放进紧凑卡会把卡片顶到
-  /// 100dp 以上——压到显式 20dp + 细轨小拇指，可拖可点的手感保留。
-  Widget _compactSlider(
-    BuildContext context,
-    AudioPlaybackController controller,
-  ) {
-    return SizedBox(
-      height: 20,
-      child: SliderTheme(
-        data: SliderTheme.of(context).copyWith(
-          trackHeight: 3,
-          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5),
-          overlayShape: SliderComponentShape.noOverlay,
-        ),
-        child: Slider(
-          // max **必须**显式给总时长：Slider 默认 max=1.0 而 value 是毫秒数，
-          // 漏了 max 会让 value 被钳到上界 1.0 —— 一播放进度条就跳到末尾。
-          value: controller.position.inMilliseconds.toDouble().clamp(
-            0,
-            controller.duration.inMilliseconds.toDouble(),
-          ),
-          max: controller.duration.inMilliseconds.toDouble(),
-          onChanged: (v) => controller.seek(Duration(milliseconds: v.round())),
         ),
       ),
     );
@@ -544,6 +535,131 @@ class _AudioWaveBoxPainter extends BoxPainter {
       canvas.drawLine(Offset(x, mid - h / 2), Offset(x, mid + h / 2), bar);
     }
   }
+}
+
+/// 波形进度轨（2026-10-09 拍板，整卡波形进度轨的主体）：横向点阵波形，
+/// 已播段实色、未播段浅色——进度可见化兼卡片美学签名（复用 _AudioWaveBoxPainter
+/// 的 20 点装饰图案语言，一个元素两用）。
+///
+/// 手势：**横拖 = seek**（onDragSeek 按比例回调）；点按不 seek（「就近跳转」
+/// 不做，拍板明示——点卡语义归播放/暂停）。[draggable] = false（未探测到
+/// 总时长）时只渲染浅纹不可拖。
+class _WaveTrack extends StatelessWidget {
+  const _WaveTrack({
+    required this.progress,
+    required this.draggable,
+    required this.playedColor,
+    required this.unplayedColor,
+    required this.onSeek,
+  });
+
+  /// 播放进度（0.0–1.0）。
+  final double progress;
+  final bool draggable;
+  final Color playedColor;
+  final Color unplayedColor;
+  final ValueChanged<double> onSeek;
+
+  /// 与 _AudioWaveBoxPainter._pattern 同源（一处改两处同步的注释锚点；
+  /// 拆公共常量会让装饰与轨耦合到同一文件段，保持双份成本更低）。
+  static const List<double> _pattern = <double>[
+    0.30,
+    0.55,
+    0.85,
+    0.45,
+    0.70,
+    0.35,
+    0.95,
+    0.50,
+    0.65,
+    0.28,
+    0.80,
+    0.40,
+    0.60,
+    0.90,
+    0.32,
+    0.72,
+    0.48,
+    0.85,
+    0.38,
+    0.58,
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    // 轨高自适应：自然高 28；bounded 宿主（作曲器 64dp 卡）随余量压缩，
+    // 不把卡片顶溢出（note_composer_audio_test 溢出回归）。
+    return LayoutBuilder(
+      builder: (context, cons) {
+        final h = cons.maxHeight.isFinite
+            ? cons.maxHeight.clamp(0.0, 28.0)
+            : 28.0;
+        final track = CustomPaint(
+          size: Size.fromHeight(h),
+          painter: _WaveTrackPainter(
+            progress: progress,
+            playedColor: playedColor,
+            unplayedColor: unplayedColor,
+          ),
+        );
+        if (!draggable) return track;
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onHorizontalDragUpdate: (d) {
+            final box = context.findRenderObject();
+            if (box is! RenderBox || !box.hasSize) return;
+            onSeek((d.localPosition.dx / box.size.width).clamp(0.0, 1.0));
+          },
+          child: track,
+        );
+      },
+    );
+  }
+}
+
+/// 波形进度轨画笔：逐点按 progress 二分着色（实色/浅色），非连续填充——
+/// 与装饰底纹同一「点阵波形」视觉语言。
+class _WaveTrackPainter extends CustomPainter {
+  _WaveTrackPainter({
+    required this.progress,
+    required this.playedColor,
+    required this.unplayedColor,
+  });
+
+  final double progress;
+  final Color playedColor;
+  final Color unplayedColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final mid = size.height / 2;
+    final played = Paint()
+      ..color = playedColor
+      ..strokeWidth = 2.5
+      ..strokeCap = StrokeCap.round;
+    final unplayed = Paint()
+      ..color = unplayedColor
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    final spacing = size.width / _WaveTrack._pattern.length;
+    for (var i = 0; i < _WaveTrack._pattern.length; i++) {
+      final h = size.height * _WaveTrack._pattern[i] * 0.72;
+      final x = spacing * (i + 0.5);
+      // 该点已播判定：点中心越过进度线即算已播（点阵粒度下足够顺滑）
+      final p = (i + 0.5) / _WaveTrack._pattern.length < progress;
+      canvas.drawLine(
+        Offset(x, mid - h / 2),
+        Offset(x, mid + h / 2),
+        p ? played : unplayed,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_WaveTrackPainter old) =>
+      old.progress != progress ||
+      old.playedColor != playedColor ||
+      old.unplayedColor != unplayedColor;
 }
 
 String _fmt(Duration d) =>

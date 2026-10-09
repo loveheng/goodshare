@@ -49,7 +49,6 @@ abstract final class ActionErrorCode {
   static const forbidden = 'forbidden';
   static const editLocked = 'edit_locked';
   static const schemaInvalid = 'schema_invalid';
-  static const reclassifyDenied = 'reclassify_denied';
   static const versionConflict = 'version_conflict';
 }
 
@@ -212,12 +211,6 @@ sealed class ItemCommand {
           throw ActionException('set_pin 需要布尔字段 on', code: ActionErrorCode.invalidRequest);
         }
         return PinCommand(id, on, expectedVersion: ev);
-      case 'reclassify':
-        final to = _str(json['item_type']) ?? _str(json['to']);
-        if (to == null) {
-          throw ActionException('reclassify 需要 item_type 字段', code: ActionErrorCode.invalidRequest);
-        }
-        return ReclassifyCommand(id, to, expectedVersion: ev);
       case 'reprocess':
         return ReprocessCommand(id, expectedVersion: ev);
       case 'transcribe':
@@ -354,7 +347,6 @@ sealed class ItemCommand {
     'delete',
     'set_vault',
     'set_pin',
-    'reclassify',
     'reprocess',
     'transcribe',
     'summarize',
@@ -511,28 +503,6 @@ final class PinCommand extends ItemCommand {
         'op': op,
         'id': id,
         'on': on,
-        if (expectedVersion != null) 'expected_version': expectedVersion,
-      };
-}
-
-/// 重分类（= 详情「重分类」BottomSheet / update_item 的 item_type）。
-final class ReclassifyCommand extends ItemCommand {
-  const ReclassifyCommand(this.id, this.to, {super.expectedVersion});
-
-  final String id;
-  final String to;
-
-  @override
-  String get op => 'reclassify';
-
-  @override
-  String? get targetId => id;
-
-  @override
-  Map<String, Object?> toJson() => {
-        'op': op,
-        'id': id,
-        'item_type': to,
         if (expectedVersion != null) 'expected_version': expectedVersion,
       };
 }

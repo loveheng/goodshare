@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../ai/video_clips.dart' show ClipSegment, kClipStatusDone, kClipStatusFailed, kClipStatusMarked, kClipStatusProcessing;
+import '../ai/subtitle.dart' show AsrCue;
 import '../ai/capability.dart';
 import '../ai/workflow.dart';
 import '../data/block_artifacts.dart' show BlockArtifactKind;
@@ -37,6 +38,7 @@ class BlockWorkflowPage extends StatefulWidget {
     this.loadClips,
     this.onCueSeek,
     this.onEditArtifact,
+    this.onSaveCues,
     this.loadAnnotationCount,
   });
 
@@ -50,7 +52,8 @@ class BlockWorkflowPage extends StatefulWidget {
   final VoidCallback? onPreviewActivate;
 
   final Future<BlockArtifactsView> Function(String blockKey) loadArtifacts;
-  final Future<bool> Function(WorkflowStep step, String blockKey, String? sourceKind) onRunStep;
+  /// 执行一步（返回 是否产出 + 任务 note；无产出时 note 携可读原因红字展示，R1）。
+  final Future<(bool, String?)> Function(WorkflowStep step, String blockKey, String? sourceKind) onRunStep;
   final Future<void> Function(String blockKey) onReset;
   final Future<void> Function(String capabilityId, String blockKey) onRunStandalone;
 
@@ -68,6 +71,10 @@ class BlockWorkflowPage extends StatefulWidget {
   /// 文本产物修订（§4 可编辑）：宿主打开编辑页并 upsert 回 block_artifacts。
   final Future<String?> Function(String blockKey, String kind, String currentText)?
       onEditArtifact;
+
+  /// 拍板 18③ 逐 cue 行编辑保存：宿主重算 SRT/VTT 文件 + transcript text 行并
+  /// upsert 落库（保 subtitle filePath/meta 结构）；null = 不给行内编辑。
+  final Future<bool> Function(String blockKey, List<AsrCue> cues)? onSaveCues;
 
   @override
   State<BlockWorkflowPage> createState() => _BlockWorkflowPageState();
@@ -124,22 +131,32 @@ class _BlockWorkflowPageState extends State<BlockWorkflowPage> {
     });
   }
 
-  Future<bool> _runStep(WorkflowStep step, String? sourceKind) async {
-    final ok = await widget.onRunStep(step, widget.blockKey, sourceKind);
-    await _reload(); // 成败都重载（失败无新产物；note 由队列页/状态线承载）
+  Future<(bool, String?)> _runStep(WorkflowStep step, String? sourceKind) async {
+    final (ok, note) = await widget.onRunStep(step, widget.blockKey, sourceKind);
+    await _reload(); // 成败都重载（失败无新产物）
     if (!ok && mounted) {
-      ToastManager.show('任务未产出结果，可重试或到任务队列查看原因',
-          kind: ToastKind.error);
+      // note 红字展示在步骤行（WorkflowTrack._error）；toast 只补「为何没产出」
+      // 的短因（完整原因在步骤行），不再用通用文案盖掉任务 note（R1 同一份状态）。
+      ToastManager.show(
+        (note != null && note.trim().isNotEmpty)
+            ? note
+            : '任务未产出结果，可重试或到任务队列查看原因',
+        kind: ToastKind.error,
+      );
     }
-    return ok;
+    return (ok, note);
   }
 
   Future<void> _reset() async {
+    // 拍板 18⑤：产物含人工修订时，Reset 文案明示「修订将一并清除」（零静默损失）
+    final hasRevised = _artifacts.revisedKinds.isNotEmpty;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('清除本块全部产物？'),
-        content: const Text('已生成的识别/转写结果将被删除，重新解析需再次消耗算力。'),
+        content: Text(hasRevised
+            ? '已生成的识别/转写结果将被删除，其中含人工修订的内容（已修订角标），清除后需重新转写才能恢复，且修订无法找回。'
+            : '已生成的识别/转写结果将被删除，重新解析需再次消耗算力。'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
           FilledButton(
@@ -247,6 +264,9 @@ class _BlockWorkflowPageState extends State<BlockWorkflowPage> {
                       artifactMeta: _artifacts.meta,
                       artifactFilePath: _artifacts.filePath,
                       artifactElapsedMs: _artifacts.elapsedMs,
+                      // 拍板 18 一卡双视图：cue 序列（宿主从 SRT 反解析）+ 修订态
+                      artifactCues: _artifacts.cues,
+                      artifactRevisedKinds: _artifacts.revisedKinds,
                       sourceKind: _sourceKind,
                       onSourceKindChanged: (k) => setState(() => _sourceKind = k),
                       onRunStep: _runStep,
@@ -266,6 +286,10 @@ class _BlockWorkflowPageState extends State<BlockWorkflowPage> {
                           ? null
                           : (kind, current) =>
                               widget.onEditArtifact!(widget.blockKey, kind, current),
+                      // 拍板 18③ 逐 cue 行编辑保存：宿主重算 SRT/VTT + transcript 落库
+                      onSaveCues: widget.onSaveCues == null
+                          ? null
+                          : (cues) => widget.onSaveCues!(widget.blockKey, cues),
                       // §4 三段式「音频=波形播放条」：audio_file 卡内联播放条
                       //（绝对路径直进 setFilePath，JustAudioHandle 统一收口；
                       // 降级档静态卡由 MediaAudioBar.degrade 自判）

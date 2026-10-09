@@ -417,10 +417,19 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
   /// 文字变更点：把控制器最新值交给引擎，引擎算 plan、改段状态、记账，
   /// 结果经 [EditOutcome] 由 [_applyOutcome] 反射（焦点/重建/落盘）。
   void _onSegChanged(NoteTextSeg seg) {
+    final beforeKind = lineKindOf(seg.spans.plain, 0);
     _doc.applyTextEdit(seg, seg.ctrl.value, activeMarks: _activeMarks.toList());
     // 文字变更恒触发悬浮球退隐（打字即收，与原文案一致——引擎纯逻辑不替 UI
     // 决定退隐，故此处显式声明 textEdited）。
     _applyOutcome(_doc.consumeOutcome(), textEdited: true);
+    // ⑤ 列表/标题格式自动保住：段首行结构标记被编辑冲掉（删光重打 / 整体替换）
+    // 导致从结构型退化成 plain 时，自动恢复为该结构型（如空列表项 / 空标题），
+    // 避免"格式静默丢失"；主动退出仍走浮层选 plain / 段首退格（不经此路径，不误恢复）。
+    final afterKind = lineKindOf(seg.spans.plain, 0);
+    if (beforeKind != BlockKind.plain && afterKind == BlockKind.plain) {
+      _doc.setLineKind(seg, _targetOf(beforeKind));
+      _applyOutcome(_doc.consumeOutcome());
+    }
   }
 
 
@@ -629,13 +638,23 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
 
   // ---------- 内部：格式状态机 ----------
 
-  /// 行内 mark 开关（先选后打；2026-10-08 拍板回归浮层 B/I 两档）。
+  /// 行内 mark 开关。
   ///
-  /// 口径受 pending-confirm D5 约束（格式模型＝**先选后打**，明确不做「给已有
-  /// 文字套格式、无选区交互」），故只保留激活态切换：点亮后作用于**之后输入**
-  /// 的文字；再点同项关闭。**单选制**（B/I 互斥，新选替换旧选）不变——
-  /// 与档位型「选完即收」不同，mark 切换后浮层**保持展开**（可连点试错）。
+  /// 口径放宽 pending-confirm D5 一处（2026-10-08 用户实测"选中即加粗"反直觉）：
+  /// **若当前段有非折叠选区**→直接把 mark 套到选中文字（所见即所得，与主流
+  /// 编辑器一致），选区保持以便连续切 B/I；**无选区**才走先选后打（点亮后作用
+  /// 于之后输入的文字）。**单选制**（B/I 互斥）仅在"先选后打"路径生效——选区
+  /// 路径直接操作 runs，可叠加 B+I（嵌套），契合"选中即加粗/斜体"直觉。
   void _toggleMark(InlineMark mark) {
+    final seg = _activeText;
+    if (seg == null) return;
+    final sel = seg.ctrl.selection;
+    if (sel.isValid && !sel.isCollapsed) {
+      _doc.applyMarkToSelection(seg, mark);
+      _applyOutcome(_doc.consumeOutcome());
+      seg.focus.requestFocus(); // 选区套格式后保持段聚焦，可连续切多个 mark
+      return;
+    }
     setState(() {
       if (!_activeMarks.remove(mark)) {
         _activeMarks
@@ -644,7 +663,7 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
       }
     });
     // 焦点回写作区（键盘保持弹出）：选完格式即可接着打字。
-    _activeText?.focus.requestFocus();
+    seg.focus.requestFocus();
   }
 
   // ---------- 渲染 ----------
@@ -670,11 +689,10 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
           _RedoIntent: CallbackAction<_RedoIntent>(onInvoke: (_) => _redo()),
         },
         child: PopScope(
-          // ① 返回键/侧滑手势：格式浮层开着先收盘，再按才走页面返回
-          canPop: !_blockPanelOpen,
-          onPopInvokedWithResult: (didPop, _) {
-            if (!didPop) _closeFormatDial();
-          },
+          // ⑦ 返回键/侧滑手势**直接退出编辑**（一键退出，不再"先关面板再退出"
+          // 看着像没反应）：格式浮层是 Stack 内临时层，随页面 pop 一起销毁，无需
+          // 单独拦截。面板仍可由角标 toggle / 切后台 / 媒体动作等 [_closeFormatDial] 关闭。
+          canPop: true,
           child: LayoutBuilder(
             builder: (context, cons) {
               return Stack(
@@ -794,14 +812,19 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
     return ListenableBuilder(
       listenable: seg.focus,
       builder: (context, _) {
-        final show = seg.focus.hasFocus;
+        final focused = seg.focus.hasFocus;
         return Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             AnimatedContainer(
               duration: const Duration(milliseconds: 120),
-              width: show ? 24 : 0,
-              child: show ? _focusBadge(seg) : null,
+              width: 24,
+              // ① 入口常驻：失焦段也留一个极淡角标，避免"完全隐身"找不到格式入口；
+              // 聚焦时恢复实色（opacity 1）。列表段另带凹槽，合计左侧 52dp 常驻。
+              child: Opacity(
+                opacity: focused ? 1.0 : 0.32,
+                child: _focusBadge(seg),
+              ),
             ),
             Expanded(child: child),
           ],
@@ -831,7 +854,13 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
         return GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: () {
-            // 点 chip 拉起贴键浮层（问题#1 引导层·Step 3）：保持段聚焦，展开打样面板
+            // 角标＝浮层开关（toggle）：开着再点即收（配合⑥面板保持展开后用户
+            // 需一个明确出口）；关着则点开——失焦段先同步锁定活跃段再聚焦。
+            if (_blockPanelOpen) {
+              if (mounted) setState(() => _blockPanelOpen = false);
+              return;
+            }
+            _doc.activeSegId = seg.id;
             seg.focus.requestFocus();
             if (mounted) setState(() => _blockPanelOpen = true);
           },
@@ -849,21 +878,27 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
   /// [ComposerDoc.setLineKind]（已含 IME 组合态守卫 _finalizeComposing）。待办
   /// 2026-10-08 拍板回归显式档（写 `- [ ] `，翻勾选仍走 toggleTodo）；结果经
   /// [EditOutcome] 反射重建。
+  /// [BlockKind] → [LineKindTarget] 映射（面板选块 / ⑤格式退化恢复共用）。
+  LineKindTarget _targetOf(BlockKind kind) => switch (kind) {
+        BlockKind.plain => LineKindTarget.plain,
+        BlockKind.h1 => LineKindTarget.h1,
+        BlockKind.h2 => LineKindTarget.h2,
+        BlockKind.bullet => LineKindTarget.bullet,
+        BlockKind.quote => LineKindTarget.quote,
+        BlockKind.todo => LineKindTarget.todo,
+      };
+
+  /// 选块落地（问题#1 引导层·Step 3）：chip 浮层选中的语义 → [LineKindTarget] →
+  /// [ComposerDoc.setLineKind]（已含 IME 组合态守卫 _finalizeComposing）。待办
+  /// 2026-10-08 拍板回归显式档（写 `- [ ] `，翻勾选仍走 toggleTodo）；结果经
+  /// [EditOutcome] 反射重建。
   void _applyBlockKind(BlockKind kind) {
     final seg = _activeText;
     if (seg == null) return;
-    final target = switch (kind) {
-      BlockKind.plain => LineKindTarget.plain,
-      BlockKind.h1 => LineKindTarget.h1,
-      BlockKind.h2 => LineKindTarget.h2,
-      BlockKind.bullet => LineKindTarget.bullet,
-      BlockKind.quote => LineKindTarget.quote,
-      // 2026-10-08 拍板：待办回归浮层显式档（原落 bullet 占位），写 `- [ ] `
-      BlockKind.todo => LineKindTarget.todo,
-    };
-    _doc.setLineKind(seg, target);
+    _doc.setLineKind(seg, _targetOf(kind));
     _applyOutcome(_doc.consumeOutcome());
-    if (mounted) setState(() => _blockPanelOpen = false);
+    // ⑥ 与行内 B/I 统一：结构档选完也**保持展开**（不再选完即收），面板由
+    // 角标 toggle / 返回退出等明确出口关闭，消除"同一面板两种行为难预测"。
     seg.focus.requestFocus();
   }
 
@@ -1172,7 +1207,6 @@ class NoteComposerEditorState extends State<NoteComposerEditor> {
           blockId: 'note-audio-${identityHashCode(seg)}',
           source: resolveLocalMediaSrc(seg.url),
           label: seg.label.isEmpty ? '录音' : seg.label,
-          showSlider: true,
           // 卡片与面板分层不靠色阶差（易糊）：描边 + 波形底纹由组件统一给，
           // 这里只给底色的档位差（面板=surface，卡片=High）
           backgroundColor: scheme.surfaceContainerHigh,

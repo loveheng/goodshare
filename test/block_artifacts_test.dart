@@ -83,6 +83,25 @@ void main() {
       expect(f.existsSync(), isFalse);
     });
 
+    test('deleteKinds 仅删指定 kind（转写重跑即重算）：文件产物删盘、其他 kind 不连坐',
+        () async {
+      final key = 'local://v1.mp4';
+      final f = File('${tmp.path}/v1.srt')..writeAsStringSync('WEBVTT');
+      await repo.blockArtifacts.upsertAll(itemId, key, [
+        textArt(BlockArtifactKind.transcript, '旧转写'),
+        BlockArtifactInput(BlockArtifactKind.subtitle, text: '旧字幕', filePath: f.path),
+        BlockArtifactInput(BlockArtifactKind.audioFile, filePath: '${tmp.path}/v1.m4a'),
+      ]);
+      await repo.blockArtifacts.deleteKinds(itemId, key,
+          [BlockArtifactKind.transcript, BlockArtifactKind.subtitle]);
+      final rest = await repo.blockArtifacts.listForItem(itemId, blockKey: key);
+      expect(rest.map((a) => a.kind), [BlockArtifactKind.audioFile]);
+      expect(f.existsSync(), isFalse, reason: '被清 kind 的 file 产物删行必删盘');
+      // 空清单不触碰
+      await repo.blockArtifacts.deleteKinds(itemId, key, const []);
+      expect(await repo.blockArtifacts.listForItem(itemId, blockKey: key), isNotEmpty);
+    });
+
     test('重复媒体引用共享产物：删 A 块不动 B 块（路径寻址红利）', () async {
       final key = 'local://v1.mp4';
       final f = File('${tmp.path}/shared.srt')..writeAsStringSync('WEBVTT');

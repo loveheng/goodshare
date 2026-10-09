@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-09-30
+updated: 2026-10-09
 ---
 
 # 富文本组件分层与结构化编辑设计
@@ -65,6 +65,25 @@ ContentBody(
 编辑 sheet 的正文 `TextField`（现直接编辑 md 源码）改为**块列表编辑**：
 
 - 每个已有块渲染为**按块类型映射的编辑 widget**（预填 `blockToPlain` 纯文本），保持语义视觉而非退化成裸文本——待办块 = Checkbox + TextField（改的是状态不是 `[ ]` 字符）、引用块 = 左侧竖线 + TextField、代码块 = 等宽 TextField；用户永远在编辑「某一段话」而非带标记的源码
+
+**mermaid 图表渲染**：**当前按普通代码块显示**（2026-10-09 用户拍板还原——在线渲染加载过慢，图不值得等）。渲染件 `MermaidView`（`lib/ui/mermaid_view.dart`）**保留待复用**，重新启用只需把下面 CodeBlock 分支改回按 `language == 'mermaid'` 分流。三方案取舍与踩坑记录如下（终选「方案 3：在线渲染服务」，前两方案已下线）：
+
+````md
+```mermaid
+graph TD; A-->B;
+```
+````
+
+- **解析层零改动**：fence 正则已捕获语言名，mermaid 块天然落 `CodeBlock(language:'mermaid')`；
+- **在线渲染服务（终选）**：Dart 侧 `dio` 直连 `mermaid.ink`（`GET /img/pako:<zlib+base64>`，载荷 `{code, mermaid 配置}`，query 带 `theme/bg/width`），取回 PNG 字节后 `Image.memory` 原生渲染；端点抽常量 `kMermaidRenderEndpoint`，换自建 kroki 只改一处；断网即退代码块；
+- **为什么下线本地转码（前两方案）**：① 本地转码产物是 SVG，flutter_svg 吃不下——`<marker>` 箭头不支持、配色写在内嵌 `<style>` CSS 类里支持弱、**节点框按浏览器字体度量算而文字按 Flutter 字体度量画**（必然溢出/错位，补不好）；② 改在 WebView 内栅格化虽能保真，却要背 3.5MB 本地 js 与 WebView 合成开销；在线服务直接给 PNG：包体 **-3.5MB**，版式由官方 mermaid 渲染；
+- **纯 Kotlin 原生渲染器（MermaidKotlin）已否决**：上游 3 星个人项目（2026-02 后无更新）、Maven 坐标 `com.mermaid:mermaid-kotlin` **实际不存在**（只能 vendor 源码入仓）、仅 7 种图（mindmap/timeline/gitGraph 等不支持），信任成本与语法覆盖都不划算；
+- **主题与清晰度**：按 `Theme.brightness` 取服务预设 `theme=dark|default` + `bg=transparent`（服务不接自定义 themeVariables）；按屏幕物理像素出图（`width = 正文可用宽 × dpr`，封顶 3）；
+- **缓存与失败分档**：按「明暗 + 源码」缓存 PNG 字节（上限 6MB，按插入序淘汰）；**400（语法错）写失败缓存**（重试无意义），**网络失败/超时不写**（恢复网络要能自动重试）；pako 载荷被 400 时自动退回「明文 base64 源码」载荷重试一次；
+- **隐私口径（暂定，待办）**：mermaid 块源码会**明文发给第三方** `mermaid.ink`；当前用户拍板「不区分条目，全部可发，先试效果」。上线前必须补：保险箱/上锁条目禁发 + 设置项开关 + 可换自建端点（登记见 `context/todos.md`）；
+- **两态语义（用户拍板「编辑错原样显示」）**：编辑态 mermaid 就是普通围栏文本照常编辑；渲染态语法错误/转码失败/15s 超时 → **原地退代码块形态**（源码不丢）——画得出是图，画不出是码；
+- **平台**：无 WebView、无本地资产，Android/iOS 同路（纯网络 + 原生图片渲染）；
+- **边界**：断网/超时/语法错一律退代码块；导出（PDF/截图）本批按代码块文本处理，位图快照进导出留作后续增强。落点 `lib/ui/mermaid_view.dart` + `rich_text_view.dart` CodeBlock 分支。
 - **实施注记（2026-09-30 批 B 落地时修正）**：编辑文本预填改走 `serializeInline`/`serializeBlock`（含字面转义）而非 `blockToPlain`——含行内样式的块若预填纯文本，保存经 serialize 会把 `**粗体**` 等样式静默压平，违反 §5 数据无损防线；serialize→parse 往返逐节点相等（往返单测保证），无样式文本两者本就一致。多项列表预填含 `-`/`1.`/`[x]` 标记（列表符号属自然语言）
 - **Tap-to-Edit（性能强制）**：块列表默认渲染阅读态 widget，点击某块才原位激活为编辑 widget——若 N 个块全部常驻 TextField/Controller，长文直接性能爆炸；激活态全局同时至多一个，失焦即回阅读态
 - **排序 MVP 降级**：不做拖拽（长列表拖拽 + 手势竞争成本高），提供「上移/下移」按钮

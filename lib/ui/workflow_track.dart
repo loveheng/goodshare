@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../ai/subtitle.dart' show AsrCue;
 import '../ai/workflow.dart';
 import '../data/block_artifacts.dart' show BlockArtifactKind;
 import 'toast.dart';
@@ -32,12 +33,15 @@ class WorkflowTrack extends StatelessWidget {
     this.artifactMeta = const {},
     this.artifactFilePath = const {},
     this.artifactElapsedMs = const {},
+    this.artifactCues = const {},
+    this.artifactRevisedKinds = const {},
     required this.sourceKind,
     required this.onSourceKindChanged,
     required this.onRunStep,
     this.onAnchorSwitch,
     this.onCueSeek,
     this.onEditArtifact,
+    this.onSaveCues,
     this.audioPreviewBuilder,
     this.onReset,
   });
@@ -60,12 +64,26 @@ class WorkflowTrack extends StatelessWidget {
   /// meta_json.elapsed_ms）。缺席 = 旧产物 / 非块通道写入，卡头整段不占位。
   final Map<String, int> artifactElapsedMs;
 
+  /// cue 序列映射（kind → cue 列表，拍板 18 一卡双视图；宿主从 SRT 文件
+  /// parseSrtVtt 反解析注入）。只有 subtitle 有值——双视图卡的唯一事实源。
+  final Map<String, List<AsrCue>> artifactCues;
+
+  /// 含人工修订的 kind 集合（meta_json.revised=true，拍板 18⑤）：卡头「已修订」
+  /// 角标 + Reset 二次确认文案的数据源。
+  final Set<String> artifactRevisedKinds;
+
+  /// 逐 cue 行编辑保存（拍板 18③）：宿主重算 SRT/VTT + transcript text 行并
+  /// upsert 落库，返回成功与否。null = 不给行内编辑（如宿主未注入）。
+  final Future<bool> Function(List<AsrCue> cues)? onSaveCues;
+
   /// 翻译步骤当前选中的源 kind（多备选源时 segmented control 绑定值）。
   final String? sourceKind;
   final ValueChanged<String> onSourceKindChanged;
 
-  /// 执行某步（翻译类步骤带当前选源）；返回是否成功（失败即停步展示）。
-  final Future<bool> Function(WorkflowStep step, String? sourceKind) onRunStep;
+  /// 执行某步（翻译类步骤带当前选源）；返回 是否产出 + 任务 note（失败即停步展示）。
+  /// completed 但无产物同样算「未产出」——note 携可读原因红字展示，不能留白
+  /// （R1 同一份状态，2026-10-08）。
+  final Future<(bool, String?)> Function(WorkflowStep step, String? sourceKind) onRunStep;
 
   /// 锚点切换（§3.6「以此继续处理」）：audio_file 卡点按后切换 spec 到 audioSpec，
   /// null = 不支持（如该页非视频 spec）。回调带产物 file_path（新锚点的源）。
@@ -116,12 +134,15 @@ class WorkflowTrack extends StatelessWidget {
               artifactMeta: artifactMeta,
               artifactFilePath: artifactFilePath,
               artifactElapsedMs: artifactElapsedMs,
+              artifactCues: artifactCues,
+              artifactRevisedKinds: artifactRevisedKinds,
               sourceKind: sourceKind,
               onSourceKindChanged: onSourceKindChanged,
               onRunStep: onRunStep,
               onAnchorSwitch: onAnchorSwitch,
               onCueSeek: onCueSeek,
               onEditArtifact: onEditArtifact,
+              onSaveCues: onSaveCues,
               audioPreviewBuilder: audioPreviewBuilder,
             ),
             if (i != spec.steps.length - 1)
@@ -160,12 +181,15 @@ class _StepRow extends StatefulWidget {
     required this.artifactMeta,
     required this.artifactFilePath,
     required this.artifactElapsedMs,
+    required this.artifactCues,
+    required this.artifactRevisedKinds,
     required this.sourceKind,
     required this.onSourceKindChanged,
     required this.onRunStep,
     this.onAnchorSwitch,
     this.onCueSeek,
     this.onEditArtifact,
+    this.onSaveCues,
     this.audioPreviewBuilder,
   });
 
@@ -175,9 +199,12 @@ class _StepRow extends StatefulWidget {
   final Map<String, String> artifactMeta;
   final Map<String, String> artifactFilePath;
   final Map<String, int> artifactElapsedMs;
+  final Map<String, List<AsrCue>> artifactCues;
+  final Set<String> artifactRevisedKinds;
   final String? sourceKind;
   final ValueChanged<String> onSourceKindChanged;
-  final Future<bool> Function(WorkflowStep step, String? sourceKind) onRunStep;
+  /// 执行某步（返回 是否产出 + 任务 note；note 供无产出时红字展示原因）。
+  final Future<(bool, String?)> Function(WorkflowStep step, String? sourceKind) onRunStep;
 
   /// §3.6 锚点切换回调（透传 WorkflowTrack；null = 不支持）。
   final void Function(String audioFilePath)? onAnchorSwitch;
@@ -187,6 +214,9 @@ class _StepRow extends StatefulWidget {
 
   /// 文本产物修订（透传，仅文本类产物卡消费；null = 不给「编辑」入口）。
   final Future<String?> Function(String kind, String currentText)? onEditArtifact;
+
+  /// 逐 cue 行编辑保存（拍板 18，透传 WorkflowTrack；仅双视图卡消费）。
+  final Future<bool> Function(List<AsrCue> cues)? onSaveCues;
 
   /// audio_file 卡内联播放条构建器（透传 WorkflowTrack；null = 摘要行退化）。
   final Widget Function(String filePath)? audioPreviewBuilder;
@@ -220,9 +250,13 @@ class _StepRowState extends State<_StepRow> {
     });
     HapticFeedback.lightImpact();
     try {
-      final ok = await widget.onRunStep(widget.step, _effectiveSource);
+      final (ok, note) = await widget.onRunStep(widget.step, _effectiveSource);
       if (!mounted) return;
-      if (!ok) setState(() => _error = '未产出结果，可重试');
+      if (!ok) {
+        // 任务 note 优先（「未识别出任何语音内容…」/ 引擎错误），无 note 才回退通用文案
+        setState(() => _error =
+            (note != null && note.trim().isNotEmpty) ? note : '未产出结果，可重试');
+      }
     } finally {
       if (mounted) setState(() => _running = false);
     }
@@ -294,7 +328,9 @@ class _StepRowState extends State<_StepRow> {
                 color: scheme.onSurfaceVariant,
               ),
             )
-          else
+          // 失败态行头不再出「开始」：入口归一为下方错误行的「重试」（2026-10-08
+          // 与 note 红字展示同批——失败后「开始」既与「重试」重复、语义也不对）。
+          else if (_error == null)
             TextButton(
               onPressed: () => _run(),
               child: const Text('开始'),
@@ -336,6 +372,38 @@ class _StepRowState extends State<_StepRow> {
       // 出卡 = produces ∪ extraKinds（extraKinds 如视频转写顺带的 audio_file，
       // 随生但不计入 done 判定；存在即出卡）。
       final renderKinds = <String>{...step.produces, ...step.extraKinds};
+      // 拍板 18：transcript 与 subtitle 是同一产物的两个视图——只在 subtitle
+      // 卡内做一卡双视图（字幕时间轴默认 / 纯文本只读），transcript 独立卡退役。
+      if (renderKinds.contains(BlockArtifactKind.transcript) &&
+          renderKinds.contains(BlockArtifactKind.subtitle) &&
+          widget.existingKinds.contains(BlockArtifactKind.subtitle)) {
+        renderKinds
+          ..remove(BlockArtifactKind.transcript)
+          ..remove(BlockArtifactKind.subtitle);
+        final subPath = widget.artifactFilePath[BlockArtifactKind.subtitle];
+        children
+          ..add(const SizedBox(height: Insets.xs))
+          ..add(
+            _ArtifactCard(
+              kind: BlockArtifactKind.subtitle,
+              text: widget.artifactText[BlockArtifactKind.subtitle] ??
+                  widget.artifactText[BlockArtifactKind.transcript] ??
+                  '',
+              meta: widget.artifactMeta[BlockArtifactKind.subtitle],
+              filePath: subPath,
+              elapsedMs: widget.artifactElapsedMs[BlockArtifactKind.subtitle] ??
+                  widget.artifactElapsedMs[BlockArtifactKind.transcript],
+              revised:
+                  widget.artifactRevisedKinds.contains(BlockArtifactKind.subtitle),
+              cues: widget.artifactCues[BlockArtifactKind.subtitle],
+              expanded: _expanded,
+              onToggle: () => setState(() => _expanded = !_expanded),
+              onExport: subPath == null ? null : () => shareArtifactFile(subPath),
+              onCueSeek: widget.onCueSeek,
+              onSaveCues: widget.onSaveCues,
+            ),
+          );
+      }
       final kindsWithArtifact =
           renderKinds.where(widget.existingKinds.contains).toList();
       for (final k in kindsWithArtifact) {
@@ -418,13 +486,17 @@ class _StepRowState extends State<_StepRow> {
 }
 
 /// 产物卡（三段式，§4 拍板）：折叠 = 类型胶囊 + 摘要行；展开 = 全文预览 + 操作 chips。
-class _ArtifactCard extends StatelessWidget {
+/// 拍板 18：转写双产物卡支持**一卡双视图**——「字幕时间轴」（默认，cue 行可
+/// 点句跳帧、点行编辑文本）/「纯文本」（只读，cue 文本投影）经 SegmentedButton 切换。
+class _ArtifactCard extends StatefulWidget {
   const _ArtifactCard({
     required this.kind,
     required this.text,
     this.meta,
     this.filePath,
     this.elapsedMs,
+    this.revised = false,
+    this.cues,
     required this.expanded,
     required this.onToggle,
     this.onCopy,
@@ -432,6 +504,7 @@ class _ArtifactCard extends StatelessWidget {
     this.onAnchorSwitch,
     this.onCueSeek,
     this.onEditArtifact,
+    this.onSaveCues,
     this.audioPreview,
   });
 
@@ -444,6 +517,12 @@ class _ArtifactCard extends StatelessWidget {
 
   /// §4 卡头「耗时」：执行侧实测毫秒（null = 未记录，卡头该段缺席）。
   final int? elapsedMs;
+
+  /// 拍板 18⑤：含人工修订（meta_json.revised=true）→ 卡头「已修订」中性角标。
+  final bool revised;
+
+  /// cue 序列（拍板 18 一卡双视图数据源；null / 空 = 无双视图，退纯文本态）。
+  final List<AsrCue>? cues;
 
   final bool expanded;
   final VoidCallback onToggle;
@@ -462,23 +541,42 @@ class _ArtifactCard extends StatelessWidget {
   /// 返回修订文本（null=取消）；null = 不显示。
   final Future<String?> Function(String kind, String currentText)? onEditArtifact;
 
+  /// 拍板 18③：逐 cue 行编辑保存（宿主重算 SRT/VTT + transcript 并落库）。
+  /// null = 不给行内编辑。
+  final Future<bool> Function(List<AsrCue> cues)? onSaveCues;
+
   /// §4 三段式「音频=波形播放条」：audio_file 卡内联播放条（宿主构建），
   /// null = 中部退化为摘要行。
   final Widget? audioPreview;
 
   @override
+  State<_ArtifactCard> createState() => _ArtifactCardState();
+}
+
+class _ArtifactCardState extends State<_ArtifactCard> {
+  /// 双视图当前态（null = 无 cue 不启用分段切换）：true = 字幕时间轴（默认）。
+  bool _timelineView = true;
+
+  /// 行内编辑中的 cue 下标（null = 无编辑行）。
+  int? _editingCue;
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
+    final dualView = widget.expanded &&
+        widget.cues != null &&
+        widget.cues!.isNotEmpty &&
+        widget.onSaveCues != null;
     // 空 meta 不占位：宿主可能给空串（无 cues / 无文件名的文本产物），
     // 折叠态中部会渲染成一片空白——回落到首行预览才是对的。
-    final summary = (meta != null && meta!.isNotEmpty)
-        ? meta!
-        : (text.isEmpty ? '（无文本）' : text.split('\n').first);
-    final elapsedLabel = formatElapsed(elapsedMs);
+    final summary = (widget.meta != null && widget.meta!.isNotEmpty)
+        ? widget.meta!
+        : (widget.text.isEmpty ? '（无文本）' : widget.text.split('\n').first);
+    final elapsedLabel = formatElapsed(widget.elapsedMs);
     return InkWell(
       borderRadius: BorderRadius.circular(Radii.md),
-      onTap: onToggle,
+      onTap: widget.onToggle,
       child: Container(
         padding: const EdgeInsets.all(Insets.sm),
         decoration: BoxDecoration(
@@ -490,7 +588,7 @@ class _ArtifactCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 卡头（§4 三段式：类型 + 耗时 + 状态角标「已存」）：步骤名由上方
+            // 卡头（§4 三段式：类型 + 耗时 + 状态角标「已存/已修订」）：步骤名由上方
             // 轨节点行承载（同一步的多产物共用它，卡内不重复）；耗时取执行侧
             // 实测，未记录则整段缺席——不编造「0s」。
             Row(
@@ -502,7 +600,7 @@ class _ArtifactCard extends StatelessWidget {
                     borderRadius: BorderRadius.circular(Radii.lg),
                   ),
                   child: Text(
-                    _kindLabel(kind),
+                    _kindLabel(widget.kind),
                     style: theme.textTheme.labelSmall?.copyWith(
                       color: scheme.onSecondaryContainer,
                     ),
@@ -518,10 +616,8 @@ class _ArtifactCard extends StatelessWidget {
                   ),
                 ],
                 const Spacer(),
-                // 状态角标「已存」（§3.4：产物完成即落库，是默认态——
-                // 卡内不出现「保留」动词，避免误读「不点就丢」）。中性配色
-                // （2026-10-05 骨架重做，橘红纪律回收）：完成是状态不是动作，
-                // 强调色只留给「开始/重试」与选源选中态。
+                // 状态角标：人工修订后「已存」升级为「已修订」（拍板 18⑤，同为
+                // 中性配色——完成/修订都是状态不是动作，橘红只留给动作）。
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                   decoration: BoxDecoration(
@@ -531,10 +627,11 @@ class _ArtifactCard extends StatelessWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.check, size: 12, color: scheme.onSurfaceVariant),
+                      Icon(widget.revised ? Icons.edit : Icons.check,
+                          size: 12, color: scheme.onSurfaceVariant),
                       const SizedBox(width: 2),
                       Text(
-                        '已存',
+                        widget.revised ? '已修订' : '已存',
                         style: theme.textTheme.labelSmall?.copyWith(
                           color: scheme.onSurfaceVariant,
                         ),
@@ -544,7 +641,7 @@ class _ArtifactCard extends StatelessWidget {
                 ),
                 const SizedBox(width: Insets.xs),
                 Icon(
-                  expanded ? Icons.expand_less : Icons.expand_more,
+                  widget.expanded ? Icons.expand_less : Icons.expand_more,
                   size: 18,
                   color: scheme.onSurfaceVariant,
                 ),
@@ -552,62 +649,47 @@ class _ArtifactCard extends StatelessWidget {
             ),
             const SizedBox(height: Insets.xs),
             // 中部预览（§4 按 kind 分化）：音频卡 = 内联播放条（宿主构建）；
-            // 其余 = 折叠摘要行 / 展开全文
-            if (audioPreview != null)
-              audioPreview!
-            else
+            // 双视图卡 = 分段切换（字幕时间轴默认 / 纯文本只读，拍板 18）；
+            // 其余 = 折叠摘要行 / 展开全文。
+            if (widget.audioPreview != null)
+              widget.audioPreview!
+            else if (dualView) ...[
+              SizedBox(
+                height: 32,
+                child: SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(value: true, label: Text('字幕时间轴')),
+                    ButtonSegment(value: false, label: Text('纯文本')),
+                  ],
+                  selected: {_timelineView},
+                  onSelectionChanged: (s) =>
+                      setState(() => _timelineView = s.first),
+                  style: const ButtonStyle(
+                    visualDensity: VisualDensity(horizontal: -3, vertical: -3),
+                  ),
+                ),
+              ),
+              const SizedBox(height: Insets.xs),
+              if (_timelineView)
+                ..._timelineRows(theme, scheme)
+              else
+                Text(
+                  widget.text.isEmpty ? '（无文本）' : widget.text,
+                  maxLines: 12,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(color: scheme.onSurface),
+                ),
+            ] else
               Text(
-                expanded ? (text.isEmpty ? '（无文本）' : text) : summary,
-                maxLines: expanded ? 12 : 2,
+                widget.expanded
+                    ? (widget.text.isEmpty ? '（无文本）' : widget.text)
+                    : summary,
+                maxLines: widget.expanded ? 12 : 2,
                 overflow: TextOverflow.ellipsis,
                 style: theme.textTheme.bodySmall?.copyWith(color: scheme.onSurface),
               ),
-            // §3.5 跳帧联动：字幕卡展开时给 cue 列表（点某句 → 播放器定位
-            // 该句起点）。cue 序号按 usableCues 过滤后的顺序（与播放器侧
-            // parseSrtVtt 的过滤口径一致——两侧都以非空文本 cue 计数）。
-            if (expanded && onCueSeek != null && text.isNotEmpty) ...[
-              const SizedBox(height: Insets.xs),
-              ...text
-                  .split('\n')
-                  .where((l) => l.trim().isNotEmpty)
-                  .toList()
-                  .asMap()
-                  .entries
-                  .map((e) => InkWell(
-                        onTap: () => onCueSeek!(e.key),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 2),
-                          child: Row(
-                            children: [
-                              SizedBox(
-                                width: 28,
-                                child: Text(
-                                  '${e.key + 1}',
-                                  style: theme.textTheme.labelSmall?.copyWith(
-                                    color: scheme.outline,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Text(
-                                  e.value,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    color: scheme.onSurfaceVariant,
-                                  ),
-                                ),
-                              ),
-                              Icon(Icons.play_arrow,
-                                  size: 14, color: scheme.outline),
-                            ],
-                          ),
-                        ),
-                      )),
-            ],
-            // 底部操作区：应用/导出/复制（导出与播放由 Host 经专门回调承载，
-            // 文本类产物先给应用+复制；字幕/音频的导出在 Step 7 接线）
-            if (expanded) ...[
+            // 底部操作区：导出/复制（双视图卡的编辑走逐 cue 行内编辑，无整篇编辑 chip）
+            if (widget.expanded) ...[
               const SizedBox(height: Insets.xs),
               Wrap(
                 spacing: Insets.sm,
@@ -615,31 +697,31 @@ class _ArtifactCard extends StatelessWidget {
                 children: [
                   // §4 三段式「文本=全文预览可编辑」：修订经 onEditArtifact
                   // 打开编辑页，落库由实现方 upsert（保 filePath/meta）
-                  if (onEditArtifact != null)
+                  if (widget.onEditArtifact != null)
                     ActionChip(
                       visualDensity: VisualDensity.compact,
                       label: const Text('编辑'),
-                      onPressed: () => onEditArtifact!(kind, text),
+                      onPressed: () => widget.onEditArtifact!(widget.kind, widget.text),
                     ),
-                  if (onExport != null)
+                  if (widget.onExport != null)
                     ActionChip(
                       visualDensity: VisualDensity.compact,
                       label: const Text('导出'),
-                      onPressed: onExport,
+                      onPressed: widget.onExport,
                     ),
                   // §3.6「以此继续处理」：锚点切到该产物（spec 切 audioSpec，
                   // 页头文案更新；前步产物不删，页头可切回）
-                  if (onAnchorSwitch != null)
+                  if (widget.onAnchorSwitch != null)
                     ActionChip(
                       visualDensity: VisualDensity.compact,
                       label: const Text('以此继续处理'),
-                      onPressed: onAnchorSwitch,
+                      onPressed: widget.onAnchorSwitch,
                     ),
-                  if (onCopy != null)
+                  if (widget.onCopy != null)
                     ActionChip(
                       visualDensity: VisualDensity.compact,
                       label: const Text('复制'),
-                      onPressed: onCopy,
+                      onPressed: widget.onCopy,
                     ),
                 ],
               ),
@@ -649,6 +731,93 @@ class _ArtifactCard extends StatelessWidget {
       ),
     );
   }
+
+  /// 字幕时间轴视图（拍板 18）：每 cue 一行 = 时间戳 + 文本 + 跳帧箭头；
+  /// 点行进入行内编辑（TextField，只改文本，时间戳不可改），失焦/完成即保存。
+  List<Widget> _timelineRows(ThemeData theme, ColorScheme scheme) {
+    final cues = widget.cues!;
+    return [
+      for (final e in cues.asMap().entries)
+        _editingCue == e.key
+            ? Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: TextField(
+                  autofocus: true,
+                  controller: TextEditingController(text: e.value.text)
+                    ..selection = TextSelection.collapsed(
+                        offset: e.value.text.length),
+                  style: theme.textTheme.bodySmall,
+                  decoration: const InputDecoration(isDense: true),
+                  onSubmitted: (v) => _saveCue(cues, e.key, v),
+                  onTapOutside: (_) => _saveCue(cues, e.key, null),
+                ),
+              )
+            : InkWell(
+                onTap: widget.onSaveCues == null
+                    ? (widget.onCueSeek == null
+                        ? null
+                        : () => widget.onCueSeek!(e.key))
+                    : () => setState(() => _editingCue = e.key),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 56,
+                        child: Text(
+                          _fmtCueStamp(e.value.start),
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: scheme.outline,
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: Text(
+                          e.value.text,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
+                      // 箭头独立热区：点行=编辑（有保存通道时），点箭头=跳帧
+                      if (widget.onCueSeek != null)
+                        GestureDetector(
+                          onTap: () => widget.onCueSeek!(e.key),
+                          child: Padding(
+                            padding: const EdgeInsets.only(left: Insets.xs),
+                            child: Icon(Icons.play_arrow,
+                                size: 14, color: scheme.outline),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+    ];
+  }
+
+  /// 行内编辑落库（拍板 18③）：null 文本 = 放弃编辑；变化才写。
+  Future<void> _saveCue(List<AsrCue> cues, int index, String? newText) async {
+    setState(() => _editingCue = null);
+    final text = newText?.trim() ?? '';
+    if (text.isEmpty || text == cues[index].text.trim()) return;
+    final next = [...cues];
+    next[index] = cues[index].copyWith(text: text);
+    final ok = await widget.onSaveCues?.call(next) ?? false;
+    if (mounted && ok) {
+      ToastManager.show('已保存', kind: ToastKind.success);
+    }
+  }
+}
+
+/// cue 起点秒 → m:ss.d（时间轴视图行首；与 formatElapsed 的 m:ss 同族，加十分位）。 */
+String _fmtCueStamp(double seconds) {
+  final total = seconds < 0 ? 0 : seconds;
+  final s = total.floor();
+  final dec = ((total - s) * 10).round().clamp(0, 9);
+  return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}.$dec';
 }
 
 /// 实测耗时 → 卡头文案（§4 三段式）：毫秒给 ms、十秒内一位小数、超一分钟
@@ -681,6 +850,8 @@ class BlockArtifactsView {
     this.meta = const {},
     this.filePath = const {},
     this.elapsedMs = const {},
+    this.cues = const {},
+    this.revisedKinds = const {},
   });
 
   /// 已有产物 kind 集合（§3.3 续跑判定的唯一事实源）。
@@ -697,6 +868,12 @@ class BlockArtifactsView {
 
   /// kind → 实测耗时毫秒（§4 卡头；执行侧注入 meta_json.elapsed_ms）。
   final Map<String, int> elapsedMs;
+
+  /// kind → cue 序列（拍板 18 一卡双视图；宿主从 SRT 文件 parseSrtVtt 反解析）。
+  final Map<String, List<AsrCue>> cues;
+
+  /// 含人工修订的 kind 集合（meta_json.revised=true，拍板 18⑤）。
+  final Set<String> revisedKinds;
 
   static const empty = BlockArtifactsView();
 }

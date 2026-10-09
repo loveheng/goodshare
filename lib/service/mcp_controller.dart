@@ -61,14 +61,21 @@ class McpController extends ChangeNotifier {
   Future<String?> enable() async {
     _lastError = null;
     try {
-      // 统一前台服务初始化（与 AI 队列共用单实例，避免重复 init）
-      await ensureForegroundTaskInit();
-      final addr = await lanIpv4();
-      await FlutterForegroundTask.startService(
-        serviceTypes: [ForegroundServiceTypes.dataSync],
-        notificationTitle: '拾贝 · MCP 服务运行中',
-        notificationText: 'http://${addr ?? '127.0.0.1'}:$defaultPort/mcp（地址见 app 内 MCP 页）',
-      );
+      if (await FlutterForegroundTask.isRunningService) {
+        // 进程已被 AI 队列保活（前台服务单实例，插件 startService 对已运行
+        // 服务直接抛异常）：跳过拉起，进程本身已保活，server 照常 start。
+        // 通知沿用现有文案（AI 任务队列运行态）——两态并存时通知归属先拉起方。
+      } else {
+        // MCP 专用 DEFAULT 通道（2026-10-09 拍板）：用户显式开启、期待可感知
+        // ——抽屉置顶但不横幅轰炸；AI 队列维持 LOW 通道不变。
+        await ensureForegroundTaskInit(channelId: mcpFgChannelId);
+        final addr = await lanIpv4();
+        await FlutterForegroundTask.startService(
+          serviceTypes: [ForegroundServiceTypes.dataSync],
+          notificationTitle: '拾贝 · MCP 服务运行中',
+          notificationText: 'http://${addr ?? '127.0.0.1'}:$defaultPort/mcp（地址见 app 内 MCP 页）',
+        );
+      }
       _server ??= McpServer(
         repo: repo,
         tokenProvider: () => _token,

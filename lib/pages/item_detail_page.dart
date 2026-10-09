@@ -13,16 +13,16 @@ import '../ai/video_clips.dart' show parseClipsJson;
 import '../ai/capabilities.dart';
 import '../ai/capability.dart';
 import '../ai/translation.dart' show detectSourceLanguage, languageLabel;
-import '../ai/subtitle.dart' show AsrCue, parseSrtVtt;
+import '../ai/subtitle.dart'
+    show AsrCue, SubtitleStore, parseSrtVtt, usableCues;
 import '../ai/workflow.dart' show WorkflowStep;
 
 import '../data/block_artifacts.dart'
-    show BlockArtifactInput, BlockArtifactKind;
+    show BlockArtifactInput, BlockArtifactKind, BlockArtifactMeta;
 import '../data/repository.dart';
 import '../doc/attach.dart';
 import '../doc/rich_text.dart';
 import '../ui/confirm_dialog.dart';
-import '../ui/content_card.dart' show ContentCard;
 import '../ui/toast.dart';
 import '../ui/overflow_sheet.dart';
 import '../ui/tag_editor_sheet.dart';
@@ -235,6 +235,10 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 分享截图渲染边界（detail-two-zone.md §6：复用页面既有 RepaintBoundary）。
   final _bodyBoundaryKey = GlobalKey();
 
+  /// 分享截图分段滚动驱动器（body_screenshot.dart 分段拼接）：滚动视图
+  /// 常态无控制器，截图窗口内动态挂上驱动逐屏滚动，截完即移除。
+  final _shareScrollCtrl = ScrollController();
+
   /// 分享截图的范围裁剪（share_scope_sheet 勾选，2026-10-05 接通）：
   /// RepaintBoundary 包住整页滚动视图，勾选过滤只能靠「渲染前改版式」——
   /// 截图前置本字段 → build 按勾选收起不分享的分区 → 截完即还原（null）。
@@ -321,6 +325,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     _inspirationCtrl.dispose();
     _titleCtrl.dispose();
     _titleFocus.dispose();
+    _shareScrollCtrl.dispose();
     super.dispose();
   }
 
@@ -990,21 +995,34 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     final meta = <String, String>{};
     final files = <String, String>{};
     final elapsedMs = <String, int>{};
+    final cues = <String, List<AsrCue>>{};
+    final revisedKinds = <String>{};
     for (final a in arts) {
       kinds.add(a.kind);
       if (a.text?.trim().isNotEmpty ?? false) text[a.kind] = a.text!;
       if (a.filePath?.isNotEmpty ?? false) files[a.kind] = a.filePath!;
+      // 拍板 18⑤：人工修订态（meta_json.revised）→ 卡头「已修订」+ Reset 确认文案
+      if (a.revised) revisedKinds.add(a.kind);
       // 耗时归卡头（§4 三段式），摘要行只留 kind 自身语义——两处都放会重复
       final elapsed = a.elapsedMs; // 执行侧实测（queue_consumer 注入）
       if (elapsed != null) elapsedMs[a.kind] = elapsed;
-      final cues = a.cueCount; // 解码在数据层（arch-guard R2：UI 不内联 jsonDecode）
+      final cueCount = a.cueCount; // 解码在数据层（arch-guard R2：UI 不内联 jsonDecode）
       final summary = switch (a.kind) {
-        BlockArtifactKind.subtitle => cues == null ? null : '$cues 段',
+        BlockArtifactKind.subtitle => cueCount == null ? null : '$cueCount 段',
         BlockArtifactKind.audioFile => a.filePath?.split('/').last,
-        _ => cues == null ? null : '$cues 段',
+        _ => cueCount == null ? null : '$cueCount 段',
       };
       // 空摘要不写进 meta：产物卡会把它当有效摘要行渲染成空白中部
       if (summary != null && summary.isNotEmpty) meta[a.kind] = summary;
+      // 拍板 18 一卡双视图：cue 序列事实源在 SRT 文件，parseSrtVtt 反解析
+      //（文件缺失/坏段 → 空表目，双视图退化纯文本，不抛）
+      if (a.kind == BlockArtifactKind.subtitle && files.containsKey(a.kind)) {
+        try {
+          cues[a.kind] = parseSrtVtt(await File(files[a.kind]!).readAsString());
+        } catch (_) {
+          // 读失败不阻断装载（增强非必需，同 parseSrtVtt 容错口径）
+        }
+      }
     }
     return BlockArtifactsView(
       kinds: kinds,
@@ -1012,36 +1030,48 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
       meta: meta,
       filePath: files,
       elapsedMs: elapsedMs,
+      cues: cues,
+      revisedKinds: revisedKinds,
     );
   }
 
   /// 执行工作流步骤：组装 block 命令入队（与 UI 顶级按钮 / MCP 同源，R2）→
-  /// 等任务落定 → 按任务状态返回成败（产物是否落库由页面重载后从表读，§3.3）。
-  Future<bool> _runWorkflowStep(WorkflowStep step, String blockKey, String? sourceKind) async {
+  /// 等任务落定 → 按**产物是否落库**返回产出 + 任务 note（R1 同一份状态，
+  /// 2026-10-08）：任务 status completed ≠ 有产出——空转写 / 同文翻译等
+  /// 「completed 无产物」同样返回未产出并携 note，步骤行红字展示可读原因，
+  /// 不留白。**所有分支都必带原因**（2026-10-08）：note 为空会让轨上退化成
+  /// 「未产出结果，可重试」，把「无须翻译 / 引擎不可用」这类重试无用的情况
+  /// 伪装成可重试的失败。
+  Future<(bool, String?)> _runWorkflowStep(WorkflowStep step, String blockKey, String? sourceKind) async {
     final id = _item.id!;
     final head = 'block_${step.id}';
     if (step.id == 'translate') {
-      // 入队前预检：与条目级翻译同口径（引擎不可用不入队空耗）
+      // 入队前预检：与条目级翻译同口径（引擎不可用不入队空耗）。
+      // **原因一律进 note 回传**（2026-10-08）：此前四个分支都 `_snack(...) +
+      // return (false, null)`，note 为空 → 轨上退化成「未产出结果，可重试」，
+      // 而真实原因只在一闪而过的 snack 里——用户据此以为「重试就有」，实际是
+      // 目标语言与源语相同（或引擎不可用），重试多少次都一样。现在由页级
+      // Toast + 步骤行红字同一份文案承载，单一出口不重复造提示。
       final caps = widget.caps;
       if (!caps.translationEnabled) {
-        _snack('翻译已关闭：设置 → 翻译 可开启');
-        return false;
+        return (false, '翻译已关闭：设置 → 翻译 可开启');
       }
       caps.router?.reset();
       if (!await caps.checkTranslationAvailable()) {
         final reason = await caps.translationUnavailableReason();
-        _snack('无法翻译：${reason ?? '无可用翻译引擎'}（设置 → 翻译 可下载语言包）');
-        return false;
+        return (false, '无法翻译：${reason ?? '无可用翻译引擎'}（设置 → 翻译 可下载语言包）');
       }
       // 同文预检（2026-10-06 拍板）：入队前判源产物语言，源语==目标语 → 提示
       // 「无须翻译」，不入队也不算失败（成功路径的零工作分支）；引擎侧同判定
       // （completed+note）作兜底双保险，见 _runWorkflowStep 落定分支。
+      // 措辞带可行动去向：转写产出中文 + 目标语中文是这里的典型命中场景。
       final sourceText = sourceKind != null
           ? await _blockArtifactText(blockKey, sourceKind)
           : null;
       if (sourceText != null && detectSourceLanguage(sourceText) == caps.targetLang) {
-        _snack('源文本已是${languageLabel(caps.targetLang)}，无须翻译');
-        return false;
+        return (false,
+            '源文本已是${languageLabel(caps.targetLang)}，无须翻译'
+            '（想要译文就到「设置 → 翻译」把目标语言换成别的语言）');
       }
     }
     final ItemCommand command;
@@ -1057,13 +1087,12 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
       case 'extract_audio':
         command = ExtractAudioCommand(id, blockKey: blockKey);
       default:
-        return false; // 不可达：spec 编译期封闭
+        return (false, '工作流步骤「${step.id}」未接入（spec 未覆盖）');
     }
     try {
       await widget.handler.execute(command, vaultContext: widget.vaultContext);
     } on ActionException catch (e) {
-      _snack(e.message);
-      return false;
+      return (false, e.message); // 拒绝原因进步骤行，不再只落一闪而过的 snack
     }
     final (ok, note) = await _waitForBlockTask(id, head, blockKey);
     // 同文兜底提示（引擎判定 completed 无产物，2026-10-06 拍板「这也算成功」）：
@@ -1072,7 +1101,23 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     if (ok && mounted && step.id == 'translate' && (note?.contains('需翻译') ?? false)) {
       _snack(note!);
     }
-    return ok;
+    if (!ok) {
+      // 等待超时 / 未找到任务时 note 为空，同样不能落回「可重试」的误导文案。
+      return (false, note ?? '任务未落定（等待超时或未找到对应任务），可到任务队列查看进度');
+    }
+    // R1（2026-10-08）：status completed ≠ 有产出。期望产物未落库（空转写 /
+    // 同文翻译兜底等）→ 按未产出返回并携 note，步骤行红字展示可读原因。
+    // 条目级步骤（textSpec）produces 为空 = 产物走条目级字段，不在此判。
+    if (step.produces.isNotEmpty) {
+      final kinds =
+          (await widget.repo.blockArtifacts.listForItem(id, blockKey: blockKey))
+              .map((a) => a.kind)
+              .toSet();
+      if (step.produces.any((k) => !kinds.contains(k))) {
+        return (false, note);
+      }
+    }
+    return (true, note);
   }
 
   /// 读该块某产物的文本（同文预检的源；缺失/空返回 null）。
@@ -1175,6 +1220,46 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     return edited;
   }
 
+  /// 拍板 18③ 逐 cue 行编辑保存（subtitle 是双视图事实源）：修订 cue 序列 →
+  /// 重算 SRT/VTT 文件（SubtitleStore.saveBlock 双份同出）→ 重算 transcript
+  /// text 行（cue 文本 join，与 AsrReconstructor 口径一致）→ 单事务 upsert
+  /// 两行（subtitle 行 meta 保 cues 数 + mode + revised:true，filePath 原样）。
+  /// 一处编辑三处生效：页面双视图 / 播放器字幕轨 / 导出文件同源。
+  Future<bool> _saveBlockCues(String blockKey, List<AsrCue> cues) async {
+    final id = _item.id!;
+    final oldSub =
+        await widget.repo.blockArtifacts.get(id, blockKey, BlockArtifactKind.subtitle);
+    final oldTr =
+        await widget.repo.blockArtifacts.get(id, blockKey, BlockArtifactKind.transcript);
+    if (oldSub == null) return false; // 产物在编辑期间被 Reset，静默放弃
+    try {
+      await SubtitleStore.saveBlock(id, blockKey, cues);
+    } catch (e) {
+      if (mounted) _snack('字幕文件保存失败：$e');
+      return false;
+    }
+    // usableCues 口径与 AsrReconstructor 对齐（丢纯标点 cue，保 cueIndex 与
+    // §3.5 跳帧联动不错位）
+    final text = usableCues(cues).map((c) => c.text.trim()).join('\n');
+    // mode 元数据原样保留（revised 之外的字段不可知即不造假）：从旧 meta 提不出
+    // mode 就只带 cues + revised。编解码走数据层出口（arch-guard R2）。
+    final metaJson = BlockArtifactMeta.encode(
+      cues: cues.length,
+      mode: oldSub.subtitleMode,
+      revised: true,
+    );
+    await widget.repo.blockArtifacts.upsertAll(id, blockKey, [
+      BlockArtifactInput(BlockArtifactKind.subtitle,
+          text: text, filePath: oldSub.filePath, metaJson: metaJson),
+      if (oldTr != null)
+        BlockArtifactInput(BlockArtifactKind.transcript,
+            text: text,
+            metaJson: BlockArtifactMeta.encode(cues: cues.length)),
+    ]);
+    if (mounted) _snack('已保存修订');
+    return true;
+  }
+
   @override
   Widget build(BuildContext context) {
     // 编辑态拦截返回（2026-10-02 就地编辑拍板）：侧滑 / 物理返回键**不得直接退页**，
@@ -1229,6 +1314,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                 resetBlock: _resetBlockArtifacts,
                 onCueSeek: _onCueSeek,
                 onEditArtifact: _editBlockArtifact,
+                onSaveCues: _saveBlockCues,
                 child: RepaintBoundary(
                   key: _bodyBoundaryKey,
                   child: SubtitleScope(
@@ -1262,8 +1348,14 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                           onToggle: _toggleTodo,
                           done: _todoDone,
                           child: CustomScrollView(
+                          // 分享截图窗口内挂控制器（body_screenshot 分段拼接
+                          // 需驱动逐屏滚动）；常态不接管用户滚动。
+                          controller: _shareScope != null ? _shareScrollCtrl : null,
                           slivers: [
-                            SliverAppBar(
+                            // 截图窗口内隐藏浮动 AppBar（scope 非 null 即截图态）：
+                            // 否则悬浮标题会烙进每屏截图顶部。
+                            if (_shareScope == null)
+                              SliverAppBar(
                               automaticallyImplyLeading: false,
                               floating: true,
                               snap: true,
@@ -1535,52 +1627,6 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 只是不给普通用户按钮（2026-10-01 拍板）。
   void _toggleMachineMode() => setState(() => _machineMode = !_machineMode);
 
-  /// 重分类（方向二拍板 2026-10-05：人工全放开）——类型选择器 + 跨形态
-  /// 后果确认（媒体↔文本转移改变详情页渲染形态与 AI 管线路由，须明示）。
-  Future<void> _reclassify() async {
-    final chosen = await showDialog<String>(
-      context: context,
-      builder: (ctx) => SimpleDialog(
-        title: const Text('重分类为'),
-        children: [
-          for (final t in InboxItem.allTypes)
-            if (t != _item.itemType)
-              SimpleDialogOption(
-                onPressed: () => Navigator.pop(ctx, t),
-                child: Text(ContentCard.labelOf(t)),
-              ),
-        ],
-      ),
-    );
-    if (chosen == null || !mounted) return;
-    const mediaTypes = {
-      InboxItem.typeImage,
-      InboxItem.typeVideo,
-      InboxItem.typeAudio,
-    };
-    final fromMedia = mediaTypes.contains(_item.itemType);
-    final toMedia = mediaTypes.contains(chosen);
-    if (fromMedia != toMedia) {
-      final ok = await confirmDialog(
-        context,
-        title: '改为「${ContentCard.labelOf(chosen)}」？',
-        content: fromMedia
-            ? '原${ContentCard.labelOf(_item.itemType)}附件将不再以播放器/图片形态显示，AI 处理也按新类型执行。'
-            : '新类型以媒体文件为主体（当前无附件文件时详情页将显示缺失占位），正文转为附属内容。',
-        confirmText: '重分类',
-      );
-      if (!ok) return;
-    }
-    if (!mounted) return;
-    await _run(
-      () => widget.handler.execute(
-        ReclassifyCommand(_item.id!, chosen),
-        vaultContext: widget.vaultContext,
-      ),
-      '已重分类为${ContentCard.labelOf(chosen)}',
-    );
-  }
-
   /// 从底部升起 mymind 风格功能面板（见 `_OverflowSheet`）。动作序列与条件收录
   /// 规则（分享/保险箱/删除/机器码）收口到 [ItemActions] 词汇表——本方法只剩
   /// 声明挑选 + 执行通道注入（单条 execute），视觉与动画不动（2026-10-02 拍板）。
@@ -1633,7 +1679,6 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
           '已重新入队处理',
         );
       },
-      onReclassify: _reclassify,
     );
     final items = <OverflowItem>[
       for (final a in actions)
@@ -1677,20 +1722,34 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
           _item.itemType == InboxItem.typeAudio ||
           _item.itemType == InboxItem.typeVideo;
       if (!hasMedia) {
-        // 截图路径按勾选真实裁剪：置 _shareScope → 等排版落定 → 截图 → 还原
-        //（2026-10-05 修：此前 scope 拿到即弃，勾选零作用、灵感区照进产物）。
+        // 截图路径按勾选真实裁剪：置 _shareScope → 等排版落定 → 分段滚动
+        // 截图拼接长图 → 还原（2026-10-09 修：视口截图只出一屏、长文本截断、
+        // 8000px 阈值永不触发——改驱动真实滚动逐屏拼接，阈值真正生效降 PDF）。
+        final restoreOffset = _shareScrollCtrl.hasClients
+            ? _shareScrollCtrl.offset
+            : null;
         setState(() => _shareScope = scope);
         await WidgetsBinding.instance.endOfFrame;
         await WidgetsBinding.instance.endOfFrame;
         try {
           try {
-            // 复用页面既有 RepaintBoundary（Theme 红线）；超长降级 PDF
-            path = await BodyScreenshotRenderer.renderToFile(_bodyBoundaryKey);
+            // 复用页面既有 RepaintBoundary（Theme 红线）；超长降级 PDF。
+            // 浮动 AppBar 在截图窗口内隐藏（scope 非 null 即截图态），
+            // 否则会烙进每屏截图顶部。
+            path = await BodyScreenshotRenderer.renderScrollableToFile(
+              _bodyBoundaryKey,
+              _shareScrollCtrl,
+            );
           } on TooTallException {
             path = null;
           }
         } finally {
-          if (mounted) setState(() => _shareScope = null);
+          if (mounted) {
+            setState(() => _shareScope = null);
+            if (restoreOffset != null && _shareScrollCtrl.hasClients) {
+              _shareScrollCtrl.jumpTo(restoreOffset);
+            }
+          }
         }
       }
       path ??= await ItemPdfExporter.export(

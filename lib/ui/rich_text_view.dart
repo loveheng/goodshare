@@ -207,6 +207,9 @@ Widget buildRichBlock(
         ],
       ),
     ),
+    // mermaid 块**按普通代码块显示**（2026-10-09 用户拍板还原：在线渲染加载
+    // 过慢，图不值得等）。渲染件 MermaidView 保留在 lib/ui/mermaid_view.dart
+    // 待复用（在线方案已实现完整），要重新启用把这里改回按 language 分流即可。
     CodeBlock(:final code, :final language) => wrapWithCapabilityHost(
       _buildCodeBlock(context, code, language, scheme),
       kind: BlockKind.text,

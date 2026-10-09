@@ -19,6 +19,13 @@ import 'translation.dart';
 /// - 门控：开关关闭 / 模型未下载 / 转写失败 → 占位行为（raw_content 原样入
 ///   human_md），不置死信（与 OCR 降级策略一致）；
 /// - 无模型下载能力（如测试环境）时 [models] 传 null，恒走占位。
+/// 块转写「重跑即重算」清空范围：仅本次任务的两个产物 kind（2026-10-08 拍板）。
+/// audio_file 是「提取音轨」独立产物不连坐（转写还依赖它），ocr_text 等更不相干。
+const List<String> _kTranscribeKinds = [
+  BlockArtifactKind.transcript,
+  BlockArtifactKind.subtitle,
+];
+
 class AsrReconstructor implements AiReconstructor {
   const AsrReconstructor({
     required this.isAsrEnabled,
@@ -103,33 +110,44 @@ class AsrReconstructor implements AiReconstructor {
         note: isBlock ? '块媒体文件缺失，无法转写（媒体行可能已被移除）' : '条目没有音频文件，无法转写',
         blockKey: blockKey,
         blockArtifacts: const [],
+        blockResetKinds: isBlock ? _kTranscribeKinds : null,
       );
     }
     final modelDir = (await models.dirFor(model)).path;
     // 统一走 cue 通道（VAD 分段）：human_md 文本由 cue 拼接，字幕双份落盘。
     // 任一环节失败 → 占位不置死信；**错误原因透传进 note**（R1：笼统
     // 「模型未产出结果」会掩盖模型文件缺失/解码失败等真实原因，用户无从处置）。
-    final (raw, asrError) = await AsrEngine.instance.transcribeToCues(path, model,
+    final asr = await AsrEngine.instance.transcribeToCues(path, model,
         modelDir: modelDir);
+    final raw = asr.cues;
     if (raw == null) {
       debugPrint('[AsrReconstructor] transcribe failed, placeholder: $path');
       return ReconstructResult(
         humanMd: input.rawContent ?? '',
-        note: '转写失败：$asrError',
+        note: '转写失败：${asr.error}',
         blockKey: blockKey,
         blockArtifacts: const [],
+        blockResetKinds: isBlock ? _kTranscribeKinds : null,
       );
     }
     var cues = raw;
     // 「跑完但一个字都没有」是用户最难判断的一档（看起来和失败一样），
     // 必须落成明说的原因而不是静默成功——中文模型跑英文音频正是典型。
     if (usableCues(cues).isEmpty) {
+      // 体检数据（时长/峰值/RMS/VAD 分段数）与首条原始输出一并进 note：
+      // 「解码产物静音」「VAD 零分段」「模型只吐标点」三种根因据此一眼可辨（R1）。
+      final diag = asr.diag == null ? '' : '（音频体检：${asr.diag}）';
+      final first = cues.isEmpty
+          ? ''
+          : '；模型首条原始输出「${cues.first.text.trim()}」';
       return ReconstructResult(
         humanMd: input.rawContent ?? '',
         note: '未识别出任何语音内容：音频可能无语音、音量过低，'
-            '或语言与所选模型不匹配（如用中文模型转写英文——请切换「全能 · 多语种」档）',
+            '或语言与所选模型不匹配（如用中文模型转写英文——请切换「全能 · 多语种」档）'
+            '$diag$first',
         blockKey: blockKey,
         blockArtifacts: const [],
+        blockResetKinds: isBlock ? _kTranscribeKinds : null,
       );
     }
     // 字幕译文：仅「非仅原文」模式才跑翻译；失败（引擎不可用 / 单条报错）保留原文，
@@ -181,10 +199,13 @@ class AsrReconstructor implements AiReconstructor {
           humanMd: input.rawContent ?? '',
           blockKey: blockKey,
           blockArtifacts: const [],
+          blockResetKinds: _kTranscribeKinds,
           note: '字幕文件保存失败，转写产物未落库（整任务重跑即重算，零算力回退除外）',
         );
       }
-      final text = cues.map((c) => c.text.trim()).join('\n');
+      // usableCues 口径（丢纯标点 cue）：transcript 全文与字幕文件同一份 cue
+      // 序列，cueIndex 与 §3.5 跳帧联动对齐（否则多一条纯标点 cue 就错位）。
+      final text = usableCues(cues).map((c) => c.text.trim()).join('\n');
       final arts = <BlockArtifactInput>[
         BlockArtifactInput(
           BlockArtifactKind.transcript,
@@ -225,7 +246,7 @@ class AsrReconstructor implements AiReconstructor {
           : '$subNote；字幕文件保存失败，仅人类态文本已生成';
     }
     return ReconstructResult(
-        humanMd: cues.map((c) => c.text.trim()).join('\n'),
+        humanMd: usableCues(cues).map((c) => c.text.trim()).join('\n'),
         note: subNote);
   }
 }

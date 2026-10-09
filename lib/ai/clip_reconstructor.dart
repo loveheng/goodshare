@@ -133,12 +133,19 @@ class ClipReconstructor implements AiReconstructor {
               startMs: startMs,
               endMs: endMs,
             );
-            final (raw, asrError) = decoded
-                ? await AsrEngine.instance
-                    .transcribeToCues(wav.path, model, modelDir: modelDir)
-                : (null, null);
-            final cues = raw ?? const [];
-            final joined = cues.map((c) => c.text.trim()).where((s) => s.isNotEmpty).join('\n');
+            List<AsrCue>? raw;
+            String? asrError;
+            String? asrDiag;
+            if (decoded) {
+              final r = await AsrEngine.instance
+                  .transcribeToCues(wav.path, model, modelDir: modelDir);
+              raw = r.cues;
+              asrError = r.error;
+              asrDiag = r.diag;
+            }
+            final cues = raw ?? const <AsrCue>[];
+            // usableCues 口径（丢纯标点 cue，与 asr_reconstructor 同口径）。
+            final joined = usableCues(cues).map((c) => c.text.trim()).join('\n');
             if (joined.isEmpty) {
               if (!decoded) {
                 // R1：解码失败与「没有语音」必须区分——文案给可行动去向
@@ -148,7 +155,8 @@ class ClipReconstructor implements AiReconstructor {
                 // 属于无语音档，沿用下方专属文案
                 failures.add('区间转写失败：$asrError');
               } else {
-                failures.add('区间未识别出语音内容（可能无对话、音量过低或语言与模型不匹配）');
+                failures.add('区间未识别出语音内容（可能无对话、音量过低或语言与模型不匹配）'
+                    '${asrDiag == null ? '' : '（音频体检：$asrDiag）'}');
               }
             } else {
               text = joined;

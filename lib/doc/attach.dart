@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import '../models/item.dart';
+import '../share/attach_uri_channel.dart';
 
 /// 附件引用状态与可达性（content-pipeline.md §7）。
 ///
@@ -33,12 +34,11 @@ class Attach {
   static Future<bool> reachable(InboxItem item) async {
     final path = item.rawFilePath;
     if (path == null || path.isEmpty) return true;
-    // content:// / file:// 是跨进程 URI，Dart File 无法 stat（会抛）；
-    // 真实可达性需 ContentResolver——真机平台桥接待补（content-pipeline §7）。
-    // 此处不误报 lost：引用态 UI 已明示「原件删除/授权失效将不可打开」，
-    // 缺失平台检测 ≠ 已失效，故保守视为可达。
+    // content:// / file:// 是跨进程 URI，Dart File 无法 stat（会抛），
+    // 交平台桥用 ContentResolver / File.exists 检测；桥缺失或检测异常时
+    // 保守视为可达（不误报 lost），留 [DEGRADE] 日志可观测。
     if (path.startsWith('content://') || path.startsWith('file://')) {
-      return true; // TODO(platform): 真机用 ContentResolver 检测 content URI 可达性
+      return await AttachUriChannel().checkReachable(path);
     }
     try {
       return await File(path).exists();

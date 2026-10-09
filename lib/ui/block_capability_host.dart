@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../ai/capability.dart';
 import '../ai/capability_chain.dart';
+import '../ai/subtitle.dart' show AsrCue;
 import '../ai/workflow.dart' show WorkflowStep, workflowFor;
 import '../ai/video_clips.dart' show ClipSegment;
 import '../share/attachments.dart' show resolveLocalMediaSrc;
@@ -293,6 +294,7 @@ Future<void> openBlockCapability(
           loadAnnotationCount: executor.loadAnnotationCount,
           onCueSeek: executor.onCueSeek,
           onEditArtifact: executor.onEditArtifact,
+          onSaveCues: executor.onSaveCues,
         ),
       ),
     );
@@ -394,6 +396,7 @@ class BlockCapabilityExecutor extends InheritedWidget {
     this.resetBlock,
     this.onCueSeek,
     this.onEditArtifact,
+    this.onSaveCues,
     required super.child,
   });
 
@@ -432,8 +435,10 @@ class BlockCapabilityExecutor extends InheritedWidget {
   /// 读该块产物视图（工作流轨数据源，§3.3 续跑判定的唯一事实源）。
   final Future<BlockArtifactsView> Function(String blockKey)? loadBlockArtifacts;
 
-  /// 执行工作流步骤（组装 block 命令入队 → 等任务落定 → 按产物判成功）。
-  final Future<bool> Function(WorkflowStep step, String blockKey, String? sourceKind)?
+  /// 执行工作流步骤（组装 block 命令入队 → 等任务落定 → 按产物判产出）。
+  /// 返回 是否产出 + 任务 note：completed 但无产物也算未产出，note 携可读原因
+  /// （「未识别出任何语音内容…」等）供页面/步骤行展示（R1 同一份状态，2026-10-08）。
+  final Future<(bool, String?)> Function(WorkflowStep step, String blockKey, String? sourceKind)?
       onRunWorkflowStep;
 
   /// Reset 该块全部产物（表行 + 文件产物删盘，§2.2 纪律 7）。
@@ -446,6 +451,10 @@ class BlockCapabilityExecutor extends InheritedWidget {
   ///（保 filePath/meta）。
   final Future<String?> Function(String blockKey, String kind, String currentText)?
       onEditArtifact;
+
+  /// 拍板 18③ 逐 cue 行编辑保存：宿主重算 SRT/VTT + transcript text 行并落库
+  ///（subtitle 是双视图事实源）；null = 不给行内编辑。
+  final Future<bool> Function(String blockKey, List<AsrCue> cues)? onSaveCues;
 
   static BlockCapabilityExecutor? maybeOf(BuildContext context) =>
       context.dependOnInheritedWidgetOfExactType<BlockCapabilityExecutor>();

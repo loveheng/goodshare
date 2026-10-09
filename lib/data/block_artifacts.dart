@@ -52,6 +52,59 @@ class BlockArtifactInput {
   final String? metaJson;
 }
 
+/// meta_json 编解码出口（UI 不内联 jsonDecode/jsonEncode，arch-guard R2）。
+/// 坏值 / 非 Map 一律回落 null（读）或忽略（写），不造假。
+class BlockArtifactMeta {
+  /// 读 int 字段（cues / elapsed_ms）。
+  static int? intOf(String? raw, String key) {
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final m = jsonDecode(raw);
+      return m is Map && m[key] is int ? m[key] as int : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 读 String 字段（mode）。
+  static String? stringOf(String? raw, String key) {
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final m = jsonDecode(raw);
+      return m is Map && m[key] is String ? m[key] as String : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 读 bool 字段（revised）。
+  static bool boolOf(String? raw, String key) {
+    if (raw == null || raw.isEmpty) return false;
+    try {
+      final m = jsonDecode(raw);
+      return m is Map && m[key] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 编码 meta：可选 int / String / bool 字段，null 值不写入。
+  static String encode({
+    int? cues,
+    String? mode,
+    bool? revised,
+    int? elapsedMs,
+  }) {
+    final m = <String, Object?>{
+      'cues': cues,
+      'mode': mode,
+      'revised': revised,
+      'elapsed_ms': elapsedMs,
+    }..removeWhere((_, v) => v == null);
+    return m.isEmpty ? '' : jsonEncode(m);
+  }
+}
+
 /// 单条块产物（读取行模型）。
 class BlockArtifact {
   const BlockArtifact({
@@ -84,6 +137,31 @@ class BlockArtifact {
     try {
       final m = jsonDecode(raw);
       return m is Map && m['cues'] is int ? m['cues'] as int : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 是否含人工修订（block-artifact-workflow.md 拍板 18：逐 cue 行编辑落库时
+  /// subtitle 行 meta 置 `revised:true`；Reset 清产物前据此提示「人工修订将一并清除」）。
+  bool get revised {
+    final raw = metaJson;
+    if (raw == null || raw.isEmpty) return false;
+    try {
+      final m = jsonDecode(raw);
+      return m is Map && m['revised'] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 旧 subtitle meta_json → mode 字符串（缺失/坏值返回 null 不造假）。
+  String? get subtitleMode {
+    final raw = metaJson;
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final m = jsonDecode(raw);
+      return m is Map && m['mode'] is String ? m['mode'] as String : null;
     } catch (_) {
       return null;
     }
@@ -203,6 +281,35 @@ class BlockArtifactStore {
       (grouped[a.blockKey] ??= []).add(a);
     }
     return grouped;
+  }
+
+  /// 清一个块**指定 kind** 的产物（转写空/失败重跑「重跑即重算」，2026-10-08：
+  /// transcript+subtitle 成对清，audio_file/ocr_text 等其他 kind 不连坐）。
+  /// 先删行后删盘，纪律 7 同 [deleteBlock] 口径（派生缓存可重算，孤儿文件可接受）。
+  Future<void> deleteKinds(
+    String itemId,
+    String blockKey,
+    List<String> kinds, {
+    Transaction? txn,
+  }) async {
+    if (kinds.isEmpty) return;
+    final db = txn ?? await _dbFactory();
+    final placeholders = List.filled(kinds.length, '?').join(', ');
+    final rows = await db.query(
+      'block_artifacts',
+      columns: ['file_path'],
+      where: 'item_id = ? AND block_key = ? AND kind IN ($placeholders) '
+          "AND file_path IS NOT NULL AND file_path != ''",
+      whereArgs: [itemId, blockKey, ...kinds],
+    );
+    await db.delete(
+      'block_artifacts',
+      where: 'item_id = ? AND block_key = ? AND kind IN ($placeholders)',
+      whereArgs: [itemId, blockKey, ...kinds],
+    );
+    await _deleteFilesQuietly(
+      [for (final r in rows) r['file_path'] as String],
+    );
   }
 
   /// 清一个块的全部产物（Reset / 编辑 GC：媒体行被移除）。

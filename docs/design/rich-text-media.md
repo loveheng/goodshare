@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-09-30
+updated: 2026-10-09
 ---
 
 # 富文本行内媒体块设计（Image / Audio / Video）
@@ -57,6 +57,8 @@ class VideoBlock extends RichBlock { url, label }
 | VideoBlock | 图标占位卡（主色底 + 播放图标 + label） | **行内不常驻播放器**，点按进全屏浮层播放（`video_player` 全屏 dialog）；封面提取属 V2 |
 
 **行内图片宽高比（防抖动口径）**：渲染用 `Image.network` 且显式 `cacheWidth`（按设备 DPR 降采样，复用 `GoodshareImage` 封装口径）；经 `ImageStream` 首帧回调取真实宽高，写入 session 级 `url → ratio` 内存缓存并定版 `AspectRatio`，首帧前后的高度变化由 `AnimatedSize` 吸收；重进页面、重滚动命中缓存零跳动。**禁止**将行内图片比例反写 `machine_json`（AI 回写整替冲刷）、新增专列或持久 sidecar——顶级媒体的 `inbox_items.aspect_ratio` 专列机制按条目建立，不适用于任意行内 url。
+
+**音频播放条整卡波形进度轨（2026-10-09 拍板，用户确认「接受建议」）**：`MediaAudioBar` 全端（行内 AudioBlock / 顶级音频区 / 三级页 audio_file 卡 / 速记面板）统一为**整卡波形进度轨**形态——卡片主体 = 全宽波形轨（高约 48–56dp），**已播区实色高亮（中性 onSurface 系，橘红纪律回收：进度是状态不是动作，橘红只留播放图标）、未播区浅纹**（复用 `_AudioWaveDecoration` 波形语言，一个元素两用：进度填充兼美学签名）；轨道上方浮一行小字（标题 · 当前/总时长）。**手势口径**：点卡 = 播放/暂停（2026-10-04 拍板保留，肌肉记忆不变）；**横拖 = seek**；点轨「就近跳转」不做（音频块常嵌图文流，误触 seek 伤大于误触播放）。信息不丢：标题/时长文本保留；三态（降级静态卡/error/无服务作用域）同壳不变；`showSlider` 参数随形态统一退役（行内块也恒有进度轨）。
 
 **音频播放服务（单实例红线）**：严禁在 SliverList 块 widget 内实例化 `AudioPlayer`。详情页 State 持有页面级单例 `AudioPlaybackService`（`InheritedWidget` 下发，不引状态管理新依赖）：唯一 `AudioPlayer` 实例 + `ValueNotifier<String?> currentPlayingBlockId`；播放条 widget 只订阅 notifier 画 UI。块 widget 被滑出缓存区 dispose 时，若 `currentPlayingBlockId` 指向自己即自动暂停——sliver 回收即停，内存水位红线由机制保证而非纪律约定。顶级音频播放器同源复用该服务（现状 `item_view_template.dart` 的 `_AudioPlayer` 每实例一个 player，收敛进服务）。服务对 `AudioPlayer` 的依赖收敛在接口之后，测试注入 fake 统计实例数（§7）。
 

@@ -95,7 +95,6 @@ class ItemActionHandler {
       final DeleteItemCommand c => _delete(c, seeVault, txn),
       final SetVaultCommand c => _setVault(c, actor, seeVault, txn),
       final PinCommand c => _setPin(c, seeVault, txn),
-      final ReclassifyCommand c => _reclassify(c, actor, seeVault, txn),
       final ReprocessCommand c => _reprocess(c, seeVault, txn),
       final AiSessionCommand c => _aiSession(c, seeVault, txn),
       final TranscribeCommand c => _transcribe(c, actor, seeVault, txn),
@@ -199,14 +198,13 @@ class ItemActionHandler {
       values['machine_json'] = cmd.machineJson;
     }
     if (cmd.itemType != null && cmd.itemType != item.itemType) {
-      final err = _reclassifyError(item, cmd.itemType!,
-          // 人工全放开（方向二拍板）：ui 与管线特权一致，仅 MCP AI 受白名单
-          privilege: actor != CommandActor.ai);
-      if (err != null) {
+      // 重分类用户入口已退役（2026-10-09 拍板），仅管线回写保留 itemType 改判
+      //（AI 管线纠偏是内部机制非用户功能）；UI/MCP 主体改判一律拒绝。
+      if (actor != CommandActor.pipeline) {
         throw ActionException(
-          err,
-          code: ActionErrorCode.reclassifyDenied,
-          hint: 'AI 客户端仅允许 image→document（发票 / 文档截图）且须 source_type=image；人工端不设限（方向二拍板）',
+          'item_type 改判仅限端侧管线回写（重分类用户入口已退役）',
+          code: ActionErrorCode.forbidden,
+          hint: '类型由摄入源事实决定 + AI 管线自动纠偏，不再提供人工/MCP 改判',
         );
       }
       values['item_type'] = cmd.itemType;
@@ -366,33 +364,6 @@ class ItemActionHandler {
       txn: txn,
       note: cmd.on ? '已置顶' : '已取消置顶',
     );
-  }
-
-  Future<CommandResult> _reclassify(
-    ReclassifyCommand cmd,
-    CommandActor actor,
-    bool seeVault,
-    Transaction? txn,
-  ) async {
-    final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
-    final err = _reclassifyError(item, cmd.to,
-        // 人工全放开（方向二拍板）：ui 与管线特权一致，仅 MCP AI 受白名单
-        privilege: actor != CommandActor.ai);
-    if (err != null) {
-      throw ActionException(
-        err,
-        code: ActionErrorCode.reclassifyDenied,
-        hint: '可选目标：${InboxItem.typeDocument}（发票 / 文档截图）',
-      );
-    }
-    await _write(
-      'reclassify',
-      cmd.id,
-      {'item_type': cmd.to},
-      expectedVersion: cmd.expectedVersion,
-      txn: txn,
-    );
-    return _result('reclassify', cmd.id, seeVault: seeVault, txn: txn, note: '已重分类');
   }
 
   Future<CommandResult> _reprocess(ReprocessCommand cmd, bool seeVault, Transaction? txn) async {
@@ -1178,11 +1149,17 @@ class ItemActionHandler {
     // 块附件通道产出（block-artifact-workflow.md §2.5 回写分叉）：单事务 upsert
     // 进 block_artifacts（转写 transcript+subtitle 双产物原子落库），条目级字段
     // **零触碰**——不写 human_md / is_processed，块任务不标条目处理位。
-    // 空载荷 = 无产出（失败 / 占位），原因已在 r.note（R1），直接透传。
+    // 空载荷 = 无产出（失败 / 占位），原因已在 r.note（R1），直接透传；
+    // 「重跑即重算」（2026-10-08 拍板）：无产出且重建器声明清空清单时，删该块
+    // 对应 kind 的旧产物行 + 磁盘文件（如转写空跑清掉上次 1 字符 dot 残留），
+    // 成功载荷走 upsert 覆盖路径不受影响。
     if (r.blockKey != null) {
       final arts = r.blockArtifacts;
       if (arts != null && arts.isNotEmpty) {
         await _repo.blockArtifacts.upsertAll(cmd.id, r.blockKey!, arts, txn: txn);
+      } else if (r.blockResetKinds != null && r.blockResetKinds!.isNotEmpty) {
+        await _repo.blockArtifacts.deleteKinds(
+            cmd.id, r.blockKey!, r.blockResetKinds!, txn: txn);
       }
       return _result('apply_ai_result', cmd.id, seeVault: seeVault, txn: txn,
           note: r.note ??
@@ -1232,9 +1209,13 @@ class ItemActionHandler {
       values['tags'] = jsonEncode(merged);
     }
     if (r.itemType != null && r.itemType != item.itemType) {
+      // 拍板 2026-10-09：重分类用户功能退役，此分支只剩管线回写（调用方已按
+      // actor==pipeline 进入）；非管线主体到此即拒（防御，正常不可达）。
       if (actor != CommandActor.pipeline) {
-        final err = _reclassifyError(item, r.itemType!, privilege: false);
-        if (err != null) throw ActionException(err, code: ActionErrorCode.reclassifyDenied);
+        throw ActionException(
+          'item_type 改判仅限端侧管线回写',
+          code: ActionErrorCode.forbidden,
+        );
       }
       values['item_type'] = r.itemType;
     }
@@ -1618,28 +1599,6 @@ class ItemActionHandler {
   /// 端侧管线本机运行、不属于对外暴露面，可见（否则 Vault 条目入队后必然死信）。
   static bool _canSeeVault(CommandActor actor, bool vaultContext) =>
       actor == CommandActor.pipeline || (actor == CommandActor.ui && vaultContext);
-
-  /// 重分类白名单校验。返回 null 表示允许，否则为拒绝原因。
-  /// [privilege] 为 AI 管线特权（V2 §3.8）：为 true 时不受人工白名单约束。
-  String? _reclassifyError(InboxItem item, String to, {required bool privilege}) {
-    if (!InboxItem.allTypes.contains(to)) return '未知类型：$to';
-    // 主体三分（2026-10-05 拍板「方向二」）：
-    // - **管线**（AI 回写）特权全放——既有口径；
-    // - **人工（ui）全放开**——类型与标签同属用户权威元数据（HCI 同构：
-    //   AI 提取代劳不是权威），误判纠错出口给全；渲染/管线的形态变化由
-    //   UI 确认弹窗文案承担（媒体→文本明示附件不再显示），动作层不禁死；
-    // - **AI 客户端（MCP）维持窄白名单**——防大模型乱改类型（白名单的由来）。
-    if (privilege) return null;
-    if (item.sourceType != InboxItem.typeImage || item.itemType != InboxItem.typeImage) {
-      return '仅图片入库（source_type=image）的条目可重分类';
-    }
-    // 目标只剩 document（2026-10-02 拍板：**聊天场景取消**——chatlog 是早期
-    // 没想清楚的设计，不再作为可改判目标；旧 chatlog 数据仍照常渲染）。
-    if (to != InboxItem.typeDocument) {
-      return '仅允许 image→document（发票 / 文档截图）';
-    }
-    return null;
-  }
 
   /// 解析 doc_meta_json（坏 JSON 返回 null），供 AI 写回时合并 ai_session_state 用。
   Map<String, Object?>? _decodeDocMeta(String? raw) {

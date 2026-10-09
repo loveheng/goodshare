@@ -202,6 +202,7 @@ class QueueConsumer {
           clip: result.clip,
           docMetaJson: result.docMetaJson,
           blockKey: result.blockKey,
+          blockResetKinds: result.blockResetKinds,
           blockArtifacts: [
             for (final a in result.blockArtifacts!)
               BlockArtifactInput(

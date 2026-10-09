@@ -12,3 +12,4 @@ context/CURRENT
 scripts/.env
 .env
 .atomcode/
+.mcp.json

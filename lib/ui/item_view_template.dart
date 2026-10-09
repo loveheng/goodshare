@@ -577,7 +577,6 @@ class _AudioPlayer extends StatelessWidget {
       child: MediaAudioBar(
         blockId: 'top-audio-$itemId',
         source: path,
-        showSlider: true,
         initialDuration: initialDurationMs != null
             ? Duration(milliseconds: initialDurationMs!)
             : null,

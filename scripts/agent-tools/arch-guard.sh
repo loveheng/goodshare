@@ -77,9 +77,15 @@ scan_all() {
     "UI 层直连 Repository 写方法，写路径必须组装 ItemCommand 交 ItemActionHandler" \
     '\brepo\.(add|update|enqueueTask|softDelete|deleteForever|restore|delete)\(' ""
   # R2 UI 层禁止内联 JSON 编解码
+  # 白名单（均为「规则不适用」的性质例外，非待迁移的违规）：
+  # - item_view_template.dart：双态详情模板是 machine_json 的**渲染出口**，
+  #   条目机器态的解码属于其展示职责本体（无对应 Store 可委托）；
+  # - mermaid_view.dart：零消费方保留件（2026-10-09 拍板停用待复用），
+  #   jsonEncode 构造的是**在线渲染服务的请求载荷**（mermaid.ink 协议格式），
+  #   非条目数据编解码，不属 R2 治理面。
   scan_pattern "R2-ui-json-codec" "lib/pages lib/ui" \
     "UI 层内联 jsonDecode/jsonEncode，应委托下层或 *Store" \
-    '\bjson(Decode|Encode)\(' "lib/ui/item_view_template.dart"
+    '\bjson(Decode|Encode)\(' "lib/ui/item_view_template.dart lib/ui/mermaid_view.dart"
   # R3 UI 层禁止平台分支
   scan_pattern "R3-ui-platform" "lib/pages lib/ui" \
     "UI 层出现 Platform.isX 分支，平台差异须收敛到接口实现/工厂" \
