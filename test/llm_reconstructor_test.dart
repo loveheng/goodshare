@@ -47,28 +47,12 @@ void main() {
     expect(r.summaryMd, isNull);
   });
 
-  // ─── R1 摄入自动双态重构（2026-10-09 D1-D4 拍板） ───
+  // ─── R1 摄入自动重构（2026-10-09 收敛拍板：仅 URL 摘要+打标，chatlog 已砍 §1.1a） ───
 
-  test('R1 parse_chatlog：改写 human_md + TAGS 尾行解析进 tags（并集不覆盖人工）', () async {
-    final engine = _FakeLlmEngine(
-      available: true,
-      output: '# 会议纪要\n\n张三：周三交稿\n\nTAGS: 工作、排期',
-    );
-    final r = await LlmReconstructor(engine: engine)
-        .reconstruct(input(Repository.taskParseChatlog, humanTags: ['手动标签']));
-    expect(r.humanMd, '# 会议纪要\n\n张三：周三交稿', reason: 'TAGS 尾行剥出，正文不混入');
-    expect(r.tags, containsAll(['手动标签', '工作', '排期']),
-        reason: 'D2：并集只增不删，人工标签保留');
-    expect(r.tags.length, 3);
-  });
-
-  test('R1 parse_chatlog：无 TAGS 行时正文照常应用、标签不造假', () async {
-    final r = await LlmReconstructor(engine: _FakeLlmEngine(
-      available: true,
-      output: '整理后的内容',
-    )).reconstruct(input(Repository.taskParseChatlog));
-    expect(r.humanMd, '整理后的内容');
-    expect(r.tags, isEmpty);
+  test('R1 chatlog 收敛：parse_chatlog 不再被认领（回归占位消化）', () async {
+    final r = await LlmReconstructor(engine: _FakeLlmEngine(available: true, output: '不该被调用'))
+        .reconstruct(input(Repository.taskParseChatlog));
+    expect(r.humanMd, '正文内容', reason: '收敛后 chatlog 降噪砍除，LlmReconstructor 不认领（由占位兜底）');
   });
 
   test('R1 summarize_url：正文不改写、摘要进 summary_md + 打标', () async {
@@ -86,7 +70,7 @@ void main() {
   test('R1 D3 超长：超 3000 字符回退占位 + note 明示，不截断照跑', () async {
     final long = 'x' * 3001;
     final r = await LlmReconstructor(engine: _FakeLlmEngine(available: true, output: '不该被调用'))
-        .reconstruct(input(Repository.taskParseChatlog, rawContent: long));
+        .reconstruct(input(Repository.taskSummarizeUrl, humanMd: long));
     expect(r.humanMd, long, reason: '占位回退原样保留');
     expect(r.note, contains('内容超长'));
     expect(r.note, contains('3001'));

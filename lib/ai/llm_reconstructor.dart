@@ -8,15 +8,14 @@ import 'reconstructor.dart';
 /// 端侧 LLM 重构器（2026-09-28）：处理 `task_action=llm_summarize` / `llm_tags`
 /// 两类显式入队任务（SummarizeCommand / ExtractTagsCommand，均手动触发）。
 ///
-/// **R1 摄入自动双态重构（2026-10-09，v2-requirements §3）**：增认领
-/// `parse_chatlog` / `summarize_url` 两类摄入任务——
-/// - `parse_chatlog`：LLM 降噪 + 议题整理**改写 human_md**（聊天记录的加工主体
-///   就是重写）+ 自动标签（D2：直接进 tags，并集只增不删）；
-/// - `summarize_url`：叠加层——**不改写** OcrReconstructor 抓取的正文（那是事实
-///   源），摘要写 summary_md + 自动标签（D4 拍板收窄：抓正文后自动跑）。
+/// **R1 摄入自动重构（2026-10-09 落码；同日收敛拍板收窄，v2-requirements §1.1a）**：
+/// 增认领 `summarize_url`——URL 摄入抓取正文后自动跑 TL;DR 摘要 + 2–3 标签
+/// （D4 拍板收窄：叠加层，**不改写** OcrReconstructor 抓取的正文——那是事实源，
+/// 摘要写 summary_md + 自动标签）。~~chatlog 议题整理~~已砍除：1.5B 理不清
+/// 长 OCR 碎片的逻辑，整理产出不可信，重活归桌面 MCP。
 ///
-/// D3 超长口径：输入超 `_maxPromptChars`（≈4096 token 档）回退占位 + note 明示
-/// 「内容超长待分块」，不截断照跑（防失真产出）；Phase 2 分块后解锁。
+/// D3 超长口径保留（同时服务 URL 摘要）：输入超 `_maxPromptChars`（≈4096 token 档）
+/// 回退占位 + note 明示，不截断照跑（防失真产出）。
 ///
 /// 与 TranslationReconstructor 同构：URL 摘要写入 `summary_md`（并列不覆盖）；
 /// 引擎不可用 / 空产出 → 占位完成 + note 明说原因（「降级不卡死 + 结果可观测」）。
@@ -39,8 +38,7 @@ class LlmReconstructor implements AiReconstructor {
     if (block != null) return block.$1 == 'block_summarize';
     return input.taskAction == Repository.taskLlmSummarize ||
         input.taskAction == Repository.taskLlmTags ||
-        // R1 摄入自动重构（2026-10-09）
-        input.taskAction == Repository.taskParseChatlog ||
+        // R1 摄入自动重构（2026-10-09 收敛后仅 URL）
         input.taskAction == Repository.taskSummarizeUrl;
   }
 
@@ -114,16 +112,15 @@ class LlmReconstructor implements AiReconstructor {
       return ReconstructResult(humanMd: base, note: '未生成：$reason');
     }
 
-    // ─── R1 摄入自动双态重构（2026-10-09 D1-D4 拍板，v2-requirements §3）───
-    final isChatlog = input.taskAction == Repository.taskParseChatlog;
+    // ─── R1 摄入自动重构（2026-10-09 收敛拍板：仅 URL 摘要+打标，chatlog 已砍）───
     final isUrlSummary = input.taskAction == Repository.taskSummarizeUrl;
-    if (isChatlog || isUrlSummary) {
+    if (isUrlSummary) {
       // D3 超长口径：回退占位 + note 明示，不截断照跑（防失真产出）。
       if (text.length > _maxPromptChars) {
         return ReconstructResult(
           humanMd: base,
           note: '内容超长（${text.length} 字符 > $_maxPromptChars），'
-              '待超长文本分块管线落地后自动解锁，本次未执行 AI 重构',
+              '本次未执行 AI 摘要（不截断照跑防失真）',
         );
       }
       if (!await engine.isAvailable) {
@@ -134,24 +131,7 @@ class LlmReconstructor implements AiReconstructor {
         return ReconstructResult(humanMd: base, note: '未生成：$reason');
       }
       try {
-        if (isChatlog) {
-          // chatlog：降噪 + 议题整理改写 human_md（加工主体即重写）+ 自动标签。
-          final out = await engine.generate(
-            '以下是收集的一段聊天记录。请整理为 Markdown：去掉表情刷屏/无意义消息，'
-            '按议题分段，保留发言者与关键信息（时间/金额/约定等），忠实原文不要编造。'
-            '整理完成后，另起一行输出「TAGS:」加 2-3 个标签（顿号分隔，优先用常见短词）：\n\n$text',
-            maxTokens: 1024,
-          );
-          if (out == null || out.trim().isEmpty) {
-            return ReconstructResult(humanMd: base, note: '端侧大模型未产出结果（模型未就绪或生成失败），可重试');
-          }
-          final parsed = _splitTagsSuffix(out.trim());
-          return ReconstructResult(
-            humanMd: parsed.text,
-            tags: <String>{...input.humanTags, ...parsed.tags}.toList(),
-          );
-        }
-        // summarize_url：叠加层——不改写抓取正文（事实源），摘要 + 自动标签。
+        // 叠加层——不改写抓取正文（事实源），摘要 + 自动标签。
         // 正文为空（抓取失败已由 OcrReconstructor 落占位）时无从摘要，直接明说。
         if (text.isEmpty) {
           return ReconstructResult(humanMd: base, note: '链接正文为空（抓取未产出），无法生成摘要');

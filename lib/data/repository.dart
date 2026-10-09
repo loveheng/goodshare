@@ -366,7 +366,9 @@ class Repository extends ChangeNotifier {
   /// item_type → 默认队列动作；note 无专属动作返回 null（消费者按类型通用重构）。
   static String? taskActionFor(String itemType) => switch (itemType) {
         InboxItem.typeUrl => taskSummarizeUrl,
-        InboxItem.typeChatlog => taskParseChatlog,
+        // chatlog 收敛（2026-10-09 §1.1a）：端侧 1.5B 理不清长 OCR 碎片，
+        // 议题整理产出不可信——回归占位消化，重活归桌面 MCP。
+        // InboxItem.typeChatlog => taskParseChatlog,
         // 图片摄入自动跑主色提取（V3，非模型推理毫秒级）；OCR 保持手动
         // （2026-09-28 拍板只存文件）——录音转写由 TranscribeCommand 入队
         // taskTranscribeAudio，图片 OCR 由 OcrCommand 入队 taskOcrAndExtract。
