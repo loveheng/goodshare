@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodshare/action/commands.dart';
 import 'package:goodshare/action/item_action_handler.dart';
+import 'package:goodshare/ai/reconstructor.dart';
 import 'package:goodshare/ai/subtitle.dart';
 import 'package:goodshare/data/block_artifacts.dart';
 import 'package:goodshare/data/db.dart';
@@ -226,9 +227,9 @@ void main() {
     expect(byJob['found'], isFalse, reason: 'job_id 入口也必须做条目可见性门控');
   });
 
-  test('工具清单共 34 个且不含 execute_action', () {
+  test('工具清单共 37 个且不含 execute_action', () {
     final names = toolSchemas().map((s) => s['name']).toList();
-    expect(names.length, 34);
+    expect(names.length, 37);
     expect(names, isNot(contains('execute_action')));
     expect(names, containsAll([
       'update_item', 'unlock_edit', 'set_vault', 'set_pin', 'reprocess_item',
@@ -241,6 +242,8 @@ void main() {
       'list_workspaces', 'create_workspace', 'rename_workspace',
       'delete_workspace', 'add_to_workspace', 'remove_from_workspace',
       'get_job_status', 'list_jobs',
+      // AI 宿主 App 接缝（ai-app-split.md §3，M1）
+      'claim_ai_task', 'touch_ai_task', 'apply_ai_result',
     ]));
   });
 
@@ -393,6 +396,34 @@ void main() {
     expect(task, isNotNull, reason: '失败原因必须随条目回传，否则 AI 只能猜「为什么没译文」');
     expect(task!['status'], 'failed');
     expect(task['note'], '无可用翻译引擎（语言包未就绪）');
+  });
+
+  test('get_item 回传 R1 URL 摘要（v2-requirements §3.2：summary 字段契约）', () async {
+    final it = await repo.add(aiItem(
+      itemType: InboxItem.typeUrl,
+      rawContent: 'https://example.com/a',
+      createdAt: 1,
+    ));
+    // 摘要经 _applyAiResult 落库后，get_item 必须可读——桌面 AI 客户端的核心消费面
+    await handler.execute(
+      ApplyAiResultCommand(
+        it.id!,
+        const ReconstructResult(humanMd: '正文', summaryMd: 'TL;DR：一句话摘要', tags: ['科技']),
+      ),
+      actor: CommandActor.pipeline,
+    );
+    final blocks = await callTool('get_item', {'id': it.id}, repo);
+    final json = jsonDecode(textOf(blocks)) as Map<String, Object?>;
+    expect(json['summary'], 'TL;DR：一句话摘要');
+    expect(json['summary_stale'], isFalse, reason: '锚与正文一致（刚产出）');
+    // 正文被编辑后锚失配 → 摘要标记可能过期（消费方据此决定是否重摘要）
+    await handler.execute(UpdateItemCommand(id: it.id!, humanMd: '用户改过的正文'));
+    final after = jsonDecode(textOf(await callTool('get_item', {'id': it.id}, repo))) as Map<String, Object?>;
+    expect(after['summary_stale'], isTrue, reason: '正文已变、摘要未重产 → 失配标记');
+    // 无摘要条目不占字段（载荷干净）
+    final bare = await repo.add(aiItem(itemType: InboxItem.typeNote, rawContent: 'r', createdAt: 2));
+    final plain = jsonDecode(textOf(await callTool('get_item', {'id': bare.id}, repo))) as Map<String, Object?>;
+    expect(plain.containsKey('summary'), isFalse);
   });
 
   test('scan_barcode_item / analyze_text_item：空 id 拒绝；happy path 入队', () async {
@@ -697,12 +728,208 @@ void main() {
 
     final actions = (await repo.pendingTasks()).map((t) => t['task_action']).toList();
     expect(actions, contains('block_translate:$key|en|transcript'));
-    expect(actions, contains('block_summarize:$key'));
+    // block_summarize 是远程任务（ai-app-split.md §4 占位守卫）：被本地进程
+    // pendingTasks 排除，只经 claim_ai_task 认领——断言它确实在远程队列里。
+    expect(actions, isNot(contains('block_summarize:$key')));
+    final claimedRemote =
+        jsonDecode(textOf(await callTool('claim_ai_task', {}, repo))) as Map<String, Object?>;
+    expect(claimedRemote['task_action'], 'block_summarize:$key');
 
-    // §6.6 互斥：同块同任务连发被拒
+    // §6.6 互斥：同块同任务连发被拒（processing 也计入 active 互斥）
     expect(
       () => callTool('block_summarize_item', {'id': it.id, 'block_key': key}, repo),
       throwsA(isA<McpRpcError>()),
     );
+  });
+
+  // ────────────────────────────────────────────────────────────────────
+  // AI 宿主 App 接缝（ai-app-split.md §3，M1 实施）：claim_ai_task /
+  // touch_ai_task / apply_ai_result。
+  //
+  // 占位守卫（M2 验收第一条）是钉子测试：远程任务必须被 pendingTasks 的
+  // SQL 层排除——摘除 LlmReconstructor 换 PlaceholderReconstructor（handles
+  // 恒真）后，不排除就会把远程任务「占位完成」，宿主永远 claim 不到。
+  // ────────────────────────────────────────────────────────────────────
+
+  test('占位守卫：远程任务不进 pendingTasks，且与 isRemoteTaskAction 集合一致', () async {
+    final it = await repo.add(aiItem(itemType: InboxItem.typeNote, rawContent: '正文', createdAt: 1));
+    await repo.enqueueTask(it.id!, Repository.taskLlmSummarize);
+    await repo.enqueueTask(it.id!, Repository.taskLlmTags);
+    await repo.enqueueTask(it.id!, 'block_summarize:local://shares/a.jpg');
+    // 轻量任务（非远程）照常入队
+    await repo.enqueueTask(it.id!, Repository.taskTranscribeAudio);
+
+    final pending = (await repo.pendingTasks()).map((t) => t['task_action']).toList();
+    expect(pending, [Repository.taskTranscribeAudio],
+        reason: '远程任务对本进程消费者不可见，队列里只该剩轻量任务');
+
+    // 远程集合单点判定（isRemoteTaskAction）与 pendingTasks/claim 的 SQL 形态互锁
+    expect(Repository.isRemoteTaskAction(Repository.taskLlmSummarize), isTrue);
+    expect(Repository.isRemoteTaskAction(Repository.taskLlmTags), isTrue);
+    expect(Repository.isRemoteTaskAction('block_summarize:local://shares/a.jpg'), isTrue);
+    expect(Repository.isRemoteTaskAction(Repository.taskTranscribeAudio), isFalse);
+    expect(Repository.isRemoteTaskAction(null), isFalse);
+  });
+
+  test('claim_ai_task：空队 idle；摘要/关键词/块摘要载荷正确；轻量任务不被认领', () async {
+    // 空队列
+    final r0 = jsonDecode(textOf(await callTool('claim_ai_task', {}, repo))) as Map<String, Object?>;
+    expect(r0['status'], 'idle');
+
+    // 摘要：text = 正文（humanMd 缺省回退 rawContent），带乐观锁 version
+    final it = await repo.add(aiItem(itemType: InboxItem.typeNote, rawContent: '你好世界', createdAt: 1));
+    final ev = await repo.enqueueTask(it.id!, Repository.taskLlmSummarize);
+    final r1 = jsonDecode(textOf(await callTool('claim_ai_task', {}, repo))) as Map<String, Object?>;
+    expect(r1['status'], 'claimed');
+    expect(r1['task_id'], ev);
+    expect(r1['item_id'], it.id);
+    expect(r1['task_action'], Repository.taskLlmSummarize);
+    expect(r1['text'], '你好世界');
+    expect(r1['version'], it.version);
+    expect((await repo.taskById(ev))!['status'], 'processing', reason: '认领即原子转 processing');
+
+    // 关键词：附既有标签（合并基准）
+    await callTool('update_item', {'id': it.id, 'patch': {'tags': ['既有标签']}}, repo);
+    final ev2 = await repo.enqueueTask(it.id!, Repository.taskLlmTags);
+    final r2 = jsonDecode(textOf(await callTool('claim_ai_task', {}, repo))) as Map<String, Object?>;
+    expect(r2['status'], 'claimed');
+    expect(r2['task_id'], ev2);
+    expect(r2['human_tags'], contains('既有标签'));
+
+    // 块摘要：text = 块源产物文本（transcript），附 block_key
+    final note = await repo.add(aiItem(
+        itemType: InboxItem.typeNote, rawContent: '前言\n\n[录音](local://shares/a.m4a)', createdAt: 2));
+    const bkey = 'local://shares/a.m4a';
+    await repo.blockArtifacts.upsertAll(note.id!, bkey, const [
+      BlockArtifactInput(BlockArtifactKind.transcript, text: '录音转写文本'),
+    ]);
+    final ev3 = await repo.enqueueTask(note.id!, 'block_summarize:$bkey');
+    final r3 = jsonDecode(textOf(await callTool('claim_ai_task', {}, repo))) as Map<String, Object?>;
+    expect(r3['status'], 'claimed');
+    expect(r3['task_id'], ev3);
+    expect(r3['task_action'], 'block_summarize:$bkey');
+    expect(r3['block_key'], bkey);
+    expect(r3['text'], '录音转写文本');
+
+    // 轻量任务留在本进程队列，claim 拿不到（分治边界：宿主只吃大模型任务）
+    await repo.enqueueTask(note.id!, Repository.taskTranscribeAudio);
+    final r4 = jsonDecode(textOf(await callTool('claim_ai_task', {}, repo))) as Map<String, Object?>;
+    expect(r4['status'], 'idle');
+  });
+
+  test('touch_ai_task：刷新心跳 updated_at；不存在的任务 exists=false', () async {
+    final it = await repo.add(aiItem(itemType: InboxItem.typeNote, rawContent: '正文', createdAt: 1));
+    final ev = await repo.enqueueTask(it.id!, Repository.taskLlmSummarize);
+    await callTool('claim_ai_task', {}, repo);
+    final before = (await repo.taskById(ev))!['updated_at'] as int;
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    await callTool('touch_ai_task', {'task_id': ev}, repo);
+    final after = (await repo.taskById(ev))!['updated_at'] as int;
+    expect(after, greaterThan(before), reason: '心跳必须刷新 updated_at（僵尸回收判据）');
+
+    final r = jsonDecode(textOf(await callTool('touch_ai_task', {'task_id': 'no-such-task'}, repo)))
+        as Map<String, Object?>;
+    expect(r['exists'], isFalse);
+  });
+
+  test('apply_ai_result：摘要/关键词/块摘要经管线同一出口落库（actor=pipeline）', () async {
+    final it = await repo.add(aiItem(itemType: InboxItem.typeNote, rawContent: '长文正文内容', createdAt: 1));
+    await callTool('update_item', {'id': it.id, 'patch': {'tags': ['既有标签']}}, repo);
+
+    // 摘要：落 summary_md（与原文并列，不动 human_md）
+    final ev = await repo.enqueueTask(it.id!, Repository.taskLlmSummarize);
+    await callTool('claim_ai_task', {}, repo);
+    final rr = jsonDecode(textOf(await callTool('apply_ai_result', {
+      'task_id': ev,
+      'id': it.id,
+      'summary_md': '摘要：核心内容',
+    }, repo))) as Map<String, Object?>;
+    expect(rr['task_status'], 'completed');
+    expect((await repo.byId(it.id!))!.summaryMd, '摘要：核心内容');
+    expect((await repo.taskById(ev))!['status'], 'completed');
+
+    // 关键词：宿主传合并后完整列表，tags 并集落库
+    final ev2 = await repo.enqueueTask(it.id!, Repository.taskLlmTags);
+    await callTool('claim_ai_task', {}, repo);
+    await callTool('apply_ai_result', {
+      'task_id': ev2,
+      'id': it.id,
+      'tags': ['既有标签', '新关键词'],
+    }, repo);
+    expect((await repo.byId(it.id!))!.tags, containsAll(['既有标签', '新关键词']));
+    expect((await repo.taskById(ev2))!['status'], 'completed');
+
+    // 块摘要：产物落 block_artifacts，条目级字段零触碰（version 不 bump）
+    final note = await repo.add(aiItem(
+        itemType: InboxItem.typeNote, rawContent: '前言', createdAt: 2));
+    const bkey = 'local://shares/a.m4a';
+    await repo.blockArtifacts.upsertAll(note.id!, bkey, const [
+      BlockArtifactInput(BlockArtifactKind.transcript, text: '录音转写文本'),
+    ]);
+    final verBefore = (await repo.byId(note.id!))!.version;
+    final ev3 = await repo.enqueueTask(note.id!, 'block_summarize:$bkey');
+    await callTool('claim_ai_task', {}, repo);
+    await callTool('apply_ai_result', {
+      'task_id': ev3,
+      'id': note.id,
+      'summary_md': '块摘要：说了什么',
+      'block_key': bkey,
+    }, repo);
+    final art = await repo.blockArtifacts.get(note.id!, bkey, BlockArtifactKind.summary);
+    expect(art?.text, '块摘要：说了什么');
+    final note2 = await repo.byId(note.id!);
+    expect(note2!.version, verBefore, reason: '块分支零触碰条目字段，version 不 bump');
+    expect(note2.isProcessed, 0, reason: '块任务不标条目处理位');
+
+    // 无产出但有 note（完成原因必须明说，R1）：允许 completed 且原因落任务
+    final ev4 = await repo.enqueueTask(it.id!, Repository.taskLlmSummarize);
+    await callTool('claim_ai_task', {}, repo);
+    await callTool('apply_ai_result', {
+      'task_id': ev4,
+      'id': it.id,
+      'note': '正文过短，无法生成摘要',
+    }, repo);
+    final t4 = await repo.taskById(ev4);
+    expect(t4!['status'], 'completed');
+    expect(t4['last_note'], '正文过短，无法生成摘要');
+  });
+
+  test('apply_ai_result：版本冲突拒绝回写，任务标 failed 并留原因', () async {
+    final it = await repo.add(aiItem(itemType: InboxItem.typeNote, rawContent: '正文', createdAt: 1));
+    final ev = await repo.enqueueTask(it.id!, Repository.taskLlmSummarize);
+    final claimed = jsonDecode(textOf(await callTool('claim_ai_task', {}, repo))) as Map<String, Object?>;
+    final claimedVersion = claimed['version'] as int;
+    // 模拟推理期间人类并发编辑：条目版本已变
+    await callTool('update_item', {'id': it.id, 'patch': {'title': '人类编辑'}}, repo);
+    try {
+      await callTool('apply_ai_result', {
+        'task_id': ev,
+        'id': it.id,
+        'summary_md': '基于旧版本的摘要',
+        'expected_version': claimedVersion,
+      }, repo);
+      fail('应抛 McpRpcError');
+    } on McpRpcError catch (e) {
+      expect((e.data as Map<String, Object?>)['code'], 'version_conflict');
+    }
+    final t = await repo.taskById(ev);
+    expect(t!['status'], 'failed');
+    expect(t['last_note'], contains('version_conflict'), reason: '错误原因必须落库（人与 AI 同读）');
+    expect((await repo.byId(it.id!))!.summaryMd, isNull, reason: '被拒产出不得落库');
+  });
+
+  test('apply_ai_result：参数校验（任务不存在 / 无产出且无 note）', () async {
+    final it = await repo.add(aiItem(itemType: InboxItem.typeNote, rawContent: '正文', createdAt: 1));
+    final ev = await repo.enqueueTask(it.id!, Repository.taskLlmSummarize);
+    try {
+      await callTool('apply_ai_result', {'task_id': 'no-such', 'id': it.id, 'summary_md': 'x'}, repo);
+      fail('应抛 McpRpcError');
+    } on McpRpcError catch (_) {}
+    try {
+      await callTool('apply_ai_result', {'task_id': ev, 'id': it.id}, repo);
+      fail('应抛 McpRpcError');
+    } on McpRpcError catch (_) {}
+    // 参数被拒不改变任务状态（未动过它）
+    expect((await repo.taskById(ev))!['status'], 'pending');
   });
 }

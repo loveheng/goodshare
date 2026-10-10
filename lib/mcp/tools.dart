@@ -7,6 +7,7 @@ import '../action/commands.dart';
 import '../action/item_action_handler.dart';
 import '../ai/language_codes.dart';
 import '../ai/subtitle.dart';
+import '../ai/reconstructor.dart' show ReconstructResult;
 import '../data/block_artifacts.dart';
 import '../data/repository.dart';
 import '../models/item.dart';
@@ -17,6 +18,10 @@ import 'jsonrpc.dart';
 /// summarize_item/extract_tags/classify_item/analyze_text_item/scan_barcode_item/
 /// transcribe_item/ocr_item/block_transcribe_item（+ block_ocr/translate/summarize/
 /// extract_audio_item 四个块能力变体，§7 与 UI 三级页同入口）等；
+/// AI 宿主 App 接缝（ai-app-split.md §3，master 侧自主认领）：claim_ai_task/
+/// touch_ai_task/apply_ai_task 三工具——远程 LLM 任务（llm_summarize/llm_tags/
+/// block_summarize）经此被宿主 App 认领/心跳/回写，apply 走 ItemActionHandler
+/// 同一落库出口（actor=pipeline 特权主体，与进程内消费者同一身份）；
 /// 工作区：list_workspaces/create_workspace/rename_workspace/delete_workspace/
 /// add_to_workspace/remove_from_workspace；execute_action 已裁决剔除。
 /// 所有写/改动作经 ItemActionHandler（UI 与 MCP 同一套校验与实现）。
@@ -535,6 +540,61 @@ List<Map<String, Object?>> toolSchemas() => [
             },
           },
           'required': ['id'],
+        },
+      },
+      {
+        'name': 'claim_ai_task',
+        'description': '认领一条待远程处理的 AI 任务（AI 宿主 App 专用，ai-app-split.md §3.2）。'
+            '只认领大模型类任务（llm_summarize 摘要 / llm_tags 关键词 / block_summarize 块摘要）——'
+            'OCR、转写等轻量任务由本机处理，不出现在此。原子认领：成功则任务转 processing，'
+            '返回纯文本载荷（text 供推理；llm_tags 附 human_tags 既有标签；块任务附 block_key，'
+            'text 为块源产物文本）与 version 乐观锁；无任务返回 {"status":"idle"}。'
+            '认领后请每 5 秒调 touch_ai_task 心跳，完成后调 apply_ai_result 回写。',
+        'inputSchema': {'type': 'object', 'properties': {}},
+      },
+      {
+        'name': 'touch_ai_task',
+        'description': '认领任务的存活心跳（AI 宿主 App 专用）：刷新任务 updated_at，防止 30 秒'
+            '无心跳被僵尸回收重置为 pending。推理期间（含模型加载等待）应每 5 秒调用一次。'
+            '返回 exists=false 表示任务不存在（已被删除或回收）。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'task_id': {'type': 'string', 'description': 'claim_ai_task 返回的 task_id'},
+          },
+          'required': ['task_id'],
+        },
+      },
+      {
+        'name': 'apply_ai_result',
+        'description': '回写认领任务的推理产出（AI 宿主 App 专用，ai-app-split.md §3.4），经 '
+            'ItemActionHandler 统一落库（与本机 AI 管线同一出口，乐观锁/打码/标签并集自动生效）。'
+            '产出二选一：summary_md（摘要，llm_summarize 与 block_summarize 用，块任务落块产物）'
+            '或 tags（llm_tags 用，传合并后的完整标签列表：既有 human_tags 并入新提取）。'
+            'note 填原因说明（无产出/降级时必填，会落任务队列对人与 AI 同读）。'
+            '返回最新条目快照；version 冲突返回 version_conflict，请重读条目后重试。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'task_id': {'type': 'string', 'description': 'claim_ai_task 返回的 task_id'},
+            'id': {'type': 'string', 'description': '条目 uuid'},
+            'expected_version': {
+              'type': 'integer',
+              'description': '可选乐观锁：claim 返回的 version',
+            },
+            'summary_md': {'type': 'string', 'description': '摘要产出（摘要/块摘要任务）'},
+            'tags': {
+              'type': 'array',
+              'items': {'type': 'string'},
+              'description': '关键词任务：合并后的完整标签列表',
+            },
+            'block_key': {
+              'type': 'string',
+              'description': '块摘要任务：claim 返回的 block_key（条目级任务不传）',
+            },
+            'note': {'type': 'string', 'description': '原因说明（无产出/降级时必填）'},
+          },
+          'required': ['task_id', 'id'],
         },
       },
       {
@@ -1179,6 +1239,124 @@ Future<List<Map<String, Object?>>> callTool(
             actor: CommandActor.ai,
           ));
       return [_text(jsonEncode(r.toJson()))];
+
+    case 'claim_ai_task':
+      // ai-app-split.md §3.2：原子认领最旧一条远程 pending 任务（占位守卫
+      // 保证它不会被本进程消费者吃掉）。载荷纯文本、无附件（M0 拍板）。
+      final claimed = await repo.claimRemoteTask();
+      if (claimed == null) return [_text(jsonEncode({'status': 'idle'}))];
+      final taskId = claimed['task_id'] as String;
+      final itemId = claimed['item_id'] as String;
+      final taskAction = claimed['task_action'] as String;
+      final block = Repository.parseBlockAction(taskAction);
+      // 条目按 MCP 可见口径读（默认 aiVisible 过滤 + 隐私约束）；已删/不可见
+      // 时任务无载荷可给——不丢任务（保持 processing），返回 not_found 让
+      // 宿主 apply 一个 failed 收尾，避免孤儿 processing 白等 30s 僵尸回收。
+      final item = await repo.byId(itemId, aiVisible: true);
+      if (item == null) {
+        return [_text(jsonEncode({
+          'status': 'not_found',
+          'task_id': taskId,
+          'item_id': itemId,
+          'task_action': taskAction,
+          'note': '条目已不可见（已删除或对 AI 不可见），请用 apply_ai_result 回写 failed 收尾',
+        }))];
+      }
+      String? text;
+      String? blockKey;
+      if (block != null) {
+        blockKey = block.$2;
+        // 块摘要源 = 块产物文本（transcript → ocr_text，与 QueueConsumer §2.5 同口径）。
+        for (final kind in const [BlockArtifactKind.transcript, BlockArtifactKind.ocrText]) {
+          final a = await repo.blockArtifacts.get(itemId, blockKey, kind);
+          final t = a?.text;
+          if (t != null && t.trim().isNotEmpty) {
+            text = t;
+            break;
+          }
+        }
+        text ??= '';
+      } else {
+        text = item.humanMd ?? item.rawContent ?? '';
+      }
+      return [_text(jsonEncode({
+        'status': 'claimed',
+        'task_id': taskId,
+        'item_id': itemId,
+        'task_action': taskAction,
+        'text': text,
+        if (taskAction == Repository.taskLlmTags) 'human_tags': item.tags,
+        'block_key': ?blockKey,
+        'version': item.version,
+      }))];
+
+    case 'touch_ai_task':
+      final tid = _str(args['task_id']);
+      if (tid == null || tid.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 task_id 不能为空');
+      await repo.touchTask(tid);
+      final exists = (await repo.taskById(tid)) != null;
+      return [_text(jsonEncode({'exists': exists}))];
+
+    case 'apply_ai_result':
+      // ai-app-split.md §3.4：与进程内 QueueConsumer 同一落库出口——镜像其
+      // ReconstructResult 组装（摘要/关键词/块摘要三分支，rawEcho 保护自动保留
+      // 正文）。actor=pipeline：与管线同一特权主体（门控唯一放行者）。
+      final taskId = _str(args['task_id']);
+      if (taskId == null || taskId.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 task_id 不能为空');
+      final itemId = _str(args['id']);
+      if (itemId == null || itemId.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      final task = await repo.taskById(taskId);
+      if (task == null) {
+        throw McpRpcError(errInvalidParams, '任务不存在：$taskId');
+      }
+      final summaryMd = _str(args['summary_md']);
+      final tagsArg = (args['tags'] as List?)?.map((e) => '$e').toList();
+      final note = _str(args['note']);
+      final hasSummary = summaryMd != null && summaryMd.trim().isNotEmpty;
+      final hasTags = tagsArg != null && tagsArg.isNotEmpty;
+      if (!hasSummary && !hasTags && (note == null || note.trim().isEmpty)) {
+        throw McpRpcError(errInvalidParams, 'summary_md / tags / note 至少给一个（无产出须带原因说明）');
+      }
+      // 产出组装（按认领时 task_action 分叉；块摘要落块产物，条目字段零触碰）
+      final taskAction = task['task_action'] as String?;
+      final block = Repository.parseBlockAction(taskAction);
+      final blockKey = block?.$2;
+      final base = (await repo.byId(itemId, aiVisible: true))?.rawContent ?? '';
+      final result = block != null
+          // 块分支：blockKey + 摘要产物；humanMd 回填 raw 走 rawEcho 保护不动正文。
+          ? ReconstructResult(
+              humanMd: base,
+              note: note,
+              blockKey: blockKey,
+              blockArtifacts: hasSummary
+                  ? [BlockArtifactInput(BlockArtifactKind.summary, text: summaryMd.trim())]
+                  : null,
+            )
+          : ReconstructResult(
+              humanMd: base,
+              summaryMd: hasSummary ? summaryMd.trim() : null,
+              tags: hasTags ? tagsArg : const [],
+              note: note,
+            );
+      // 任务记账与消费者同口径（queue_consumer catch 段）：落库成功 = completed
+      //（note 透传「完成但无产出」原因）；落库被拒（乐观锁/Schema/编辑锁）= failed
+      // + 原因 note（错误必须被人与 AI 感知，R1）后错误原样上抛（e.data.code
+      // 供宿主自我纠正）。宿主重试 = 重新触发 summarize_item/extract_tags 入新任务，
+      // 与 UI 手动重试同构。
+      try {
+        final r = await _guarded(() => handler.execute(
+              ApplyAiResultCommand(itemId, result, expectedVersion: _int(args['expected_version'])),
+              actor: CommandActor.pipeline,
+            ));
+        // note 取推理产物载荷（result.note），与 QueueConsumer 完成路径同口径——
+        // handler 回执是「已回写」提示，不是任务完成原因。
+        await repo.finishTask(taskId, 'completed', note: result.note);
+        return [_text(jsonEncode({'task_status': 'completed', ...r.toJson()}))];
+      } on McpRpcError catch (e) {
+        final code = e.data is Map ? (e.data as Map)['code'] : null;
+        await repo.finishTask(taskId, 'failed', note: '回写被拒：${code ?? e.message}');
+        rethrow;
+      }
 
     case 'list_workspaces':
       final ws = await repo.listWorkspaces();

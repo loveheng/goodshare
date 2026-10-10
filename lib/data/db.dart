@@ -16,7 +16,7 @@ class Db {
     final dir = await getDatabasesPath();
     final db = await openDatabase(
       _pathOverride ?? p.join(dir, 'goodshare.db'),
-      version: 21,
+      version: 22,
       onCreate: (db, version) => _createAll(db),
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -65,6 +65,8 @@ class Db {
         await _ensureAiProcessColumn(db);
         // 幂等建 block_artifacts 块产物派生表（v20→v21 行内媒体块 AI 能力）
         await _ensureBlockArtifactsTable(db);
+        // 幂等补齐 inbox_items.summary_anchor（v21→v22 摘要正文版本锚）
+        await _ensureSummaryAnchorColumn(db);
       },
       onOpen: (db) async {
         // ai_task_queue 的外键级联依赖此开关，sqflite 默认关闭
@@ -93,6 +95,7 @@ class Db {
         translated_md TEXT,                         -- 译文（翻译层产出，与 human_md 并列不覆盖）
         translate_lang TEXT,                        -- 译文语言码（BCP-47），与 translated_md 成对
         summary_md TEXT,                            -- 端侧 LLM 摘要（与 human_md 并列不覆盖，2026-09-28 v8）
+        summary_anchor TEXT,                        -- 摘要正文版本锚：写摘要时 human_md 的 md5（2026-10-10 v22，失配=摘要过期）
         clips_json TEXT,                            -- 视频切片（关键区间）附属记录（2026-09-29 v10，lib/ai/video_clips.dart）
         doc_meta_json TEXT,                         -- 归一化覆盖率与确认状态（2026-09-30 v12，content-pipeline §7）
         attach_state TEXT NOT NULL DEFAULT 'owned', -- 文件引用状态 ref/owned/lost（2026-09-30 v13）
@@ -289,6 +292,18 @@ class Db {
     final has = cols.any((c) => (c['name'] as String?) == 'summary_md');
     if (!has) {
       await db.execute('ALTER TABLE inbox_items ADD COLUMN summary_md TEXT');
+    }
+  }
+
+  /// 幂等补齐 inbox_items.summary_anchor（v21→v22 摘要正文版本锚，2026-10-10）。
+  ///
+  /// 锚 = 写摘要时 human_md 的 md5 指纹（不用 version 号：tags/翻译等任何写入
+  /// 都会 +1，会造成假过期）；失配即摘要对应旧正文，消费方据此标记「可能过期」。
+  static Future<void> _ensureSummaryAnchorColumn(Database db) async {
+    final cols = await db.rawQuery('PRAGMA table_info(inbox_items)');
+    final has = cols.any((c) => (c['name'] as String?) == 'summary_anchor');
+    if (!has) {
+      await db.execute('ALTER TABLE inbox_items ADD COLUMN summary_anchor TEXT');
     }
   }
 

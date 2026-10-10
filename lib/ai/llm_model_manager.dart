@@ -123,7 +123,10 @@ class LlmModelManager extends ChangeNotifier {
     await _loadCachedCatalog();
     await _syncOrphans();
     await _realignSelection(prefs);
-    _syncReadyFlags();
+    // 必须 await（2026-10-10 真机排障）：_diskState 是真异步，不等待则
+    // _ready 尚为空，下面的 publish 会以 ready=false 提前退出——原生收不到
+    // 模型路径，重启 app 后摘要全部误报「未下载模型包」。
+    await _syncReadyFlags();
     notifyListeners();
     unawaited(_publishReadyIfAny()); // 把已就绪模型路径告知原生（路径对齐）
     // 远端刷新异步跑：失败静默留 last-good，不打断首帧

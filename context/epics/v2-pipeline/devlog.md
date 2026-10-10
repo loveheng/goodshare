@@ -2,18 +2,48 @@
 dev-loop: devlog
 format: v1
 epic: v2-pipeline
-total-merged: 0
-last-merge: none
+total-merged: 1
+last-merge: 2026-10-10
 ---
 
 （追加区：≥5 条自动归并进 memory.md）
-- [2026-10-09] [决策]: D1–D4 四项前置拍板全清（pending-confirm 台账 D1-D4 → [x]）：D1 打码=通用出口（挂 _applyAiResult，占位回退也打码）/ D2 自动打标=直接进 tags（并集只增不删 + prompt 限 2–3 复用标签池）/ D3 超长=回退占位（不截断照跑）/ D4 URL 自动摘要=收窄成立+独立开关默认开。R1/R2 设计输入全齐。
-- [2026-10-09] [变更]: ::bind v2-pipeline 落盘（memory/devlog 骨架 + 挂载 v2-requirements.md + 断点）。SSOT 修正：v2-requirements.md §9 开放问题④（URL 自动摘要）随 D4 拍板关闭；「摘要不自动入队」（2026-09-28）收窄为「仅 URL 摄入自动摘要，其余手动任务不自动入队」。
-- [2026-10-09] [验证]: docs-lint OK（v2-requirements 开放问题④划线+拍板记录回写）；context-lint 0 违规（GROOM 48 条存量/SIZE goodshare 198 行为已登记残留，无新增）；纯文档+context 轮无代码验证项。
-- [2026-10-09] [变更]: **R1 摄入自动双态重构 + R2 打码层 + D4 自动摘要开关 全量落码**（D1-D4 拍板兑现）：①R1——`LlmReconstructor` 增认领 `parse_chatlog`/`summarize_url`：chatlog 降噪改写 human_md + TAGS 尾行解析进 tags（D2 并集只增不删，take(3) 兜底）；URL 摘要叠加层不改写抓取正文（summary_md 并列）+ 打标；D3 超 3000 字符回退占位 + note 明示（不截断照跑）②R2——新文件 `lib/ai/privacy_mask.dart`（身份证 GB 11643 校验位 + 银行卡 Luhn 纯函数，边界守卫防误伤长编号），挂 `_applyAiResult` 通用出口（D1：human_md/machine_json 落库前必经，raw_content 保留明文；keepHuman 判定先于打码语义不变）③D4——`AiCapabilities` 增 autoSummarizeEnabled/maskEnabled 两开关（默认开）+ 设置页两 SwitchListTile；`QueueConsumer` 抓取任务完成后链入 summarize_url（onEnqueued 回调 kick）④main 装配：handler.isMaskEnabled / consumer.isAutoSummarize+onEnqueued。
-- [2026-10-09] [排错]: **D4 链式自链死循环两轮**——第一版只查 pending 防重，链任务在 pollOnce 同一 while 轮内即被消费再次满足链条件 → 无限链（debug 打印复现上百次 chained）。修复双闸：①产出特征闸（链只由无 summaryMd 的抓取产出触发，LLM 摘要产出带 summaryMd 天然终止）②轮内闸 `_chainedThisPoll`（每轮最多链 1 次，绝对封闭防异常实现自链）。次生教训：`repo.add` 裸方法不入队（入队只在 CollectCommand），测试必须走真实摄入路径；链任务同轮消费完，断言查 `recentTasksOf` 任务历史而非 pending。`recentTasksOf` 为本次新增 Repository 出口。
-- [2026-10-09] [验证]: analyze 0 issue；新增 privacy_mask_test 9 例 + llm_reconstructor_test R1 组 5 例 + action_handler_test 打码组 2 例 + queue_consumer_test D4 链 1 例；全量 772 绿。
-- [2026-10-09] [拍板/变更]: **V2 收敛减法（用户提出战略-设计割裂评估，AI 对账确认全盘采纳）**——①砍 R4 便签 AI 增强（1.5B 中文校对误报海量、Diff+CAS 协同级管线过度工程；ai_revisions 写回快照属 AI 写回可逆地基保留）；②砍 R3 截图结构化（OCR 可搜可复制已够，发票/名片归桌面 MCP 批处理，validator 登记零成本保留）；③收窄 R1 砍 chatlog 整理（长 OCR 碎片超 4096 ctx 产出不可信；已落码的 chatlog 分支删除、taskActionFor(chatlog) 回归 null、超长闸保留服务 URL）；④R5 温控除名（电量门控+超时熔断+串行队列已闭环，不逐 ROM 死磕）。文档 §1.1/§1.1a/§3-§8/§10 全量收敛改写，开放问题四项全关。本期范围=R1(URL)+R2，均已落码。
-- [2026-10-09] [验证]: analyze 0 issue；chatlog 分支删除后全量 771 绿（chatlog 认领测试改写为「不再认领」钉子，D3 超长测试改走 summarize_url）；docs-lint OK。
-- [2026-10-09] [拍板/变更]: **V2 二次收敛四点（用户再精简，全盘采纳落码）**：①D3 一刀切改**头部 1500 字符截断直出**（超 3000 回退会让 70%+ 真实长文摘要哑火；核心论点集中前 2-3 段）②链式任务改**串联式单任务**（Composite Pipeline：OcrReconstructor.summarizeHead 回调原地调 LlmReconstructor.summarizeUrlHead，同一任务一次落库；删跨任务链+产出特征闸+轮内单链闸+isAutoSummarize/onEnqueued 参数——分布式调度思维硬塞本地队列，死循环隐患物理归零）③开关收敛（自动摘要开关删：模型在位即生效不占 note；打码开关删：硬编码恒开 isMaskEnabled=()=>true；删 capabilities 两字段+设置页两 SwitchListTile）④配套收敛（仅保留①④均已完成；②预置链彻底删除、③图文修复延后登 misc 池）。代码净变化：lib -约 120 行复杂度（闸/链/开关/持久化），摘要步静默降级 DEGRADE 不拖垮抓取。
-- [2026-10-09] [验证]: analyze 0 issue；新增 url_summarize_step_test 6 例（串联契约/头部截断/模型不在位 null/异常降级/回调缺席）；链式测试改写为「URL 摄入无独立摘要任务」钉子；llm_reconstructor/mcp_tools 旧口径钉子同步改写；全量 777 绿 / docs-lint OK。
+
+## 2026-10-10 M1 实施：AI 宿主 App 接缝三工具（ai-app-split.md §3/§4）
+
+**决策背景**：用户想把 App 的 AI 能力拆成独立宿主 App（端侧 LLM 跑那边），经 MCP
+Streamable HTTP 自主认领任务——master 侧（本仓）只提供接缝工具，不感知宿主存在。
+设计 SSOT：docs/design/ai-app-split.md（M0 拍板：纯文本载荷/无附件/心跳 5s/僵尸回收
+30s 复用既有机制/远程任务仅三项）。
+
+**M1 实施内容**：
+1. **Repository**（lib/data/repository.dart）：
+   - `isRemoteTaskAction()` 远程集合**单点定义**（llm_summarize/llm_tags/
+     block_summarize:*）——claim 数据源与 pendingTasks 守卫共用，防双消费漂移。
+   - `pendingTasks()` SQL 层**占位守卫**（M2 验收第一条钉子）：排除远程集合。
+     不排除的话 M2 换 PlaceholderReconstructor 后会先把远程任务「占位完成」，
+     宿主永远 claim 不到。
+   - `claimRemoteTask()`：原子认领最旧一条远程 pending（复用 claimTask 条件 UPDATE）。
+2. **MCP 三工具**（lib/mcp/tools.dart，34→37）：
+   - `claim_ai_task`：空队返回 idle；载荷 task_id/item_id/task_action/text/
+     version（乐观锁）；llm_tags 附 human_tags；块摘要 text=块源产物（transcript→
+     ocr_text 同消费者口径）、附 block_key。条目不可见时不丢任务，返回 not_found
+     让宿主 apply failed 收尾。
+   - `touch_ai_task`：刷新 updated_at 心跳（僵尸回收判据复用既有 30s 机制）。
+   - `apply_ai_result`：经 **ItemActionHandler 同一落库出口**（actor=pipeline，
+     与进程内 QueueConsumer 同一特权身份），组装形状镜像消费者 ReconstructResult
+     （摘要→summary_md 并列/关键词→tags 并集/块摘要→block_artifacts 零触碰条目）。
+     note 落库取推理产物载荷（与消费者同口径，非 handler 回执）；落库被拒
+     （乐观锁/Schema）→ 任务标 failed + 原因落库后 rethrow（e.data.code 供宿主
+     自我纠正）。
+3. **ApplyAiResultCommand** 补 `{super.expectedVersion}`：宿主回写带乐观锁
+   （推理期数十秒，人类慢速编辑可能已改条目）；进程内管线不传 = 零改动。
+
+**验收**：analyze 零问题；mcp_tools_test 34/34 过（新增 5 个：占位守卫钉子、
+claim 三载荷+idle+轻量不认领、touch 心跳、apply 三分支落库+note 口径、版本冲突
+拒绝+参数校验）；存量 block_summarize 入队测试适配守卫（断言改走 claim 路径）；
+工具计数 34→37；全量 786 测试过。
+
+**M2 预告**（下阶段）：摘除 LlmReconstructor + LlmModelManager 注册 → 换
+PlaceholderReconstructor（handles 恒真 + 占位 note）；占位守卫保证占位实现
+吃不到远程任务；宿主 App 仓库另开（Flutter，LiteRT/llama.cpp 端侧推理 +
+MCP 客户端循环）。

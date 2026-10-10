@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:sqflite/sqflite.dart';
 
@@ -1241,9 +1242,15 @@ class ItemActionHandler {
       values['translated_md'] = r.translatedMd;
       values['translate_lang'] = r.translateLang ?? '';
     }
-    // 端侧 LLM 摘要与原文并列存储（2026-09-28 v8）：只追加，不覆盖 human_md
+    // 端侧 LLM 摘要与原文并列存储（2026-09-28 v8）：只追加，不覆盖 human_md。
+    // 摘要同样过打码层（D1 通用出口补齐 2026-10-10）：TL;DR 是正文头部的复述
+    // 产物，正文含敏感号时摘要极可能原样带出——最易外露的产出不能绕过出口。
+    // 版本锚（v22）：记下**本次写入后**正文（keepHuman 时条目现有正文不变）的
+    // 指纹——锚取写入前旧值会让新摘要永远对着旧正文失配。
     if (r.summaryMd != null) {
-      values['summary_md'] = r.summaryMd;
+      values['summary_md'] = maskSensitiveText(r.summaryMd!, enabled: maskOn);
+      final effectiveBody = keepHuman ? (item.humanMd ?? '') : maskedIncoming;
+      values['summary_anchor'] = md5.convert(utf8.encode(effectiveBody)).toString();
     }
     // 文档归一化元信息（2026-09-30）：覆盖率 / 降级 / 确认状态，供 UI 明示
     // 「提取了多少、哪些降级了」——降级不允许静默成功（content-pipeline §7）。

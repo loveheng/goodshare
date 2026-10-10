@@ -26,3 +26,10 @@
 -keep class * extends androidx.room.RoomDatabase { *; }
 -dontwarn androidx.work.**
 -dontwarn androidx.room.**
+
+# LiteRT-LM 端侧 LLM（2026-10-10 真机排障）：JNI 层 liblitertlm_jni.so 在
+# createConversation 时按类名 FindMethod——R8 混淆改掉 com.google.ai.edge.* 类名
+# 后 methodID 拿到 null，直接 native abort（"JNI DETECTED ERROR: mid == null"，
+# 表现为摘要任务永久 processing / app 静默重启）。上游 issue #2406 同型。
+-keep class com.google.ai.edge.** { *; }
+-dontwarn com.google.ai.edge.**

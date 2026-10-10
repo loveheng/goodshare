@@ -41,9 +41,7 @@ class LlmReconstructor implements AiReconstructor {
     final text = body.trim();
     if (text.isEmpty) return null;
     if (!await engine.isAvailable) return null;
-    final head = text.length > _kHeadChars
-        ? '${text.substring(0, _kHeadChars)}…'
-        : text;
+    final head = _prepareHead(text, _kHeadChars);
     try {
       final out = await engine.generate(
         '请根据以下文章开头概述要点（3-5 句 TL;DR，忠实原文，不要编造）。'
@@ -167,6 +165,32 @@ class LlmReconstructor implements AiReconstructor {
   /// 头部截断长度（二次收敛拍板）：真实网页长文 3000-8000 字，核心论点集中
   /// 在开头——取 1500 字符（≈1500 汉字 / 3000 token 内）保证功能不哑火。
   static const int _kHeadChars = 1500;
+
+  /// 摘要输入的头部准备（2026-10-10 保真修正）：
+  /// 1. 剥代码围栏（` ```…``` ` / `~~~…~~~`）——半截语法与正文无关，纯耗预算；
+  /// 2. Markdown 链接 `[text](url)` 只留 text（URL 可达数百字符/条，计入 1500
+  ///    会稀释「核心论点集中前 2-3 段」的拍板假设）；
+  /// 3. 按段落边界（空行）取前 ≤1500 字符——不在段中间硬切，尾部完整段收束。
+  /// 清洗后仍从原头部起取，不重排；超 1500 时按段落贪心收录，末尾省略号标记。
+  static String _prepareHead(String body, int maxChars) {
+    var text = body.replaceAll(RegExp(r'```[\s\S]*?```|~~~[\s\S]*?~~~'), '');
+    text = text.replaceAllMapped(
+        RegExp(r'\[([^\]]*)\]\([^)]*\)'), (m) => m.group(1) ?? '');
+    text = text.trim();
+    if (text.length <= maxChars) return text;
+    final paragraphs = text.split(RegExp(r'\n\s*\n'));
+    final buf = StringBuffer();
+    for (final p in paragraphs) {
+      final seg = p.trim();
+      if (seg.isEmpty) continue;
+      if (buf.length + seg.length + 2 > maxChars) break;
+      if (buf.isNotEmpty) buf.write('\n\n');
+      buf.write(seg);
+    }
+    final head = buf.toString();
+    // 保底：整段超预算无段落边界可切——硬切并同样以省略号标记截断
+    return head.isEmpty ? '${text.substring(0, maxChars)}…' : '$head\n\n…';
+  }
 
   /// 解析 R1 产出尾部的「TAGS: a、b」标签行（D2：直接进 tags）。
   /// 无 TAGS 行 = 标签产出失败不造假，正文/摘要照常应用。

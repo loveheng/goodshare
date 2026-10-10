@@ -107,6 +107,9 @@ class Repository extends ChangeNotifier {
   // 摘要 / 关键词均由专门命令显式入队（手动触发，绝不自动入队）。
   static const taskLlmSummarize = 'llm_summarize';
   static const taskLlmTags = 'llm_tags';
+  // 远程任务动作头（ai-app-split.md §2 分治边界：块分支 LLM 任务）。块形态动作串
+  // 是 `block_summarize:<blockKey>`（key 动态，无法进常量枚举），按头前缀判定。
+  static const taskBlockSummarizeHead = 'block_summarize';
 
   // 视频切片（2026-09-29，设计 docs/design/video-clips.md）：区间编码进动作串
   // （队列表无参数列，与 translate:<lang> 同口径）。
@@ -328,6 +331,20 @@ class Repository extends ChangeNotifier {
     if (b == null || b.$1 != 'block_transcribe' || b.$3.length < 2) return null;
     final lang = b.$3[1];
     return lang.isEmpty ? null : lang;
+  }
+
+  /// 是否远程任务（ai-app-split.md §2/§4：AI 宿主 App 处理，本进程消费端不认领）。
+  ///
+  /// 远程集合 = {`llm_summarize`, `llm_tags`, `block_summarize:<key>`}——同一
+  /// LiteRT 引擎的物理绑定三分支（摘要 / 关键词 / 块摘要）。**单点定义**：
+  /// [pendingTasks] 的 SQL 守卫与 [pendingRemoteTask]（claim_ai_task 数据源）共用，
+  /// 防止两处集合漂移导致「宿主 claim 得到但本进程也去消费」的双消费。
+  static bool isRemoteTaskAction(String? action) {
+    final a = action;
+    if (a == null) return false;
+    if (a == taskLlmSummarize || a == taskLlmTags) return true;
+    final b = parseBlockAction(a);
+    return b != null && b.$1 == taskBlockSummarizeHead;
   }
 
   /// 某条目 active（pending/processing）任务的 block 动作串（§6.6 入队互斥与
@@ -899,16 +916,43 @@ class Repository extends ChangeNotifier {
     return n > 0;
   }
 
-  /// 待处理队列任务快照（占位消费者接管，先进先出）。
+  /// 待处理队列任务快照（本进程消费者接管，先进先出）。
+  ///
+  /// **占位守卫（ai-app-split.md §4，M2 验收第一条）**：SQL 层排除远程集合
+  /// （[isRemoteTaskAction] 的 SQL 形态）——远程任务只可能被 claim_ai_task
+  /// 认领；不排除的话 M2 摘除 LlmReconstructor 后 PlaceholderReconstructor
+  /// （handles 恒真）会先把远程任务「占位完成」，宿主永远 claim 不到。
   Future<List<Map<String, Object?>>> pendingTasks({int limit = 20}) async {
     final db = await _database();
     return db.query(
       'ai_task_queue',
-      where: 'status = ?',
-      whereArgs: ['pending'],
+      where: "status = 'pending' AND COALESCE(task_action, '') NOT IN ('llm_summarize', 'llm_tags') "
+          r"AND COALESCE(task_action, '') NOT LIKE 'block_summarize:%'",
       orderBy: 'rowid',
       limit: limit,
     );
+  }
+
+  /// 远程任务认领（claim_ai_task 数据源，ai-app-split.md §3.2）：取最旧一条
+  /// pending 且 [isRemoteTaskAction] 的任务，原子置 processing。
+  ///
+  /// 与 [pendingTasks] 共享 [isRemoteTaskAction] 单点集合（SQL 形态在此内联——
+  /// 集合仅三项常量，漂移风险由 isRemoteTaskAction 的 dart:io 无关纯函数 +
+  /// 守卫钉子测试双向锁定）；原子性复用 [claimTask] 同型的条件 UPDATE，
+  /// 两客户端并发认领同一任务时只有一个 UPDATE 生效（n>0）。
+  Future<Map<String, Object?>?> claimRemoteTask() async {
+    final db = await _database();
+    final rows = await db.query(
+      'ai_task_queue',
+      where: "status = 'pending' AND (task_action IN ('llm_summarize', 'llm_tags') "
+          r"OR task_action LIKE 'block_summarize:%')",
+      orderBy: 'rowid',
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    final task = rows.first;
+    final ok = await claimTask(task['task_id'] as String);
+    return ok ? task : null;
   }
 
   /// 认领任务：pending → processing。返回是否认领成功（已取消/已认领则否）。

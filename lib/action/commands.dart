@@ -128,6 +128,14 @@ Map<String, Object?> itemToJson(InboxItem it) => {
       'is_deleted': it.isDeleted,
       'version': it.version,
       'machine_json': _tryDecode(it.machineJson),
+      // R1 URL 摘要经 get_item 可读（v2-requirements §3.2 验收口径）：
+      // 桌面 AI 客户端的核心消费面，缺席即契约违约（2026-10-10 补齐）。
+      // summary_stale：摘要与现正文失配标记（v22 版本锚）——消费方据此
+      // 决定信任摘要还是提示重跑，而不是把旧摘要配新正文当事实用。
+      if (it.summaryMd?.trim().isNotEmpty ?? false) ...{
+        'summary': it.summaryMd!.trim(),
+        'summary_stale': it.isSummaryStale,
+      },
       // 译文与原文并列回传：AI 读到什么，人在详情页看到的就是什么（状态可见性对称）
       if (it.hasTranslation)
         'translation': {'lang': it.translateLang, 'text': it.translatedMd},
@@ -1120,7 +1128,10 @@ final class ClipProcessCommand extends ItemCommand {
 /// AI 管线回写重构产出。**仅 [CommandActor.pipeline]**：
 /// 特权入口，若对 AI 开放即可绕过 edit_locked 直接改写条目。
 final class ApplyAiResultCommand extends ItemCommand {
-  const ApplyAiResultCommand(this.id, this.result);
+  // expectedVersion 供 MCP apply_ai_result 宿主回写带乐观锁（ai-app-split.md
+  // §3.4：推理期数十秒，人类慢速编辑可能已改条目，CAS 防静默覆盖）；进程内
+  // 管线回写不传 = 不校验，既有调用零改动。
+  const ApplyAiResultCommand(this.id, this.result, {super.expectedVersion});
 
   final String id;
   final ReconstructResult result;

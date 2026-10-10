@@ -573,6 +573,30 @@ void main() {
         reason: 'D1：raw_content 保留明文（原文事实源）');
   });
 
+  test('R2/D1 打码通用出口补齐：summary_md 同样打码（TL;DR 复述正文不得带出敏感号）', () async {
+    final it = await repo.add(InboxItem(
+      itemType: InboxItem.typeUrl,
+      sourceType: InboxItem.typeUrl,
+      rawContent: 'r',
+      createdAt: 1,
+    ));
+    await handler.execute(
+      ApplyAiResultCommand(
+        it.id!,
+        const ReconstructResult(
+          humanMd: '正文',
+          summaryMd: '摘要：作者卡号 4111111111111111，身份证 11010519491231002X',
+          tags: ['财经'],
+        ),
+      ),
+      actor: CommandActor.pipeline,
+    );
+    final after = (await repo.byId(it.id!))!;
+    expect(after.summaryMd, contains('4111****1111'));
+    expect(after.summaryMd, contains('1101**********002X'));
+    expect(after.summaryMd, isNot(contains('4111111111111111')));
+  });
+
   test('R2/D1 打码开关关闭：AI 产出明文落库', () async {
     final off = ItemActionHandler(repo, isMaskEnabled: () => false);
     final it = await repo.add(InboxItem(

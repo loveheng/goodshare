@@ -33,7 +33,9 @@ description: 拾贝 goodshare（Flutter 分享收集器+MCP 服务）的「功�
 | 桌面桥接 | stdio↔HTTP 桥、e2e 自检、客户端接入配置 | `mcp-bridge/`（`find mcp-bridge -type f`） | docs/guide/mcp-integration.md |
 | 构建发布 | manifest 权限/intent-filter、targetSdk、签名 | `android/`（`find android/app -type f`） | .agents/skills/goodshare-workflow |
 
-跨域隐式契约：存储 ↔ MCP 工具（tools.dart 的返回结构是 list_items/get_item 的对外契约，改动需同步 test/mcp_server_test.dart）；前台保活 ↔ 构建发布（targetSdk=34 与 dataSync 绑定，联动记入两处文档）。
+| LLM 拆分（AI 宿主 App） | LLM 类任务（llm_summarize/llm_tags/block_summarize）远程化：M1 新增 claim_ai_task/touch_ai_task/apply_ai_task 三工具、M2 占位守卫（QueueConsumer 排除远程集合）、LiteRT 剥离与引擎搬迁 | `lib/mcp/tools.dart` `lib/ai/queue_consumer.dart` `lib/ai/llm*.dart` `android/.../LlmBridge.kt` | docs/design/ai-app-split.md（接缝 SSOT） |
+
+跨域隐式契约：存储 ↔ MCP 工具（tools.dart 的返回结构是 list_items/get_item 的对外契约，改动需同步 test/mcp_server_test.dart）；前台保活 ↔ 构建发布（targetSdk=34 与 dataSync 绑定，联动记入两处文档）；LLM 拆分 ↔ MCP 服务（claim/touch/apply 是第二客户端接入面，改动须同步 ai-app-split.md 接缝契约）。
 
 ## 业务别名映射
 

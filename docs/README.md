@@ -41,6 +41,7 @@ updated: 2026-10-08
 - [asr-subtitle.md](design/asr-subtitle.md) — 音频转写与字幕生成设计：VAD 分段取时间戳的可选下载资源 `silero-vad-v5`、文本与 SRT/VTT 双产物、无 VAD 时降级为纯文本的门控；§8 为端侧翻译层（引擎接口/路由/双语字幕三模式/译文存储与命令）。
 - [ocr-cn-adaptation.md](design/ocr-cn-adaptation.md) — 中文 OCR 适配设计。
 - [ai-capabilities-overview.md](design/ai-capabilities-overview.md) — AI 能力总览。
+- [ai-app-split.md](design/ai-app-split.md) — AI 宿主 App 拆分契约（M0 接缝 SSOT）：LLM 任务拆至独立宿主 App（master/交互式 MCP 客户端，非 worker）、3 个新增 MCP 工具（claim/touch/apply）、占位守卫、M2 剥离行为清单与验收标准。
 - [block-artifact-workflow.md](design/block-artifact-workflow.md) — 块附件通道与工作流式三级能力页：行内媒体块 AI 能力（block_artifacts 派生表 schema v21、block_* 队列动作串、手动即授权门禁豁免）、WorkflowSpec 声明式能力编排（一步双产物/锚点切换/应用导出动词）、三级页工作流轨重设计（结构保留只换芯）。
 - [on-device-llm.md](design/on-device-llm.md) — 端侧 LLM 设计：LiteRT-LM（Android，SoC 感知 NPU/GPU/CPU 模型包）+ FoundationModels（iOS 系统模型零下载）双端分治、模型分发与队列/命令整合。
 - [image-annotation.md](design/image-annotation.md) — 图片标注设计（元数据层架构 SSOT：overlay 不改像素、annotations JSON 随条目走、原图只读；交互层已改版为对象化标注，口径见 image-markup.md）。

@@ -77,6 +77,25 @@ void main() {
     expect(long, isNotNull, reason: '头部截断直出，真实长文不回退');
   });
 
+  test('R1 头部准备清洗：链接只留 text、代码围栏剥离、段落边界收束（2026-10-10 保真修正）', () async {
+    // 链接密集型头部：URL 不占预算——清洗后 5000 字符输入的头部含第 N 段正文
+    final linky = [for (var i = 0; i < 40; i++) '[条目$i](https://example.com/very/long/path/$i)\n\n段落${'内容' * 30}'].join('\n\n');
+    final r1 = await LlmReconstructor(engine: _CaptureEngine(available: true)).summarizeUrlHead(linky);
+    expect(r1, isNotNull);
+    expect(_CaptureEngine.lastPrompt, isNot(contains('https://example.com')), reason: 'URL 不计入摘要预算');
+    expect(_CaptureEngine.lastPrompt, contains('条目0'), reason: '链接 text 保留');
+    // 代码围栏剥离
+    final fenced = '开头\n\n```dart\n${'code' * 600}\n```\n\n结尾正文';
+    await LlmReconstructor(engine: _CaptureEngine(available: true)).summarizeUrlHead(fenced);
+    expect(_CaptureEngine.lastPrompt, isNot(contains('codecode')), reason: '围栏内容不进头部');
+    expect(_CaptureEngine.lastPrompt, contains('结尾正文'), reason: '围栏剥离后预算让给正文');
+    // 段落边界：超 1500 时整段收录、不在段中间硬切
+    final paras = [for (var i = 0; i < 10; i++) '第${'甲' * 400}段$i'].join('\n\n');
+    await LlmReconstructor(engine: _CaptureEngine(available: true)).summarizeUrlHead(paras);
+    expect(_CaptureEngine.lastPrompt!.length, lessThan(1600), reason: '预算 ~1500 上限');
+    expect(_CaptureEngine.lastPrompt!.endsWith('…'), isTrue, reason: '截断以省略号标记');
+  });
+
   test('R1 引擎不可用：note 带真值原因、human_md 原样', () async {
     final r = await LlmReconstructor(engine: _FakeLlmEngine(
       available: false,
@@ -128,4 +147,30 @@ class _FakeLlmEngine implements OnDeviceLlmEngine {
   @override
   Future<String?> generate(String prompt, {String? system, int maxTokens = 512}) async =>
       output;
+}
+
+/// 捕获 prompt 的假引擎（验证头部清洗产物用）。
+class _CaptureEngine implements OnDeviceLlmEngine {
+  const _CaptureEngine({required this.available});
+
+  final bool available;
+  static String? lastPrompt;
+
+  @override
+  String get name => '捕获引擎';
+
+  @override
+  Future<bool> get isAvailable async => available;
+
+  @override
+  String? get unavailableReason => null;
+
+  @override
+  Future<String?> unavailableReasonAsync() async => null;
+
+  @override
+  Future<String?> generate(String prompt, {String? system, int maxTokens = 512}) async {
+    lastPrompt = prompt;
+    return 'TL;DR：摘要。\n\nTAGS: 测试';
+  }
 }

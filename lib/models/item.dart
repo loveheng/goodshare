@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:crypto/crypto.dart';
+
 import '../doc/rich_text.dart';
 
 /// 收集条目：分享进来的「好东西」统一数据模型。
@@ -47,6 +49,7 @@ class InboxItem {
     this.translatedMd,
     this.translateLang,
     this.summaryMd,
+    this.summaryAnchor,
     this.clipsJson,
     this.inspirationMd,
     this.docMetaJson,
@@ -91,6 +94,9 @@ class InboxItem {
   final String? translatedMd; // 译文（翻译层产出；与 humanMd 并列，不覆盖原文）
   final String? translateLang; // 译文语言码（BCP-47），与 translatedMd 成对
   final String? summaryMd; // 端侧 LLM 摘要（与 humanMd 并列，不覆盖原文；2026-09-28 v8）
+  /// 摘要正文版本锚（schema v22，2026-10-10）：写摘要时 humanMd 的 md5 指纹。
+  /// 与现 humanMd 失配 = 摘要对应旧正文（用户编辑/reprocess 未产新摘要）。
+  final String? summaryAnchor;
   final String? clipsJson; // 视频切片（关键区间）附属记录 JSON（schema v10，2026-09-29）
 
   /// 灵感区：用户私密碎片想法（schema v16，2026-10-01，detail-two-zone §3）。
@@ -197,6 +203,17 @@ class InboxItem {
   /// 是否已有译文（详情页「译文」区与 MCP 回传的显隐依据）。
   bool get hasTranslation => translatedMd != null && translatedMd!.trim().isNotEmpty;
 
+  /// 摘要是否可能过期（v22 版本锚判定）：有摘要但锚缺失（v22 前的存量，未知）
+  /// 或锚与现正文指纹失配（用户编辑 / reprocess 后未产新摘要）。
+  /// 锚一致或无摘要 = false。
+  bool get isSummaryStale {
+    final s = summaryMd?.trim() ?? '';
+    if (s.isEmpty) return false;
+    final anchor = summaryAnchor;
+    if (anchor == null) return true; // 存量摘要无锚：按可能过期保守处理
+    return anchor != md5.convert(utf8.encode(humanMd ?? '')).toString();
+  }
+
   Map<String, Object?> toMap() => {
         if (id != null) 'id': id,
         'item_type': itemType,
@@ -212,6 +229,7 @@ class InboxItem {
         'translated_md': translatedMd,
         'translate_lang': translateLang,
         'summary_md': summaryMd,
+        'summary_anchor': summaryAnchor,
         'clips_json': clipsJson,
         'inspiration_md': inspirationMd,
         if (docMetaJson != null) 'doc_meta_json': docMetaJson,
@@ -290,6 +308,7 @@ class InboxItem {
       translatedMd: map['translated_md'] as String?,
       translateLang: map['translate_lang'] as String?,
       summaryMd: map['summary_md'] as String?,
+      summaryAnchor: map['summary_anchor'] as String?,
       clipsJson: map['clips_json'] as String?,
       inspirationMd: map['inspiration_md'] as String?,
       docMetaJson: map['doc_meta_json'] as String?,
@@ -331,6 +350,7 @@ class InboxItem {
     String? translatedMd,
     String? translateLang,
     String? summaryMd,
+    String? summaryAnchor,
     String? clipsJson,
     String? docMetaJson,
     String? attachState,
@@ -368,6 +388,7 @@ class InboxItem {
         translatedMd: translatedMd ?? this.translatedMd,
         translateLang: translateLang ?? this.translateLang,
         summaryMd: summaryMd ?? this.summaryMd,
+        summaryAnchor: summaryAnchor ?? this.summaryAnchor,
         clipsJson: clipsJson ?? this.clipsJson,
         docMetaJson: docMetaJson ?? this.docMetaJson,
         attachState: attachState ?? this.attachState,
