@@ -14,3 +14,6 @@ last-merge: none
 - [2026-10-10] [验证]: M1 三接缝工具已实施并验证——flutter analyze 0 issue；flutter test mcp_tools/action_handler/llm_reconstructor 三组 86 项全过（含 claim idle/载荷正确/轻量任务不认领、touch 心跳、apply 同出口落库/乐观锁冲突/参数校验、占位守卫一致性）。工具总数 37（+3）。未提交，待用户拍板宿主仓命名后一并提交。
 - [2026-10-10] [决策]: 宿主 App 仓库名拍板：goodhub。
 - [2026-10-10] [变更]: M1 提交落盘 d34dda5（feat(ai-split): 三接缝工具+占位守卫，23 文件 +868），含 epic context 三件与契约文档。
+- [2026-10-11] [变更]: M3 接缝扩展落盘（goodhub m3-ui-subs-sampling T1）：capabilities 增 sampling+resources.subscribe、GET /mcp SSE 下行通道（ResourceSubscriptionHub，订阅 server 级全局+updated 广播）、Repository.itemChanges 变更事件流、sampling 反向请求（tools/call SSE 流内夹带 srv_ id+宿主 POST 回程）、ai_suggest_tags 只读消费工具（工具总数 38）；契约文档本仓 ai-app-split.md 新增 §3.10/§3.11+修订 §3.6/§3.8；修复 HttpResponse.bufferOutput 缓冲滞留（SSE 帧即时性）
+- [2026-10-11] [验证]: 未执行: 实施验证与全量测试在 goodhub 侧 m3-ui-subs-sampling epic 账本（goodshare 795 全过+analyze 0）
+- [2026-10-11] [变更]: M3 接缝扩展提交落盘（本行随本提交入库）：resources.subscribe GET SSE 下行（ResourceSubscriptionHub，订阅 server 级全局+updated 广播）+ sampling 反向推理（SSE 流内 srv_ 帧+宿主 POST 回程）+ ai_suggest_tags 消费工具（总数 38）+ bufferOutput 帧即时性修复 + 契约 §3.10/§3.11 新增与 §3.6/§3.8 修订

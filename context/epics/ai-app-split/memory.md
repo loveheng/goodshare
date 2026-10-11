@@ -27,4 +27,4 @@ last-merge: none
 - [2026-10-10] M1 实施完成并验证：三接缝工具 + 占位守卫 + apply 同出口落库，analyze 0 issue / 相关测试 86 项全过；代码未提交（待宿主仓命名一并提交）。
 
 ## 断点
-- [断点] M1 已提交（d34dda5），宿主仓定名 goodhub。下一步：① AtomGit 建 goodhub 仓 + 最小壳（MCP 客户端 claim→LLM→apply 闭环）；② 闭环真机跑通后开 M2（摘 LiteRT）。
+- [断点] 下一步：M3 契约扩展已提交落盘；待 goodhub 侧下一期排期（候选：端侧 LLM），接缝无活跃改动

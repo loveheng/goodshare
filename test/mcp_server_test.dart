@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -55,6 +56,54 @@ void main() {
     return (status: res.statusCode, body: body.isEmpty ? null : jsonDecode(body) as Map<String, Object?>);
   }
 
+  /// M3：裸 JSON-RPC 帧 POST（响应回程用——response 帧无 method，rpc() 不适用）。
+  Future<({int status, Map<String, Object?>? body})> rawPost(
+    HttpClient client,
+    String base,
+    Map<String, Object?> frame,
+  ) async {
+    final req = await client.postUrl(Uri.parse('$base/mcp'));
+    req.headers.contentType = ContentType.json;
+    req.write(jsonEncode(frame));
+    final res = await req.close();
+    final body = await utf8.decoder.bind(res).join();
+    return (status: res.statusCode, body: body.isEmpty ? null : jsonDecode(body) as Map<String, Object?>);
+  }
+
+  /// M3：打开 GET /mcp SSE 下行长连接，返回响应与逐行迭代器。
+  Future<(HttpClientResponse, StreamIterator<String>)> openSse(
+    HttpClient client,
+    String base, [
+    Map<String, String> headers = const {},
+  ]) async {
+    final req = await client.getUrl(Uri.parse('$base/mcp'));
+    headers.forEach((k, v) => req.headers.set(k, v));
+    final res = await req.close();
+    final it = StreamIterator(
+        res.transform(utf8.decoder).transform(const LineSplitter()));
+    return (res, it);
+  }
+
+  /// 读下一个 SSE data 帧（`: keep-alive` 心跳与空行自动跳过）；超时抛 TimeoutException。
+  Future<Map<String, Object?>?> nextFrame(
+    StreamIterator<String> it, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    final buf = StringBuffer();
+    while (true) {
+      final has = await it.moveNext().timeout(timeout);
+      if (!has) return null;
+      final line = it.current;
+      if (line.startsWith('data:')) {
+        buf..write(line.substring(5).trim())..write('\n');
+        continue;
+      }
+      if (buf.isNotEmpty && line.isEmpty) {
+        return jsonDecode(buf.toString().trim()) as Map<String, Object?>;
+      }
+    }
+  }
+
   test('initialize 握手：版本回显与回退', () async {
     final env = await spinUp();
     final r = await rpc(env.client, env.base, 1, 'initialize', {'protocolVersion': '2025-03-26'});
@@ -66,16 +115,20 @@ void main() {
     await env.server.stop();
   });
 
-  test('通知返回 202，GET 返回 405', () async {
+  test('通知返回 202；GET 开 SSE 下行通道；DELETE 405', () async {
     final env = await spinUp();
     final req = await env.client.postUrl(Uri.parse('${env.base}/mcp'));
     req.headers.contentType = ContentType.json;
     req.write(jsonEncode({'jsonrpc': '2.0', 'method': 'notifications/initialized'}));
     final res = await req.close();
     expect(res.statusCode, HttpStatus.accepted);
-    final get = await env.client.getUrl(Uri.parse('${env.base}/mcp'));
-    final res2 = await get.close();
-    expect(res2.statusCode, HttpStatus.methodNotAllowed);
+    final (sse, it) = await openSse(env.client, env.base);
+    expect(sse.statusCode, HttpStatus.ok);
+    expect(sse.headers.contentType?.mimeType, 'text/event-stream');
+    final del = await env.client.deleteUrl(Uri.parse('${env.base}/mcp'));
+    final delRes = await del.close();
+    expect(delRes.statusCode, HttpStatus.methodNotAllowed);
+    it.cancel();
     env.client.close();
     await env.server.stop();
   });
@@ -213,13 +266,14 @@ void main() {
     await env.server.stop();
   });
 
-  test('M2.5 接缝：initialize capabilities 声明 prompts + resources', () async {
+  test('M2.5/M3 接缝：initialize capabilities 声明 prompts + resources + sampling + subscribe', () async {
     final env = await spinUp();
     final r = await rpc(env.client, env.base, 1, 'initialize', {'protocolVersion': '2025-06-18'});
     final caps = resultOf(r.body)['capabilities'] as Map;
     expect(caps.containsKey('prompts'), isTrue, reason: 'Tier 1 声明 prompts（ai-app-split.md §3.6）');
     expect(caps.containsKey('resources'), isTrue, reason: 'Tier 1 声明 resources');
-    expect(caps.containsKey('sampling'), isFalse, reason: 'sampling 归 M3，不声明');
+    expect((caps['resources'] as Map)['subscribe'], isTrue, reason: 'M3 声明订阅（§3.10）');
+    expect(caps.containsKey('sampling'), isTrue, reason: 'M3 声明 sampling 反向推理（§3.11）');
     env.client.close();
     await env.server.stop();
   });
@@ -377,5 +431,139 @@ void main() {
     expect(texts.length, 2, reason: '文本分享必须被收进来（回归：曾因只读 message 而丢失）');
     expect(texts.first, contains('https://a.b/c'));
     expect(files.length, 1);
+  });
+
+  test('M3 订阅：subscribe 后条目变更推送 updated；退订即停；非法 URI 拒绝', () async {
+    final env = await spinUp();
+    final (sse, it) = await openSse(env.client, env.base);
+    expect(sse.statusCode, HttpStatus.ok);
+
+    final sub = await rpc(env.client, env.base, 1, 'resources/subscribe', {'uri': 'goodshare://items'});
+    expect(errorOf(sub.body), isEmpty, reason: '集合级订阅合法');
+    expect(env.server.subscriptions.hasSubscription('goodshare://items'), isTrue);
+
+    await env.server.repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      sourceType: InboxItem.typeNote,
+      rawContent: '订阅推送测试条目',
+      collectMode: InboxItem.modeScatter,
+      aiVisible: true,
+      createdAt: 1,
+    ));
+    final frame = await nextFrame(it);
+    expect(frame?['jsonrpc'], '2.0');
+    expect(frame?['method'], 'notifications/resources/updated');
+    expect((frame?['params'] as Map)['uri'], startsWith('goodshare://items/'),
+        reason: '通知 params 恒为具体条目 URI（集合级订阅也收具体 uri）');
+
+    await rpc(env.client, env.base, 2, 'resources/unsubscribe', {'uri': 'goodshare://items'});
+    expect(env.server.subscriptions.hasSubscription('goodshare://items'), isFalse);
+    await env.server.repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      sourceType: InboxItem.typeNote,
+      rawContent: '退订后不应推送',
+      collectMode: InboxItem.modeScatter,
+      aiVisible: true,
+      createdAt: 2,
+    ));
+    await expectLater(
+      nextFrame(it, timeout: const Duration(milliseconds: 500)),
+      throwsA(isA<TimeoutException>()),
+      reason: '退订后无推送',
+    );
+
+    final bad = await rpc(env.client, env.base, 3, 'resources/subscribe', {'uri': 'goodshare://other/1'});
+    expect(errorOf(bad.body)['code'], errInvalidParams);
+    it.cancel();
+    env.client.close();
+    await env.server.stop();
+  });
+
+  test('M3 sampling：ai_suggest_tags 流内反向请求 → 宿主回程 → 同步回标签', () async {
+    final env = await spinUp();
+    final added = await env.server.repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      sourceType: InboxItem.typeNote,
+      rawContent: '今天在深圳湾跑步十公里，配速五分半，感觉状态不错',
+      collectMode: InboxItem.modeScatter,
+      aiVisible: true,
+      createdAt: 1,
+    ));
+
+    final req = await env.client.postUrl(Uri.parse('${env.base}/mcp'));
+    req.headers.contentType = ContentType.json;
+    req.write(jsonEncode({
+      'jsonrpc': '2.0',
+      'id': 100,
+      'method': 'tools/call',
+      'params': {
+        'name': 'ai_suggest_tags',
+        'arguments': {'id': added.id},
+        '_meta': {'progressToken': 1},
+      },
+    }));
+    final res = await req.close();
+    expect(res.headers.contentType?.mimeType, 'text/event-stream',
+        reason: 'sampling 依赖流式通道，progressToken 触发 SSE');
+    final it = StreamIterator(
+        res.transform(utf8.decoder).transform(const LineSplitter()));
+
+    final start = await nextFrame(it);
+    expect(start?['method'], 'notifications/progress', reason: '起始 progress 帧');
+
+    final mid = await nextFrame(it);
+    expect(mid?['method'], 'notifications/progress', reason: 'M3-T2：sampling 前的中途帧（真实进度点）');
+    expect(((mid?['params'] as Map)['message'] as String), contains('宿主推理'));
+
+    final ask = await nextFrame(it);
+    expect(ask?['method'], 'sampling/createMessage', reason: '反向请求帧夹带在响应流内');
+    final askId = ask?['id'];
+    expect(askId, isA<String>());
+    expect((askId as String).startsWith('srv_'), isTrue, reason: 'srv_ 前缀防与客户端请求 id 相撞');
+    final askParams = ask?['params'] as Map;
+    final askText = (((askParams['messages'] as List).first as Map)['content'] as Map)['text'] as String;
+    expect(askText, contains('深圳湾'), reason: '载荷须含条目正文');
+
+    final ack = await rawPost(env.client, env.base, {
+      'jsonrpc': '2.0',
+      'id': askId,
+      'result': {
+        'role': 'assistant',
+        'model': 'test-host',
+        'content': {'type': 'text', 'text': '好标签如下：\n```json\n["跑步", "运动", "户外"]\n```'},
+      },
+    });
+    expect(ack.body, isNull, reason: '回程响应 202 无 body');
+
+    final finalFrame = await nextFrame(it);
+    expect(finalFrame?['id'], 100, reason: '终帧 tools/call result');
+    final content = ((finalFrame?['result'] as Map)['content'] as List).first as Map;
+    final payload = jsonDecode(content['text'] as String) as Map<String, Object?>;
+    expect(payload['status'], 'ok');
+    expect(payload['tags'], ['跑步', '运动', '户外'], reason: '围栏包裹的 JSON 数组应被宽松提取');
+    it.cancel();
+    env.client.close();
+    await env.server.stop();
+  });
+
+  test('M3 sampling：非流式调用返回 sampling_unavailable（结构化 status 不 isError）', () async {
+    final env = await spinUp();
+    final added = await env.server.repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      sourceType: InboxItem.typeNote,
+      rawContent: '非流式路径的条目',
+      collectMode: InboxItem.modeScatter,
+      aiVisible: true,
+      createdAt: 1,
+    ));
+    final r = await rpc(env.client, env.base, 1, 'tools/call',
+        {'name': 'ai_suggest_tags', 'arguments': {'id': added.id}});
+    expect(errorOf(r.body), isEmpty);
+    final content = (resultOf(r.body)['content'] as List).first as Map;
+    final payload = jsonDecode(content['text'] as String) as Map<String, Object?>;
+    expect(payload['status'], 'sampling_unavailable');
+    expect(resultOf(r.body)['isError'], isNot(true), reason: '环境态不 isError，防宿主熔断误计数');
+    env.client.close();
+    await env.server.stop();
   });
 }

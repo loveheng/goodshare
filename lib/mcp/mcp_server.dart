@@ -5,15 +5,18 @@ import 'dart:io';
 import '../data/repository.dart';
 import 'jsonrpc.dart';
 import 'prompts_resources.dart';
+import 'subscriptions.dart';
 import 'tools.dart';
 
 /// 内嵌 MCP 服务：Streamable HTTP（POST /mcp，application/json 单响应）。
-/// v1 不做服务端主动推送：GET/DELETE 返回 405；也不签发会话 id（规范允许 MAY，
-/// 无状态更简单，桌面桥与直连客户端都不依赖会话）。
 /// M2.5 接缝扩展（ai-app-split.md §3.6~§3.9）：capabilities 增 prompts/resources；
 /// tools/call 带 `_meta.progressToken` 时该请求响应升级 SSE 帧流（progress 通知 +
 /// keep-alive 心跳夹带帧间 + 终帧 result）——opt-in 协商，无 token 维持单 JSON，
-/// 桌面桥与既有客户端零破坏；请求内流式非服务端主动推送（无 GET SSE 通道）。
+/// 桌面桥与既有客户端零破坏。
+/// M3 接缝扩展（ai-app-split.md §3.10~§3.11）：① GET /mcp 开 SSE 下行长连接，
+/// 承载 server 主动帧（notifications/resources/updated 订阅推送）；② sampling
+/// 反向请求——请求帧夹带在带 progressToken 的 tools/call 响应流内（id 前缀
+/// srv_），宿主按 id POST 回响应；两能力均可协商，Tier 2 客户端不受影响。
 class McpServer {
   McpServer({required this.repo, required this.tokenProvider, this.instructionsProvider});
 
@@ -24,6 +27,15 @@ class McpServer {
 
   /// initialize 返回的 instructions；非空时覆盖内置文案（配置热更入口）。
   final String? Function()? instructionsProvider;
+
+  /// 订阅注册表 + GET SSE 下行通道（§3.10）；公有供测试与 app 侧复用。
+  final ResourceSubscriptionHub subscriptions = ResourceSubscriptionHub();
+
+  /// 等待宿主回程响应的反向请求（§3.11）：id → completer。
+  final Map<String, Completer<Object?>> _pendingServerRequests = {};
+  int _serverReqSeq = 0;
+
+  StreamSubscription<String>? _changesSub;
 
   static const _builtinInstructions =
       '「拾贝」是用户的日常分享收集器。用 list_items 检索/浏览收集内容（支持关键词与类型过滤），'
@@ -37,6 +49,9 @@ class McpServer {
     if (running) return;
     final server = await HttpServer.bind(InternetAddress.anyIPv4, port);
     _server = server;
+    // 条目变更 → 订阅推送（§3.10）：Repository 唯一写入口的变更事件流，
+    // UI 写与 MCP 工具写统一覆盖。
+    _changesSub = repo.itemChanges.listen(subscriptions.onItemChanged);
     server.listen(
       (req) async {
         try {
@@ -53,6 +68,13 @@ class McpServer {
   Future<void> stop() async {
     final server = _server;
     _server = null;
+    subscriptions.dispose();
+    await _changesSub?.cancel();
+    _changesSub = null;
+    for (final c in _pendingServerRequests.values) {
+      if (!c.isCompleted) c.completeError(McpRpcError(errInternal, 'server 正在停止'));
+    }
+    _pendingServerRequests.clear();
     await server?.close(force: true);
   }
 
@@ -73,8 +95,15 @@ class McpServer {
       await _safeJson(req, HttpStatus.notFound, _rpcError(null, errInvalidRequest, '未知路径，MCP 端点为 /mcp'));
       return;
     }
+    if (req.method == 'GET') {
+      // §3.10：GET /mcp 开 SSE 下行长连接，承载 server 主动帧
+      // （notifications/resources/updated）。DELETE 仍不支持。
+      subscriptions.attach(req);
+      return;
+    }
     if (req.method != 'POST') {
-      await _safeJson(req, HttpStatus.methodNotAllowed, _rpcError(null, errInvalidRequest, '仅支持 POST /mcp（本服务不提供 SSE 长连接）'));
+      await _safeJson(req, HttpStatus.methodNotAllowed,
+          _rpcError(null, errInvalidRequest, '仅支持 POST /mcp 与 GET /mcp（SSE 订阅通道）'));
       return;
     }
 
@@ -94,6 +123,23 @@ class McpServer {
 
     final method = msg['method'];
     final id = msg['id'];
+    // server→client 反向请求的响应回程（§3.11）：宿主按 id POST 回
+    // result/error，按注册表唤醒等待中的工具调用。
+    if (method == null && id != null && _pendingServerRequests.containsKey(id)) {
+      final completer = _pendingServerRequests.remove(id)!;
+      final error = msg['error'];
+      if (error is Map<String, Object?>) {
+        completer.completeError(McpRpcError(
+          (error['code'] as num?)?.toInt() ?? errInternal,
+          (error['message'] as String?) ?? '宿主拒绝反向请求',
+        ));
+      } else {
+        completer.complete(msg['result']);
+      }
+      req.response.statusCode = HttpStatus.accepted;
+      await req.response.close();
+      return;
+    }
     if (id == null) {
       // 通知（如 notifications/initialized）：无需应答
       req.response.statusCode = HttpStatus.accepted;
@@ -160,6 +206,9 @@ class McpServer {
         ContentType('text', 'event-stream', charset: 'utf-8');
     req.response.headers.set('Cache-Control', 'no-cache');
     req.response.headers.set('X-Accel-Buffering', 'no');
+    // 逐帧即时下发（bufferOutput 默认 true 会攒到关闭一次性发出——中途帧/
+    // 心跳/反向请求全靠流内即时性，必须关缓冲）。
+    req.response.bufferOutput = false;
 
     void sseFrame(String payload) => req.response.write('data: $payload\n\n');
 
@@ -177,8 +226,25 @@ class McpServer {
     final heartbeats = Timer.periodic(const Duration(seconds: 5), (_) {
       req.response.write(': keep-alive\n\n');
     });
+    // §3.11：sampling 反向请求帧夹带在本响应流内（仅流式调用有承载通道——
+    // 单 JSON 响应无法中途发请求，工具侧对 sampling == null 返回结构化 status）。
+    // 反向请求前发一帧真实进度通告（M3-T2 联调中途帧源：宿主卡状态机在推理
+    // 等待期有帧可依，卡死判定有「最近帧」可锚）。
+    Future<Object?> sampling(Object? sParams) async {
+      sseFrame(jsonEncode({
+        'jsonrpc': '2.0',
+        'method': 'notifications/progress',
+        'params': {
+          'progressToken': token,
+          'progress': 0,
+          'total': 1,
+          'message': '请求宿主推理中',
+        },
+      }));
+      return _serverRequest('sampling/createMessage', sParams, sseFrame);
+    }
     try {
-      final content = await callTool(name, args, repo);
+      final content = await callTool(name, args, repo, sampling: sampling);
       sseFrame(jsonEncode({
         'jsonrpc': '2.0',
         'id': id,
@@ -198,6 +264,33 @@ class McpServer {
     }
   }
 
+  /// server→client 反向请求（§3.11，sampling）：请求帧夹带在当前 tools/call 的
+  /// SSE 响应流内（id 前缀 srv_ 防与客户端请求 id 相撞），响应经宿主新 POST
+  /// 按 id 唤醒 [completer]。超时抛错由工具侧降级为结构化 status（不 isError
+  /// ——宿主不可达是环境态不是工具故障，防宿主熔断误计数）。
+  Future<Object?> _serverRequest(
+    String method,
+    Object? params,
+    void Function(String payload) sseFrame,
+  ) async {
+    final id = 'srv_${++_serverReqSeq}';
+    final completer = Completer<Object?>();
+    _pendingServerRequests[id] = completer;
+    sseFrame(jsonEncode({
+      'jsonrpc': '2.0',
+      'id': id,
+      'method': method,
+      'params': params,
+    }));
+    try {
+      return await completer.future.timeout(const Duration(seconds: 90));
+    } on TimeoutException {
+      throw McpRpcError(-32003, 'sampling 反向请求超时（宿主未在 90s 内响应）');
+    } finally {
+      _pendingServerRequests.remove(id);
+    }
+  }
+
   Future<Object?> _dispatch(String method, Object? params) async {
     switch (method) {
       case 'initialize':
@@ -207,7 +300,8 @@ class McpServer {
           'capabilities': {
             'tools': {'listChanged': false},
             'prompts': <String, Object?>{},
-            'resources': <String, Object?>{},
+            'resources': {'subscribe': true},
+            'sampling': <String, Object?>{},
           },
           'serverInfo': {'name': 'goodshare', 'version': '1.0.0'},
           'instructions': instructionsProvider?.call() ?? _builtinInstructions,
@@ -244,6 +338,21 @@ class McpServer {
         final uri = p['uri'];
         if (uri is! String || uri.isEmpty) throw McpRpcError(errInvalidParams, '缺少资源 uri');
         return {'contents': await readResource(repo, uri)};
+      case 'resources/subscribe':
+        final p = params is Map<String, Object?> ? params : const <String, Object?>{};
+        final uri = p['uri'];
+        if (uri is! String || !isValidSubscriptionUri(uri)) {
+          throw McpRpcError(errInvalidParams,
+              '非法订阅 URI: $uri（支持 goodshare://items 与 goodshare://items/{uuid}）');
+        }
+        subscriptions.subscribe(uri);
+        return <String, Object?>{};
+      case 'resources/unsubscribe':
+        final p = params is Map<String, Object?> ? params : const <String, Object?>{};
+        final uri = p['uri'];
+        if (uri is! String) throw McpRpcError(errInvalidParams, '缺少资源 uri');
+        subscriptions.unsubscribe(uri);
+        return <String, Object?>{};
       default:
         throw McpRpcError(errMethodNotFound, '未知方法: $method');
     }

@@ -48,6 +48,7 @@ const Map<String, bool> _kReadOnlyHints = {
   'list_jobs': true,
   'get_job_status': true,
   'get_timeline_context': true,
+  'ai_suggest_tags': true,
 };
 
 List<Map<String, Object?>> toolSchemas() => [
@@ -567,6 +568,21 @@ List<Map<String, Object?>> _toolSchemasRaw() => [
         },
       },
       {
+        'name': 'ai_suggest_tags',
+        'description': '为条目即时建议标签：经 MCP sampling 反向请求宿主大模型同步返回，'
+            '纯只读——不落库、不入任务队列、不改条目。适合对话中即时拿建议（本调用 '
+            '会同步等待宿主推理）；需要把标签写入条目请用 extract_tags（异步入队落库）。'
+            '宿主不支持 sampling / 配额超限 / 超时会返回结构化 status（sampling_unavailable '
+            '/ sampling_quota_exceeded / sampling_failed / no_content）而非报错。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
+          },
+          'required': ['id'],
+        },
+      },
+      {
         'name': 'claim_ai_task',
         'description': '认领一条待远程处理的 AI 任务（AI 宿主 App 专用，ai-app-split.md §3.2）。'
             '只认领大模型类任务（llm_summarize 摘要 / llm_tags 关键词 / block_summarize 块摘要）——'
@@ -740,11 +756,44 @@ Future<T> _guarded<T>(Future<T> Function() run) async {
 
 String _iso(int ms) => DateTime.fromMillisecondsSinceEpoch(ms).toIso8601String();
 
+/// 宿主 sampling 回复 → 标签数组：宽松提取首个 JSON 数组（模型可能裹 markdown
+/// 围栏或前后缀说明）；解不出则把回复原文整体作单元素回退——保真不丢回复。
+List<String> _parseSamplingTags(Object? reply) {
+  var text = '';
+  if (reply is Map) {
+    final content = reply['content'];
+    if (content is Map && content['text'] is String) text = content['text'] as String;
+  }
+  final trimmed = text.trim();
+  if (trimmed.isEmpty) return const [];
+  final start = trimmed.indexOf('[');
+  final end = trimmed.lastIndexOf(']');
+  if (start >= 0 && end > start) {
+    try {
+      final decoded = jsonDecode(trimmed.substring(start, end + 1));
+      if (decoded is List) {
+        final tags = [
+          for (final t in decoded)
+            if (t is String && t.trim().isNotEmpty) t.trim(),
+        ];
+        if (tags.isNotEmpty) return tags;
+      }
+    } on FormatException {
+      // 伪 JSON：走下方整体回退
+    }
+  }
+  return [trimmed];
+}
+
 Future<List<Map<String, Object?>>> callTool(
   String name,
   Map<String, Object?> args,
-  Repository repo,
-) async {
+  Repository repo, {
+  /// sampling 反向请求通道（ai-app-split.md §3.11）：仅流式 tools/call 有
+  /// 承载通道（请求帧夹带在 SSE 响应流内）；null = 宿主未开流式/不支持，
+  /// 消费工具返回结构化 status 而非报错。
+  Future<Object?> Function(Object? params)? sampling,
+}) async {
   final handler = ItemActionHandler(repo);
   switch (name) {
     case 'list_items':
@@ -1263,6 +1312,57 @@ Future<List<Map<String, Object?>>> callTool(
             actor: CommandActor.ai,
           ));
       return [_text(jsonEncode(r.toJson()))];
+
+    case 'ai_suggest_tags':
+      // M3 接缝扩展（ai-app-split.md §3.11）：sampling 反向推理的最小消费工具。
+      // 只读：读条目正文 → 反向请求宿主 LLM → 同步回建议，不产生任何写路径；
+      // 宿主侧失败（配额/超时/未启用）返回结构化 status，不 isError——环境态
+      // 不计宿主熔断，模型可自行改走 extract_tags 异步管线。
+      final id = _str(args['id']);
+      if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      final item = await repo.byId(id, aiVisible: true);
+      if (item == null) throw McpRpcError(errInvalidParams, '条目不存在或不可见: $id');
+      final body = item.bodyText;
+      if (body.trim().isEmpty) {
+        return [_text(jsonEncode({
+          'status': 'no_content',
+          'hint': '条目无正文（如未 OCR 的图片/未转写的音频），无法提取标签',
+        }))];
+      }
+      if (sampling == null) {
+        return [_text(jsonEncode({
+          'status': 'sampling_unavailable',
+          'hint': '宿主须以带 _meta.progressToken 的流式调用触发本工具，且声明支持 sampling',
+        }))];
+      }
+      try {
+        final reply = await sampling(<String, Object?>{
+          'messages': [
+            {
+              'role': 'user',
+              'content': {
+                'type': 'text',
+                'text': '从以下条目内容提取 3~5 个贴合内容的中文短语标签，'
+                    '只返回一个 JSON 字符串数组，不要输出其他文字。\n\n'
+                    '条目标题：${item.humanTitle ?? '（无）'}\n\n正文：\n$body',
+              },
+            },
+          ],
+          'systemPrompt': '你是标签提取器。输出严格为 JSON 字符串数组。',
+          'maxTokens': 256,
+        });
+        return [_text(jsonEncode({
+          'status': 'ok',
+          'item_id': id,
+          'tags': _parseSamplingTags(reply),
+        }))];
+      } on McpRpcError catch (e) {
+        return [_text(jsonEncode({
+          'status': e.code == -32000 ? 'sampling_quota_exceeded' : 'sampling_failed',
+          'code': e.code,
+          'reason': e.message,
+        }))];
+      }
 
     case 'claim_ai_task':
       // ai-app-split.md §3.2：原子认领最旧一条远程 pending 任务（占位守卫

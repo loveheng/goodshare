@@ -88,9 +88,9 @@ sequenceDiagram
 - **守卫钉子**：`mcp_tools_test.dart` 「readOnlyHint 声明」用例——每工具显式布尔、只读七项之外一律 false。
 - **自定义扩展预告**：`x-mcp-export-to-shared` 注解（F1.5 Server 角色海关过滤）沿用本字段组惯例（`x-` 前缀），随 Server 角色重启再定（goodhub architecture §8）。
 
-### 3.6 Tier 能力协商分类（M2.5 增量，2026-10-11）
+### 3.6 Tier 能力协商分类（M2.5 增量，2026-10-11；M3 修订）
 
-`initialize` 返回 capabilities 扩展为 **`tools` + `prompts` + `resources`**（M2.5）；`sampling` / `subscriptions` 不声明（归 M3+）。宿主按 capabilities 有无自动降级（goodhub architecture §14）：**Tier 1 = 本契约全量**（goodshare：tools/prompts/resources/progress + 私有扩展 `x-mcp-export-to-shared`）；**Tier 2 = vanilla MCP**（仅 tools）——宿主 Polyfill：无 prompts → 无 Skill 注入、无 resources → 只读工具照常暴露、无 progress → 纯 Loading 态；**降级是默认行为，不抛异常**。
+`initialize` 返回 capabilities 为 **`tools` + `prompts` + `resources`**（M2.5）**+ `sampling` + `resources.subscribe`**（M3，见 §3.10/§3.11）。宿主按 capabilities 有无自动降级（goodhub architecture §14）：**Tier 1 = 本契约全量**（goodshare：tools/prompts/resources/progress/sampling/subscriptions + 私有扩展 `x-mcp-export-to-shared`）；**Tier 2 = vanilla MCP**（仅 tools）——宿主 Polyfill：无 prompts → 无 Skill 注入、无 resources → 只读工具照常暴露、无 progress → 纯 Loading 态、无 sampling → 反向推理工具返回结构化 status（§3.11）、无订阅 → 不做失效感知；**降级是默认行为，不抛异常**。**Tier 判定口径不变**：Tier 1 = prompts+resources 声明齐全——sampling/subscriptions 只作宿主消费面 gate，不入判定（goodhub ServerCapabilities 语义）。
 
 ### 3.7 prompts 能力（M2.5 增量：CoW 模板源）
 
@@ -103,9 +103,9 @@ capabilities 声明：`'prompts': {}`。
 | 版本语义 | `template_version` **大版本（major）跃迁 → 宿主强制告警**（提示差异 + 用户选重置/保留）；`min_hub_version` = 消费模板所需宿主最低版本。**否决三路合并引擎**（Markdown prompt 冲突不值得合并器） |
 | 内容口径 | 模板正文可引用既有工具面（get_item / list_items 等），宿主模型按工具面执行——prompts 只描述意图编排，不新增工具 |
 
-### 3.8 resources 能力（M2.5 增量：只读数据面）
+### 3.8 resources 能力（M2.5 增量：只读数据面；M3 增 `subscribe`）
 
-capabilities 声明：`'resources': {}`（**无 subscribe**——订阅归 M3）。
+capabilities 声明：`'resources': {'subscribe': true}`（M3 起；订阅语义见 §3.10）。
 
 | 项 | 契约 |
 |---|---|
@@ -122,6 +122,34 @@ capabilities 声明：`'resources': {}`（**无 subscribe**——订阅归 M3）
 | progress 帧格式（MCP 标准） | `{jsonrpc: '2.0', method: 'notifications/progress', params: {progressToken, progress, total?, message?}}`——**M2.5 只发起始帧**（progress=0/total=1，宿主操作轨卡片进 `Running(progress)`）；工具执行中途的进度点（transcribe/ocr 等长任务）随宿主 callTool onProgress 注入通道再扩（M2.5-T7） |
 | 心跳帧 | `: keep-alive` comment 行，**>5s 无业务帧时发送**（移动网络空闲 TCP 老化保活：Wi-Fi 休眠/NAT 过期）；与宿主「无更新超阈值判疑似卡死」**正交**——心跳不重置卡死计时，仅 progress 业务帧重置（goodhub C-1 拍板） |
 | 错误分层 | SSE 起始**前**（参数校验失败）→ 常规 HTTP 状态码错误；SSE 起始**后**（工具执行抛错）→ 终帧 error 对象（HTTP 已 200，连接已建立） |
+| 逐帧即时性 | 响应开启 `bufferOutput = false`——帧即时下发（中途帧/心跳/反向请求全靠流内即时性，缓冲滞留即功能失效） |
+
+### 3.10 subscriptions 订阅能力（M3 增量，2026-10-11）
+
+capabilities 声明：`'resources': {'subscribe': true}`；下行承载 = **GET /mcp SSE 长连接**（server 主动帧通道，M2.5 无此通道——progress 仅请求作用域内夹带）。
+
+| 项 | 契约 |
+|---|---|
+| `resources/subscribe {uri}` | `{}`——uri = `goodshare://items`（**集合级**，任一条目变更均通知）或 `goodshare://items/{uuid}`（单条）；其余形状 `-32602` |
+| `resources/unsubscribe {uri}` | `{}`——幂等（未订阅的 uri 退订不报错） |
+| 变更通知 | 条目内容变更（add/update/softDelete/restore，Repository 唯一写入口统一覆盖 UI 写与 MCP 工具写）→ 经 GET SSE 连接广播 `{jsonrpc, method: 'notifications/resources/updated', params: {uri: 'goodshare://items/{uuid}'}}`——**params 恒为具体条目 URI**（集合级订阅也收具体 uri，宿主自行匹配） |
+| 订阅作用域 | goodshare 延续**无会话 id**：订阅为 **server 级全局注册**，通知广播至所有在线 GET SSE 连接——单宿主场景语义等价，多宿主过度通知为已知取舍；连接断开订阅保留（宿主重连后重放 `resources/subscribe`，幂等） |
+| SSE 连接口径 | 同 §3.9 响应头 + 心跳（5s comment 帧）+ `bufferOutput=false`；DELETE 仍 405；鉴权/Origin 校验与 POST 同路 |
+| 宿主 Polyfill | server 未声明 subscribe → 宿主不建 GET 连接、不重放订阅（Tier 2 零破坏） |
+
+### 3.11 sampling 反向推理能力（M3 增量，2026-10-11）
+
+capabilities 声明：`'sampling': {}`；语义 = MCP 标准 `sampling/createMessage`（server 反向请求宿主 LLM 推理，goodhub architecture §12「轻量级 Server 反向请求宿主代跑推理」）。
+
+| 项 | 契约 |
+|---|---|
+| 承载通道 | **请求作用域内夹带**：server 在带 `_meta.progressToken` 的 `tools/call` SSE 响应流内发请求帧 `{jsonrpc, id: 'srv_<n>', method: 'sampling/createMessage', params}`（id `srv_` 前缀防与客户端请求 id 相撞）；**单 JSON 响应（无 token）无承载通道**——sampling 消费工具在非流式调用下返回结构化 status 而非报错 |
+| 请求 params | MCP 标准：`{messages: [{role: 'user'/'assistant', content: {type: 'text', text}}], systemPrompt?, maxTokens}`——goodshare 最小消费工具 `ai_suggest_tags`（只读，读条目正文 → 反向请求 → 同步回建议标签，不落库不入队；落库走 `extract_tags` 异步管线） |
+| 回程路径 | 宿主按 id **POST 回端点** `{jsonrpc, id: 'srv_<n>', result: {role: 'assistant', model, content: {type: 'text', text}}}` 或 `{..., error: {code, message, data?}}`；server 按 id 唤醒等待中的工具调用，超时（90s）视为宿主不可达 |
+| 配额（宿主侧 enforce，goodhub D3 拍板） | per-server **滑动窗口次数制**：20 次/60min，内存态不落盘（重启清零，定位防滥用非计费）+ 单次输出 maxTokens 宿主硬顶 clamp；超限宿主回 error `-32000`（data.hint 带 retry after）——server 侧透传，消费工具降级为 `status: sampling_quota_exceeded` |
+| 错误语义 | 宿主未启用 → `-32601`；参数违规 → `-32602`；配额 → `-32000`；宿主推理失败/回程超时 → `-32603`/`-32003`。**消费工具侧一律不 isError**（环境态不计宿主熔断，模型可改走异步管线） |
+| 隔离与围栏（宿主侧） | 临时会话语义（goodhub architecture §15）：推理仅用请求自带消息，无记忆沙盒注入、无 UI 轨迹；N7 出站围栏经云引擎装饰器单咽喉自然覆盖 |
+| 宿主 Polyfill | server 未声明 sampling → 宿主不强制流式、不开消费 handler（Tier 2 零破坏）；宿主未启用 handler → server 请求收到 `-32601`，不悬挂 |
 
 ## 4. 占位守卫（M2 验收第一条）
 

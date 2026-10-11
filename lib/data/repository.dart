@@ -46,6 +46,26 @@ class Repository extends ChangeNotifier {
   /// 写路径 FIFO 队尾（串行锁的实现载体，见 [synchronized]）。
   Future<void> _tail = Future<void>.value();
 
+  /// 条目内容变更事件（M3 资源订阅通知源，ai-app-split.md §3.10）：
+  /// add/update/softDelete/restore 触达的条目 id；事务内暂存缓冲、提交后
+  /// 统一 flush（与 [notifyListeners] 同节奏，防事务中途半成品外泄）。
+  /// 广播流——无监听时零成本。
+  final StreamController<String> _itemChanges =
+      StreamController<String>.broadcast();
+
+  Stream<String> get itemChanges => _itemChanges.stream;
+
+  /// 事务内触达缓冲（写路径被 [synchronized] FIFO 串行化，共享缓冲无竞态）。
+  final Set<String> _txnTouched = <String>{};
+
+  void _touchItem(String id, Transaction? txn) {
+    if (txn == null) {
+      _itemChanges.add(id);
+    } else {
+      _txnTouched.add(id);
+    }
+  }
+
   /// **写路径串行锁（FIFO）**：把「读 → 校验 → 写」复合操作压平成一列。
   ///
   /// 为什么需要：sqflite 只保证**单条 SQL** 的原子性，保证不了动作层
@@ -77,6 +97,12 @@ class Repository extends ChangeNotifier {
   Future<T> transaction<T>(Future<T> Function(Transaction txn) action) async {
     final db = await _database();
     final result = await db.transaction((txn) => action(txn));
+    if (_txnTouched.isNotEmpty) {
+      for (final id in _txnTouched) {
+        _itemChanges.add(id);
+      }
+      _txnTouched.clear();
+    }
     notifyListeners();
     return result;
   }
@@ -406,6 +432,7 @@ class Repository extends ChangeNotifier {
     final db = txn ?? await _database();
     final full = (item.id == null || item.id!.isEmpty) ? item.copyWith(id: InboxItem.newId()) : item;
     await db.insert('inbox_items', full.toMap());
+    _touchItem(full.id!, txn);
     if (txn == null) notifyListeners();
     return full;
   }
@@ -651,6 +678,7 @@ class Repository extends ChangeNotifier {
     if (expectedVersion != null) args.add(expectedVersion);
     final where = expectedVersion == null ? 'id = ?' : 'id = ? AND version = ?';
     final n = await db.rawUpdate('UPDATE inbox_items SET $setSql WHERE $where', args);
+    if (n > 0) _touchItem(id, txn);
     if (n > 0 && txn == null) notifyListeners();
     return n > 0;
   }
@@ -674,6 +702,7 @@ class Repository extends ChangeNotifier {
       where: "item_id = ? AND status IN ('pending', 'processing')",
       whereArgs: [id],
     );
+    _touchItem(id, txn);
     if (txn == null) notifyListeners();
     return true;
   }
@@ -685,6 +714,7 @@ class Repository extends ChangeNotifier {
       [id],
     );
     if (n == 0) return false;
+    _touchItem(id, txn);
     if (txn == null) notifyListeners();
     return true;
   }

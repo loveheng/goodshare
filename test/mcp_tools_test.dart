@@ -227,9 +227,9 @@ void main() {
     expect(byJob['found'], isFalse, reason: 'job_id 入口也必须做条目可见性门控');
   });
 
-  test('工具清单共 37 个且不含 execute_action', () {
+  test('工具清单共 38 个且不含 execute_action', () {
     final names = toolSchemas().map((s) => s['name']).toList();
-    expect(names.length, 37);
+    expect(names.length, 38); // M3 +ai_suggest_tags（sampling 最小消费，§3.11）
     expect(names, isNot(contains('execute_action')));
     expect(names, containsAll([
       'update_item', 'unlock_edit', 'set_vault', 'set_pin', 'reprocess_item',
@@ -247,11 +247,13 @@ void main() {
     ]));
   });
 
-  test('readOnlyHint 声明：每个工具显式声明，纯查询七项 true 其余 false（§3.5）', () {
+  test('readOnlyHint 声明：每个工具显式声明，纯查询七项+sampling 只读工具 true 其余 false（§3.5）', () {
     final schemas = toolSchemas();
     const readOnlySeven = [
       'list_items', 'get_item', 'query_machine_data',
       'list_workspaces', 'list_jobs', 'get_job_status', 'get_timeline_context',
+      // M3：ai_suggest_tags 只读+反向推理，不产生任何写路径（ai-app-split.md §3.11）
+      'ai_suggest_tags',
     ];
     for (final s in schemas) {
       final annotations = s['annotations'] as Map<String, Object?>?;
@@ -260,7 +262,7 @@ void main() {
       expect(hint, isA<bool>(), reason: '${s['name']} readOnlyHint 须显式布尔');
       final expected = readOnlySeven.contains(s['name']);
       expect(hint, expected,
-          reason: '${s['name']} readOnlyHint 应为 $expected（只读七项之外一律 false）');
+          reason: '${s['name']} readOnlyHint 应为 $expected（只读清单之外一律 false）');
     }
   });
 
