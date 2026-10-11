@@ -213,6 +213,150 @@ void main() {
     await env.server.stop();
   });
 
+  test('M2.5 接缝：initialize capabilities 声明 prompts + resources', () async {
+    final env = await spinUp();
+    final r = await rpc(env.client, env.base, 1, 'initialize', {'protocolVersion': '2025-06-18'});
+    final caps = resultOf(r.body)['capabilities'] as Map;
+    expect(caps.containsKey('prompts'), isTrue, reason: 'Tier 1 声明 prompts（ai-app-split.md §3.6）');
+    expect(caps.containsKey('resources'), isTrue, reason: 'Tier 1 声明 resources');
+    expect(caps.containsKey('sampling'), isFalse, reason: 'sampling 归 M3，不声明');
+    env.client.close();
+    await env.server.stop();
+  });
+
+  test('prompts：list 带 CoW 版本元数据，get 渲染占位符，缺参/未知 -32602', () async {
+    final env = await spinUp();
+    final list = await rpc(env.client, env.base, 1, 'prompts/list');
+    final prompts = (resultOf(list.body)['prompts'] as List).cast<Map>();
+    expect(prompts.map((p) => p['name']), contains('item_digest'));
+    expect(prompts.first['_meta']['template_version'], isNotNull);
+    expect(prompts.first['_meta']['min_hub_version'], isNotNull);
+
+    final get = await rpc(env.client, env.base, 2, 'prompts/get', {
+      'name': 'item_digest',
+      'arguments': {'id': 'abc-123'},
+    });
+    final messages = (resultOf(get.body)['messages'] as List).cast<Map>();
+    final text = (messages.first['content'] as Map)['text'] as String;
+    expect(text, contains('abc-123'));
+    expect(text.contains('{id}'), isFalse, reason: '占位符必须被替换');
+
+    final missing = await rpc(env.client, env.base, 3, 'prompts/get',
+        {'name': 'item_digest', 'arguments': {}});
+    expect(errorOf(missing.body)['code'], errInvalidParams);
+    final unknown = await rpc(env.client, env.base, 4, 'prompts/get', {'name': 'nope'});
+    expect(errorOf(unknown.body)['code'], errInvalidParams);
+
+    // M2.5-T6 CoW 原文通道：arguments 整体缺省 → 未渲染原文（占位符保留）
+    final raw = await rpc(env.client, env.base, 5, 'prompts/get', {'name': 'item_digest'});
+    final rawText = (((resultOf(raw.body)['messages'] as List).first as Map)['content'] as Map)['text'] as String;
+    expect(rawText, contains('{id}'), reason: '无参渲染原文，占位符保留（CoW 同步用）');
+    env.client.close();
+    await env.server.stop();
+  });
+
+  test('resources：list 暴露 ai_visible 条目，read 返回正文；不可见/未知/非法 URI 拒绝', () async {
+    final env = await spinUp();
+    final visible = await env.server.repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      sourceType: InboxItem.typeNote,
+      rawContent: 'resources 契约测试正文',
+      collectMode: InboxItem.modeScatter,
+      aiVisible: true,
+      createdAt: 1,
+    ));
+    await env.server.repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      sourceType: InboxItem.typeNote,
+      rawContent: 'AI 不可见条目',
+      collectMode: InboxItem.modeScatter,
+      aiVisible: false,
+      createdAt: 2,
+    ));
+
+    final list = await rpc(env.client, env.base, 1, 'resources/list');
+    final resources = (resultOf(list.body)['resources'] as List).cast<Map>();
+    final uris = resources.map((r) => r['uri'] as String).toList();
+    expect(uris, contains('goodshare://items/${visible.id}'));
+    expect(uris.where((u) => u.contains('不可见')), isEmpty);
+
+    final read = await rpc(env.client, env.base, 2, 'resources/read', {
+      'uri': 'goodshare://items/${visible.id}',
+    });
+    final contents = (resultOf(read.body)['contents'] as List).cast<Map>();
+    expect(contents.first['mimeType'], 'text/plain');
+    expect(contents.first['text'], contains('resources 契约测试正文'));
+
+    final badScheme = await rpc(env.client, env.base, 3, 'resources/read', {'uri': 'other://x'});
+    expect(errorOf(badScheme.body)['code'], errInvalidParams);
+    final notFound = await rpc(env.client, env.base, 4, 'resources/read', {'uri': 'goodshare://items/nope'});
+    expect(errorOf(notFound.body)['code'], errInvalidParams);
+    env.client.close();
+    await env.server.stop();
+  });
+
+  test('SSE 帧流：带 progressToken 的 tools/call 走 text/event-stream（progress 帧 + 终帧 result）', () async {
+    final env = await spinUp();
+    final req = await env.client.postUrl(Uri.parse('${env.base}/mcp'));
+    req.headers.contentType = ContentType.json;
+    req.write(jsonEncode({
+      'jsonrpc': '2.0',
+      'id': 40,
+      'method': 'tools/call',
+      'params': {
+        'name': 'list_items',
+        'arguments': {'limit': 1},
+        '_meta': {'progressToken': 'tok-1'},
+      },
+    }));
+    final res = await req.close();
+    expect(res.statusCode, 200);
+    expect(res.headers.contentType?.mimeType, 'text/event-stream');
+    expect(res.headers.value('cache-control'), 'no-cache');
+    final body = await utf8.decoder.bind(res).join();
+    expect(body, contains('notifications/progress'), reason: '起始 progress 通知帧（ai-app-split.md §3.9）');
+    expect(body, contains('tok-1'));
+    // 心跳帧仅 >5s 无业务帧时出现——快工具单测窗口内通常不触发，时序保活由真机联调覆盖
+    final frames = body.split('\n\n').where((f) => f.startsWith('data:')).toList();
+    final last = jsonDecode(frames.last.substring('data:'.length)) as Map;
+    expect(last['id'], 40);
+    expect(last['result'], isNotNull, reason: '终帧必须含 result');
+
+    // 无 token → 单 JSON 回归（桌面桥/既有客户端零破坏口径）
+    final plain = await rpc(env.client, env.base, 41, 'tools/call', {
+      'name': 'list_items',
+      'arguments': {'limit': 1},
+    });
+    expect(errorOf(plain.body), isEmpty);
+    env.client.close();
+    await env.server.stop();
+  });
+
+  test('SSE 帧流错误分层：SSE 起始后工具报错走终帧 error（HTTP 已 200）', () async {
+    final env = await spinUp();
+    final req = await env.client.postUrl(Uri.parse('${env.base}/mcp'));
+    req.headers.contentType = ContentType.json;
+    req.write(jsonEncode({
+      'jsonrpc': '2.0',
+      'id': 50,
+      'method': 'tools/call',
+      'params': {
+        'name': 'no_such_tool',
+        'arguments': {},
+        '_meta': {'progressToken': 7},
+      },
+    }));
+    final res = await req.close();
+    expect(res.statusCode, 200, reason: 'SSE 已建立，错误只能走终帧');
+    final body = await utf8.decoder.bind(res).join();
+    final frames = body.split('\n\n').where((f) => f.startsWith('data:')).toList();
+    final last = jsonDecode(frames.last.substring('data:'.length)) as Map;
+    expect(last['id'], 50);
+    expect((last['error'] as Map)['code'], errInvalidParams);
+    env.client.close();
+    await env.server.stop();
+  });
+
   test('文本归一：纯链接 / 标题+链接 / 纯文本', () {
     final repo = Repository();
     final handler = ItemActionHandler(repo);

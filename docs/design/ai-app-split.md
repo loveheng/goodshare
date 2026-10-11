@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-10
+updated: 2026-10-11
 ---
 
 # AI 宿主 App 拆分契约（M0 接缝）
@@ -41,7 +41,7 @@ sequenceDiagram
     participant G as goodshare MCP Server
     U->>H: 指令（「给昨天那篇笔记提取关键词」）
     H->>G: claim_ai_task
-    G-->>H: {task_id, item_id, task_action, text, human_tags, version}
+    G-->>H: {status:"claimed", task_id, item_id, task_action, text, human_tags, version}
     loop 推理期间（每 5s）
         H->>G: touch_ai_task {task_id}
     end
@@ -57,8 +57,9 @@ sequenceDiagram
 |---|---|
 | 参数 | 无（一次认领一条；宿主可连续调用直到 idle） |
 | 行为 | 取 `ai_task_queue` 中 `status='pending'` 且 `task_action` ∈ 远程集合的最旧任务（rowid 序），原子置 `processing`（复用 `Repository.claimTask` 原语 + 远程集合过滤） |
-| 返回（有任务） | `{task_id, item_id, task_action, text, human_tags?, block_key?, version}`——**纯文本载荷，无附件**：条目级任务 `text` = 条目正文（`human_md ?? raw_content`，与 `ReconstructInput` 同基线）；`llm_tags` 附 `human_tags`（并集基线，D2 只增不删）；`block_summarize` 附 `block_key` 且 `text` = 块源产物文本（transcript→ocr_text 取源优先级，与 `queue_consumer` 同口径）；`version` = 认领时条目乐观锁版本 |
+| 返回（有任务） | `{status: "claimed", task_id, item_id, task_action, text, human_tags?, block_key?, version}`——**纯文本载荷，无附件**：条目级任务 `text` = 条目正文（`human_md ?? raw_content`，与 `ReconstructInput` 同基线）；`llm_tags` 附 `human_tags`（并集基线，D2 只增不删）；`block_summarize` 附 `block_key` 且 `text` = 块源产物文本（transcript→ocr_text 取源优先级，与 `queue_consumer` 同口径）；`version` = 认领时条目乐观锁版本 |
 | 返回（无任务） | `{status: "idle"}` |
+| 返回（条目不可见） | `{status: "not_found", task_id, item_id, task_action, note}`——认领原子成功后条目被删/移出 AI 可见域（乐观竞态）：任务保持 processing，宿主按 `note` 指引用 apply_ai_result 回写 failed 收尾，避免孤儿 processing 白等 30s 僵尸回收 |
 | 正文不预截断 | goodshare 不截断 `text`（全文存储口径）；宿主按自身引擎 ctx（端侧 4096 / 云端更长）自行处理超限（自有降级 + note） |
 
 ### 3.3 touch_ai_task
@@ -73,13 +74,57 @@ sequenceDiagram
 
 | 项 | 契约 |
 |---|---|
-| 参数 | `{task_id, item_id, expected_version?, summary_md?, tags?, note?, block_key?}` |
+| 参数 | `{task_id, id, expected_version?, summary_md?, tags?, note?, block_key?}`（`id` = 条目 uuid，与既有工具面 `id` 参数惯例一致；2026-10-10 宿主实连核对时由草案 `item_id` 对齐实现） |
 | 行为 | 内部 = `ItemActionHandler.execute(ApplyAiResultCommand(...))`——**与进程内消费者同一落库出口**（machine_json Schema / 打码 D1 / 块产物原子落库 / 乐观锁全部自动继承）；随后 `finishTask(task_id, completed/failed, note)` |
 | tags 语义 | `llm_tags` 返回**合并后的完整标签列表**（宿主按 D2 做 `human_tags ∪ 新增`）；goodshare 按原样写入（与本地 LlmReconstructor 的产出形态一致） |
 | 幂等与冲突 | 任务被回收重认领后再次 apply：条目写入受 `expected_version` 保护（冲突返回 `version_conflict`，宿主重读重试或放弃）；`finishTask` 对已终态任务幂等无副作用 |
 | 返回 | 最新条目快照（同 `get_item` 形状，同既有写工具口径） |
 
+### 3.5 tools/list annotations（M2-T4 增量，2026-10-11）
+
+`toolSchemas()` 每个工具显式携带 `annotations.readOnlyHint`（MCP 标准字段，Hint 后缀 = 提示非保证），供宿主客户端 L1/L2 权限网关做**建议值**消费（goodhub 拍板 C2：hint 只作建议、客户端终裁决、与本地表冲突按更严格者、双缺从严按写处理）。
+
+- **声明口径**：纯查询七项（`list_items` / `get_item` / `query_machine_data` / `list_workspaces` / `list_jobs` / `get_job_status` / `get_timeline_context`）声明 `true`；其余全部工具显式 `false`——包装层 `_kReadOnlyHints` 单点声明，未登记工具默认 `false`（新增写工具零动作即安全，新增只读工具须登记）。
+- **守卫钉子**：`mcp_tools_test.dart` 「readOnlyHint 声明」用例——每工具显式布尔、只读七项之外一律 false。
+- **自定义扩展预告**：`x-mcp-export-to-shared` 注解（F1.5 Server 角色海关过滤）沿用本字段组惯例（`x-` 前缀），随 Server 角色重启再定（goodhub architecture §8）。
+
+### 3.6 Tier 能力协商分类（M2.5 增量，2026-10-11）
+
+`initialize` 返回 capabilities 扩展为 **`tools` + `prompts` + `resources`**（M2.5）；`sampling` / `subscriptions` 不声明（归 M3+）。宿主按 capabilities 有无自动降级（goodhub architecture §14）：**Tier 1 = 本契约全量**（goodshare：tools/prompts/resources/progress + 私有扩展 `x-mcp-export-to-shared`）；**Tier 2 = vanilla MCP**（仅 tools）——宿主 Polyfill：无 prompts → 无 Skill 注入、无 resources → 只读工具照常暴露、无 progress → 纯 Loading 态；**降级是默认行为，不抛异常**。
+
+### 3.7 prompts 能力（M2.5 增量：CoW 模板源）
+
+capabilities 声明：`'prompts': {}`。
+
+| 项 | 契约 |
+|---|---|
+| `prompts/list` | `{prompts: [{name, description, arguments: [{name, description?, required?}], _meta: {template_version, min_hub_version}}]}`——模板由 goodshare **官方预置**（本仓单点维护），宿主出厂继承 CoW：拉取 → 本地沙盒覆写最高优先级 + 一键重置（goodhub architecture §3） |
+| `prompts/get {name, arguments?}` | `{description?, messages: [{role: 'user', content: {type: 'text', text}}]}`——模板 `{arg}` 占位符做字面替换（单次遍历不递归）；**arguments 整体缺省 → 返回未渲染原文**（占位符保留，CoW 同步拉取原文的通道，M2.5-T6）；显式传参但 `required` 缺失 / 未知 `name` → `-32602` |
+| 版本语义 | `template_version` **大版本（major）跃迁 → 宿主强制告警**（提示差异 + 用户选重置/保留）；`min_hub_version` = 消费模板所需宿主最低版本。**否决三路合并引擎**（Markdown prompt 冲突不值得合并器） |
+| 内容口径 | 模板正文可引用既有工具面（get_item / list_items 等），宿主模型按工具面执行——prompts 只描述意图编排，不新增工具 |
+
+### 3.8 resources 能力（M2.5 增量：只读数据面）
+
+capabilities 声明：`'resources': {}`（**无 subscribe**——订阅归 M3）。
+
+| 项 | 契约 |
+|---|---|
+| URI scheme | `goodshare://items/{uuid}`——只读注入通道，与 tools（动词/副作用）正交；`$ref` 合流：宿主侧 `$ref:<server>:<id>` 元数据可指向本 URI（goodhub architecture §12），goodshare 无感 |
+| `resources/list` | `{resources: [{uri, name, mimeType: 'text/plain'}]}`——**首版无 cursor 分页**，返回最近 200 条（`repo.list` 时间倒序）；可见性与 `get_item` 同口径（`aiVisible: true`，Vault 与已删物理不可见——Repository 保证） |
+| `resources/read {uri}` | `{contents: [{uri, mimeType: 'text/plain', text}]}`——`text` = 条目正文（`human_md ?? raw_content`，**与 claim text 同基线**）；非本 scheme / 非法 uuid / 条目不存在或不可见 → `-32602` |
+
+### 3.9 progress 通告 + SSE 帧流（M2.5 增量）
+
+| 项 | 契约 |
+|---|---|
+| **触发口径（opt-in）** | `tools/call` params `_meta.progressToken`（string/number）非空 → 本次响应升级 **SSE 帧流**；**无 token → 单 JSON 响应不变**——桌面桥与既有客户端零破坏（MCP 语义：客户端不发 token，服务端不得发 progress 通知） |
+| SSE 响应形态 | 响应头 `Content-Type: text/event-stream; charset=utf-8` + `Cache-Control: no-cache` + `X-Accel-Buffering: no`；帧序：① 起始 `notifications/progress` 帧 → ② 心跳 comment 帧 → ③ 终帧 result/error → 关闭连接 |
+| progress 帧格式（MCP 标准） | `{jsonrpc: '2.0', method: 'notifications/progress', params: {progressToken, progress, total?, message?}}`——**M2.5 只发起始帧**（progress=0/total=1，宿主操作轨卡片进 `Running(progress)`）；工具执行中途的进度点（transcribe/ocr 等长任务）随宿主 callTool onProgress 注入通道再扩（M2.5-T7） |
+| 心跳帧 | `: keep-alive` comment 行，**>5s 无业务帧时发送**（移动网络空闲 TCP 老化保活：Wi-Fi 休眠/NAT 过期）；与宿主「无更新超阈值判疑似卡死」**正交**——心跳不重置卡死计时，仅 progress 业务帧重置（goodhub C-1 拍板） |
+| 错误分层 | SSE 起始**前**（参数校验失败）→ 常规 HTTP 状态码错误；SSE 起始**后**（工具执行抛错）→ 终帧 error 对象（HTTP 已 200，连接已建立） |
+
 ## 4. 占位守卫（M2 验收第一条）
+
 
 M2 摘除 `LlmReconstructor` 后，`ReconstructorRegistry` 兜底的 `PlaceholderReconstructor` `handles` 恒真——若不守卫，进程内 `QueueConsumer` 会先把远程任务「占位完成」（note「未执行 AI 重构」），**宿主永远 claim 不到**。
 

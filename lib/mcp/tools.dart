@@ -36,7 +36,31 @@ import 'jsonrpc.dart';
 /// 字幕把 MCP 响应撑爆；1 小时转写约 50KB，256KB 帽余量充足）。
 const int _kSubtitleInlineMaxBytes = 256 * 1024;
 
+/// MCP annotations.readOnlyHint 声明（ai-app-split.md §3.5）：客户端权限网关的
+/// 建议值源（goodhub 拍板 C2——hint 只作建议、客户端终裁决、冲突按更严格者）。
+/// 只列**纯查询**工具（与 goodhub 本地兜底表同口径）；未收录工具经包装层默认
+/// 显式 false——新增写工具零动作即安全，新增只读工具须在此登记。
+const Map<String, bool> _kReadOnlyHints = {
+  'list_items': true,
+  'get_item': true,
+  'query_machine_data': true,
+  'list_workspaces': true,
+  'list_jobs': true,
+  'get_job_status': true,
+  'get_timeline_context': true,
+};
+
 List<Map<String, Object?>> toolSchemas() => [
+      for (final t in _toolSchemasRaw())
+        {
+          ...t,
+          'annotations': {
+            'readOnlyHint': _kReadOnlyHints[t['name'] as String? ?? ''] ?? false,
+          },
+        },
+    ];
+
+List<Map<String, Object?>> _toolSchemasRaw() => [
       {
         'name': 'list_items',
         'description':

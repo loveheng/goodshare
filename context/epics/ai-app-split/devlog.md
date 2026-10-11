@@ -12,3 +12,5 @@ last-merge: none
 - [2026-10-10] [变更]: v2-pipeline devlog 归并（18 条 → memory.md，total-merged: 1，断点原样保留），::bind 切换至本 epic（CURRENT = ai-app-split）。
 - [2026-10-10] [验证]: 纯文档+context 轮，无代码验证项。docs-lint OK（提示 1 项：quick-note-format-dial tombstone，提示级）；context-lint 显式 --root 重跑 0 违规 3 告警——GROOM 52 条/SIZE goodshare 198 行均为已登记存量残留；MOUNT 4 条假阳性坐实为脚本默认根解析问题（ai-app-split.md 等文件实际存在，docs-lint README 双向覆盖已佐证），显式 --root 后归零。
 - [2026-10-10] [验证]: M1 三接缝工具已实施并验证——flutter analyze 0 issue；flutter test mcp_tools/action_handler/llm_reconstructor 三组 86 项全过（含 claim idle/载荷正确/轻量任务不认领、touch 心跳、apply 同出口落库/乐观锁冲突/参数校验、占位守卫一致性）。工具总数 37（+3）。未提交，待用户拍板宿主仓命名后一并提交。
+- [2026-10-10] [决策]: 宿主 App 仓库名拍板：goodhub。
+- [2026-10-10] [变更]: M1 提交落盘 d34dda5（feat(ai-split): 三接缝工具+占位守卫，23 文件 +868），含 epic context 三件与契约文档。

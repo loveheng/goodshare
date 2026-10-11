@@ -247,6 +247,23 @@ void main() {
     ]));
   });
 
+  test('readOnlyHint 声明：每个工具显式声明，纯查询七项 true 其余 false（§3.5）', () {
+    final schemas = toolSchemas();
+    const readOnlySeven = [
+      'list_items', 'get_item', 'query_machine_data',
+      'list_workspaces', 'list_jobs', 'get_job_status', 'get_timeline_context',
+    ];
+    for (final s in schemas) {
+      final annotations = s['annotations'] as Map<String, Object?>?;
+      expect(annotations, isNotNull, reason: '${s['name']} 缺 annotations 声明');
+      final hint = annotations!['readOnlyHint'];
+      expect(hint, isA<bool>(), reason: '${s['name']} readOnlyHint 须显式布尔');
+      final expected = readOnlySeven.contains(s['name']);
+      expect(hint, expected,
+          reason: '${s['name']} readOnlyHint 应为 $expected（只读七项之外一律 false）');
+    }
+  });
+
   test('expected_version 乐观锁：版本过期 → version_conflict，不静默覆盖', () async {
     final it = await repo.add(aiItem(itemType: InboxItem.typeNote, rawContent: '原文', createdAt: 1));
     final first = jsonDecode(textOf(await callTool('update_item', {

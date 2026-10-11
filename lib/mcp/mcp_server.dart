@@ -4,11 +4,16 @@ import 'dart:io';
 
 import '../data/repository.dart';
 import 'jsonrpc.dart';
+import 'prompts_resources.dart';
 import 'tools.dart';
 
 /// 内嵌 MCP 服务：Streamable HTTP（POST /mcp，application/json 单响应）。
 /// v1 不做服务端主动推送：GET/DELETE 返回 405；也不签发会话 id（规范允许 MAY，
 /// 无状态更简单，桌面桥与直连客户端都不依赖会话）。
+/// M2.5 接缝扩展（ai-app-split.md §3.6~§3.9）：capabilities 增 prompts/resources；
+/// tools/call 带 `_meta.progressToken` 时该请求响应升级 SSE 帧流（progress 通知 +
+/// keep-alive 心跳夹带帧间 + 终帧 result）——opt-in 协商，无 token 维持单 JSON，
+/// 桌面桥与既有客户端零破坏；请求内流式非服务端主动推送（无 GET SSE 通道）。
 class McpServer {
   McpServer({required this.repo, required this.tokenProvider, this.instructionsProvider});
 
@@ -100,6 +105,14 @@ class McpServer {
       return;
     }
 
+    // progressToken opt-in（ai-app-split.md §3.9）：带 token 的 tools/call 走
+    // SSE 帧流（progress 通知 + keep-alive 心跳夹带帧间 + 终帧 result）；
+    // 不带维持单 JSON——桌面桥与既有客户端零破坏。
+    if (method == 'tools/call' && _progressTokenOf(msg['params']) != null) {
+      await _streamingToolCall(req, id, msg['params']);
+      return;
+    }
+
     try {
       final result = await _dispatch(method, msg['params']);
       await _json(req, HttpStatus.ok, {
@@ -114,6 +127,77 @@ class McpServer {
     }
   }
 
+  /// 取 tools/call params._meta.progressToken（MCP 规范：string 或 number）。
+  String? _progressTokenOf(Object? params) {
+    if (params is! Map<String, Object?>) return null;
+    final meta = params['_meta'];
+    if (meta is! Map<String, Object?>) return null;
+    final t = meta['progressToken'];
+    if (t is String && t.isNotEmpty) return t;
+    if (t is num) return '$t';
+    return null;
+  }
+
+  /// tools/call 的 SSE 帧流响应（ai-app-split.md §3.9）：起始 progress 通知帧 →
+  /// 5s keep-alive 心跳 comment 帧（移动网络空闲 TCP 老化保活；与宿主卡死判定
+  /// 正交——心跳不重置卡死计时）→ 终帧 result/error。M2.5 只发起始帧这一确定
+  /// 进度点，执行中途的进度点随宿主 callTool onProgress 注入通道再扩（T7）。
+  /// 错误分层：SSE 起始前参数校验失败走常规 HTTP 错误；起始后工具执行抛错走终帧。
+  Future<void> _streamingToolCall(HttpRequest req, Object? id, Object? params) async {
+    final p = params is Map<String, Object?> ? params : const <String, Object?>{};
+    final name = p['name'];
+    final token = _progressTokenOf(params)!;
+    if (name is! String || name.isEmpty) {
+      await _json(req, HttpStatus.ok, _rpcError(id, errInvalidParams, '缺少 tool name'));
+      return;
+    }
+    final args = p['arguments'] is Map<String, Object?>
+        ? p['arguments'] as Map<String, Object?>
+        : <String, Object?>{};
+
+    req.response.statusCode = HttpStatus.ok;
+    req.response.headers.contentType =
+        ContentType('text', 'event-stream', charset: 'utf-8');
+    req.response.headers.set('Cache-Control', 'no-cache');
+    req.response.headers.set('X-Accel-Buffering', 'no');
+
+    void sseFrame(String payload) => req.response.write('data: $payload\n\n');
+
+    sseFrame(jsonEncode({
+      'jsonrpc': '2.0',
+      'method': 'notifications/progress',
+      'params': {
+        'progressToken': token,
+        'progress': 0,
+        'total': 1,
+        'message': '开始执行 $name',
+      },
+    }));
+
+    final heartbeats = Timer.periodic(const Duration(seconds: 5), (_) {
+      req.response.write(': keep-alive\n\n');
+    });
+    try {
+      final content = await callTool(name, args, repo);
+      sseFrame(jsonEncode({
+        'jsonrpc': '2.0',
+        'id': id,
+        'result': {'content': content, 'isError': false},
+      }));
+    } on McpRpcError catch (e) {
+      sseFrame(jsonEncode({'jsonrpc': '2.0', 'id': id, 'error': e.toMap()}));
+    } catch (e) {
+      sseFrame(jsonEncode({
+        'jsonrpc': '2.0',
+        'id': id,
+        'error': McpRpcError(errInternal, '工具执行失败: $e').toMap(),
+      }));
+    } finally {
+      heartbeats.cancel();
+      await req.response.close();
+    }
+  }
+
   Future<Object?> _dispatch(String method, Object? params) async {
     switch (method) {
       case 'initialize':
@@ -122,6 +206,8 @@ class McpServer {
           'protocolVersion': McpProtocol.negotiate(p['protocolVersion']),
           'capabilities': {
             'tools': {'listChanged': false},
+            'prompts': <String, Object?>{},
+            'resources': <String, Object?>{},
           },
           'serverInfo': {'name': 'goodshare', 'version': '1.0.0'},
           'instructions': instructionsProvider?.call() ?? _builtinInstructions,
@@ -139,10 +225,25 @@ class McpServer {
             : <String, Object?>{};
         final content = await callTool(name, args, repo);
         return {'content': content, 'isError': false};
-      case 'resources/list':
-        return {'resources': <Map<String, Object?>>[]};
       case 'prompts/list':
-        return {'prompts': <Map<String, Object?>>[]};
+        return {'prompts': listPrompts()};
+      case 'prompts/get':
+        final p = params is Map<String, Object?> ? params : const <String, Object?>{};
+        final name = p['name'];
+        if (name is! String || name.isEmpty) throw McpRpcError(errInvalidParams, '缺少 prompt name');
+        // arguments 字段缺失 = CoW 原文通道（未渲染）；显式传（含空 map）= 渲染态
+        final hasArgs = p['arguments'] is Map<String, Object?>;
+        final args = hasArgs
+            ? p['arguments'] as Map<String, Object?>
+            : const <String, Object?>{};
+        return getPrompt(name, args, renderArgs: hasArgs);
+      case 'resources/list':
+        return {'resources': await listResources(repo)};
+      case 'resources/read':
+        final p = params is Map<String, Object?> ? params : const <String, Object?>{};
+        final uri = p['uri'];
+        if (uri is! String || uri.isEmpty) throw McpRpcError(errInvalidParams, '缺少资源 uri');
+        return {'contents': await readResource(repo, uri)};
       default:
         throw McpRpcError(errMethodNotFound, '未知方法: $method');
     }
