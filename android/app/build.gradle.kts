@@ -10,6 +10,11 @@ android {
     compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
+    // 本地 Binder 插件 AIDL（com.zzh.goodhub.mcp.IMcpChannel/IMcpCallback，goodhub 契约）
+    buildFeatures {
+        aidl = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

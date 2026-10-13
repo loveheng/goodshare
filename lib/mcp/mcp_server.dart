@@ -358,6 +358,78 @@ class McpServer {
     }
   }
 
+  /// Binder 入口：裸 JSON-RPC 请求字符串 → 响应字符串（零 HTTP）。
+  ///
+  /// 供 [McpBinderService] 经 MethodChannel 调用，与 [_onRequest] 同协议语义，
+  /// 但**无** Origin 校验 / `X-Api-Key` 鉴权（Binder 侧走同签名 `signature` 权限，
+  /// 见 thirdconnect.md §1.2.6）/ 端口；反向请求响应经 [answerReverse] 单独通道回注。
+  /// 覆盖：常规请求（initialize/tools/list/tools/call/resources/prompts）、
+  /// 通知（id==null，回空 ack）、反向请求响应（method==null 且 id 在途，唤醒 completer）。
+  Future<String> handleJsonRpc(String requestJson) async {
+    Object? msg;
+    try {
+      msg = jsonDecode(requestJson);
+    } catch (_) {
+      return jsonEncode(_rpcError(null, errParse, 'JSON 解析失败'));
+    }
+    if (msg is! Map<String, Object?>) {
+      return jsonEncode(_rpcError(null, errInvalidRequest, '仅支持单条 JSON-RPC 消息'));
+    }
+    final method = msg['method'];
+    final id = msg['id'];
+    // 反向请求响应回程（§3.11）：宿主按 id 经 answerReverse 回 result/error，唤醒在途 completer。
+    if (method == null && id != null && _pendingServerRequests.containsKey(id)) {
+      _completeReverse(id, msg);
+      return jsonEncode({'jsonrpc': '2.0', 'id': null, 'result': <String, Object?>{}});
+    }
+    if (id == null) {
+      // 通知（如 notifications/initialized）：无需应答，回空 ack（Binder call 也需返回字符串）。
+      return jsonEncode({'jsonrpc': '2.0', 'id': null, 'result': <String, Object?>{}});
+    }
+    if (method is! String) {
+      return jsonEncode(_rpcError(id, errInvalidRequest, '缺少 method'));
+    }
+    try {
+      final result = await _dispatch(method, msg['params']);
+      return jsonEncode({'jsonrpc': '2.0', 'id': id, 'result': result});
+    } on McpRpcError catch (e) {
+      return jsonEncode({'jsonrpc': '2.0', 'id': id, 'error': e.toMap()});
+    } catch (e) {
+      return jsonEncode(_rpcError(id, errInternal, '工具执行失败: $e'));
+    }
+  }
+
+  /// 唤醒一个反向请求 completer（[handleJsonRpc] 与 [answerReverse] 共用）。
+  void _completeReverse(Object? id, Map<String, Object?> msg) {
+    final completer = _pendingServerRequests.remove(id);
+    if (completer == null) return;
+    final error = msg['error'];
+    if (error is Map<String, Object?>) {
+      completer.completeError(McpRpcError(
+        (error['code'] as num?)?.toInt() ?? errInternal,
+        (error['message'] as String?) ?? '宿主拒绝反向请求',
+      ));
+    } else {
+      completer.complete(msg['result']);
+    }
+  }
+
+  /// Binder 反向请求响应回注（供 [McpBinderService] 'answerReverse' 调用，与 HTTP
+  /// 版 `_onRequest` method==null 分支同义）。按 id 关联原请求并唤醒在途 completer。
+  void answerReverse(String responseJson) {
+    Object? msg;
+    try {
+      msg = jsonDecode(responseJson);
+    } catch (_) {
+      return;
+    }
+    if (msg is! Map<String, Object?>) return;
+    final id = msg['id'];
+    if (id == null) return;
+    if (!_pendingServerRequests.containsKey(id)) return;
+    _completeReverse(id, msg);
+  }
+
   /// 仅放行本机来源（localhost / 127.0.0.1 / [::1]，任意端口）。
   /// app 内如出现 WebView 类浏览器客户端需直连时，在此扩展白名单。
   bool _isAllowedOrigin(String origin) {

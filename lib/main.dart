@@ -2,6 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+// Binder 插件后台入口（headless FlutterEngine 经 McpBinderService 拉起，mcpBinderMain）。
+// 必须 import 以使该库编译进 app kernel，否则 DartEntrypoint 解析不到 mcpBinderMain。
+import 'mcp_binder_entrypoint.dart';
+
 import 'action/item_action_handler.dart';
 import 'app/lifecycle_manager.dart';
 import 'ui/privacy_blur_overlay.dart';

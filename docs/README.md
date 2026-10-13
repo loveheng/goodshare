@@ -42,6 +42,8 @@ updated: 2026-10-08
 - [ocr-cn-adaptation.md](design/ocr-cn-adaptation.md) — 中文 OCR 适配设计。
 - [ai-capabilities-overview.md](design/ai-capabilities-overview.md) — AI 能力总览。
 - [ai-app-split.md](design/ai-app-split.md) — AI 宿主 App 拆分契约（M0 接缝 SSOT）：LLM 任务拆至独立宿主 App（master/交互式 MCP 客户端，非 worker）、3 个新增 MCP 工具（claim/touch/apply）、占位守卫、M2 剥离行为清单与验收标准。
+- [goodhub-local-plugin.md](design/goodhub-local-plugin.md) — goodshare 改造为 goodhub 本地 Binder 插件评估稿（active 2026-10-13）：现状 HTTP MCP server vs 目标本地插件（零端口/系统发现/同签名权限/随调随起）对照、必须实现清单（对照 thirdconnect.md §1.2）、五个决策点与 PoC 范围。
+- [goodshare-goodhub-local-plugin-eval.md](design/goodshare-goodhub-local-plugin-eval.md) — PoC 阶段一评估报告（active 2026-10-13，goodhub 宿主侧视角）：对照 goodhub 契约 SSOT thirdconnect.md TC1~TC14 逐条核对 AIDL/manifest/Service/handleJsonRpc 合规性，及必须修的 bug 清单（交回 goodshare 侧）。
 - [block-artifact-workflow.md](design/block-artifact-workflow.md) — 块附件通道与工作流式三级能力页：行内媒体块 AI 能力（block_artifacts 派生表 schema v21、block_* 队列动作串、手动即授权门禁豁免）、WorkflowSpec 声明式能力编排（一步双产物/锚点切换/应用导出动词）、三级页工作流轨重设计（结构保留只换芯）。
 - [on-device-llm.md](design/on-device-llm.md) — 端侧 LLM 设计：LiteRT-LM（Android，SoC 感知 NPU/GPU/CPU 模型包）+ FoundationModels（iOS 系统模型零下载）双端分治、模型分发与队列/命令整合。
 - [image-annotation.md](design/image-annotation.md) — 图片标注设计（元数据层架构 SSOT：overlay 不改像素、annotations JSON 随条目走、原图只读；交互层已改版为对象化标注，口径见 image-markup.md）。

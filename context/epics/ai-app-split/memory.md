@@ -23,8 +23,10 @@ last-merge: none
 - **顺序纪律**：M1 加法先行（三工具 + 宿主最小壳跑通闭环）→ M2 减法（摘 LiteRT）——不可反
 
 ## 进度
-- [2026-10-10] epic 立项，M0 契约文档落盘（docs/design/ai-app-split.md）；v2-pipeline devlog 已归并（用户真机复测待办在该 epic 断点）。
-- [2026-10-10] M1 实施完成并验证：三接缝工具 + 占位守卫 + apply 同出口落库，analyze 0 issue / 相关测试 86 项全过；代码未提交（待宿主仓命名一并提交）。
+- [2026-10-10] epic 立项，M0 契约文档落盘（docs/design/ai-app-split.md）；v2-pipeline devlog 已归并。
+- [2026-10-10] M1 实施完成并验证：三接缝工具（claim/touch/apply）+ 占位守卫 + apply 同出口落库，analyze 0 issue / 相关测试 86 项全过；**已提交 d34dda5**（feat(ai-split): 三接缝工具+占位守卫，23 文件 +868，含 epic context 三件与契约文档）。宿主仓命名拍板为 **goodhub**。
+- [2026-10-11] M3 接缝扩展提交落盘：capabilities 增 `sampling`+`resources.subscribe`、GET /mcp SSE 下行（ResourceSubscriptionHub，server 级全局订阅 + updated 广播）、Repository.itemChanges 变更事件流、`ai_suggest_tags` 只读消费工具（工具总数 38）；sampling 反向推理（SSE 流内 `srv_` 帧 + 宿主 POST 回程）；修复 HttpResponse.bufferOutput 缓冲滞留（SSE 帧即时性）。契约文档本仓 ai-app-split.md 新增 §3.10/§3.11 + 修订 §3.6/§3.8。
+- [2026-10-11] 验证口径：goodshare 本仓 795 测试全过 + analyze 0；M3 实施验证与全量测试归属 goodhub 侧 m3-ui-subs-sampling epic 账本。
 
 ## 断点
-- [断点] 下一步：M3 契约扩展已提交落盘；待 goodhub 侧下一期排期（候选：端侧 LLM），接缝无活跃改动
+- [断点] 下一步：接缝无活跃改动；M2 减法（摘 LiteRT）待 goodhub 侧下一期排期（候选：端侧 LLM）。后续 goodshare→goodhub 接入形态演进见独立 epic `goodhub-local-plugin`（本地 Binder 插件改造）。
