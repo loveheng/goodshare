@@ -71,6 +71,12 @@ class Db {
       onOpen: (db) async {
         // ai_task_queue 的外键级联依赖此开关，sqflite 默认关闭
         await db.execute('PRAGMA foreign_keys = ON');
+        // R1 缓解：主 isolate（Repository）与 binder isolate（MCP Binder 后台引擎）对
+        // goodshare.db 是「两条独立连接」，并发写会争写锁。sqflite 默认 busy_timeout=0
+        // → 立即 SQLITE_BUSY（交接文档 R1 已验证风险）。此处把忙等待提到 5s，争锁时
+        // 短暂等待而非报错，覆盖交互速率下的偶发争用。两条连接都经本 onOpen，故同时生效。
+        // 注：带赋值的 PRAGMA 在 Android 上不能走 execute(execSQL)，须用 rawQuery。
+        await db.rawQuery('PRAGMA busy_timeout = 5000');
       },
     );
     _db = db;
