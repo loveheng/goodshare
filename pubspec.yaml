@@ -45,6 +45,8 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^6.0.0
   sqflite_common_ffi: ^2.4.3
+  # R1 验证测试（test/wal_two_conn_test.dart）直接用低层 sqlite3 开双连接复现争锁
+  sqlite3: ^3.5.2
   flutter_launcher_icons: ^0.14.0
   camera_platform_interface: ^2.14.0
 

@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 
 // Binder 插件后台入口（headless FlutterEngine 经 McpBinderService 拉起，mcpBinderMain）。
 // 必须 import 以使该库编译进 app kernel，否则 DartEntrypoint 解析不到 mcpBinderMain。
+// （mcpBinderMain 已标 @pragma('vm:entry-point') 防 tree-shake，故静态上无直接引用 → 忽略 unused_import）
+// ignore: unused_import
 import 'mcp_binder_entrypoint.dart';
 
 import 'action/item_action_handler.dart';
