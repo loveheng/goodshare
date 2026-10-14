@@ -9,7 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/repository.dart';
-import '../doc/rich_text.dart';
+import 'package:rich_text/markdown_subset.dart';
 import '../models/item.dart';
 import 'backup_manifest.dart';
 import 's3_client.dart';

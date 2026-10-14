@@ -4,7 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'package:goodshare/data/db.dart';
-import 'package:goodshare/doc/rich_text.dart';
+import 'package:rich_text/markdown_subset.dart';
 import 'package:goodshare/share/note_composer.dart';
 import 'package:goodshare/share/quick_note_text_actions.dart';
 import 'package:goodshare/ui/content_body.dart';

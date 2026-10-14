@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:goodshare/doc/rich_text.dart';
+import 'package:rich_text/markdown_subset.dart';
 import 'package:goodshare/ui/content_body.dart';
 
 /// 下划线「装饰到叶」契约测试（宿主可验证的唯一形式）。

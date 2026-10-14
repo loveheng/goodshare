@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../ai/palette_reconstructor.dart' show colorFromMachineJson;
-import '../doc/rich_text.dart';
+import 'package:rich_text/markdown_subset.dart';
 import '../models/item.dart';
 import '../share/attachments.dart' show resolveLocalMediaSrc;
 import 'annotated_image.dart';

@@ -1,4 +1,4 @@
-import '../doc/rich_text.dart' show SpanListKind;
+import 'package:rich_text/markdown_subset.dart' show SpanListKind;
 
 /// S0 单行纯解析原语（note-editor-source-of-truth.md §6）：`parseLine(line) →
 /// LineShape`——行结构不再由坐标 run 存储，而由单行解析实时推导的基石。

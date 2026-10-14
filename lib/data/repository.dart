@@ -134,6 +134,11 @@ class Repository extends ChangeNotifier {
   // 摘要 / 关键词均由专门命令显式入队（手动触发，绝不自动入队）。
   static const taskLlmSummarize = 'llm_summarize';
   static const taskLlmTags = 'llm_tags';
+  // 内容生产模板（ai-template P2）：对存量条目「按模板处理」→ 入队
+  // `template_apply:<templateId>`（动态 id 在冒号后，按头前缀判定远程集合）。
+  // 宿主 claim → resources/read goodshare://templates/{id} 取 skill → 处理 →
+  // apply_ai_result 回写 template_output（独立字段，与 summary_md 语义分离）。
+  static const taskTemplateApply = 'template_apply';
   // 远程任务动作头（ai-app-split.md §2 分治边界：块分支 LLM 任务）。块形态动作串
   // 是 `block_summarize:<blockKey>`（key 动态，无法进常量枚举），按头前缀判定。
   static const taskBlockSummarizeHead = 'block_summarize';
@@ -370,6 +375,9 @@ class Repository extends ChangeNotifier {
     final a = action;
     if (a == null) return false;
     if (a == taskLlmSummarize || a == taskLlmTags) return true;
+    // 内容生产模板（ai-template P2）：template_apply:<templateId> 动态动作串，
+    // 按头前缀判定入远程集合（宿主 claim → 读 skill → apply 回写 template_output）。
+    if (a.startsWith('$taskTemplateApply:')) return true;
     final b = parseBlockAction(a);
     return b != null && b.$1 == taskBlockSummarizeHead;
   }
@@ -1049,7 +1057,8 @@ class Repository extends ChangeNotifier {
     return db.query(
       'ai_task_queue',
       where: "status = 'pending' AND COALESCE(task_action, '') NOT IN ('llm_summarize', 'llm_tags') "
-          r"AND COALESCE(task_action, '') NOT LIKE 'block_summarize:%'",
+          r"AND COALESCE(task_action, '') NOT LIKE 'block_summarize:%' "
+          r"AND COALESCE(task_action, '') NOT LIKE 'template_apply:%'",
       orderBy: 'rowid',
       limit: limit,
     );
@@ -1067,7 +1076,8 @@ class Repository extends ChangeNotifier {
     final rows = await db.query(
       'ai_task_queue',
       where: "status = 'pending' AND (task_action IN ('llm_summarize', 'llm_tags') "
-          r"OR task_action LIKE 'block_summarize:%')",
+          r"OR task_action LIKE 'block_summarize:%' "
+          r"OR task_action LIKE 'template_apply:%')",
       orderBy: 'rowid',
       limit: 1,
     );

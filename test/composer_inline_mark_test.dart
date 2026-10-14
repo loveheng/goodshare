@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:goodshare/doc/rich_text.dart' show InlineMark;
+import 'package:rich_text/markdown_subset.dart' show InlineMark;
 import 'package:goodshare/ui/note_composer_editor.dart';
 
 /// 行内格式（B/I）回归：2026-10-08 拍板浮层新增两档，位置在「标题二」之后。

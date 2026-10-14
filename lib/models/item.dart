@@ -3,7 +3,7 @@ import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 
-import '../doc/rich_text.dart';
+import 'package:rich_text/markdown_subset.dart';
 
 /// 收集条目：分享进来的「好东西」统一数据模型。
 /// 三层结构（PRD §5.3）：raw_content 原始层 → human_md 人类态 / machine_json 机器态。

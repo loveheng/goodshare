@@ -215,6 +215,12 @@ sealed class ItemCommand {
         );
       case 'delete_template':
         return DeleteTemplateCommand(_reqField(json, 'id', op));
+      case 'apply_template':
+        return TemplateApplyCommand(
+          _reqField(json, 'id', op),
+          _reqField(json, 'template_id', op),
+          expectedVersion: _int(json['expected_version']),
+        );
     }
     final id = _reqId(json, op);
     final ev = _int(json['expected_version']);
@@ -407,6 +413,7 @@ sealed class ItemCommand {
     'create_template',
     'update_template',
     'delete_template',
+    'apply_template',
   ];
 }
 
@@ -1443,6 +1450,32 @@ final class DeleteTemplateCommand extends ItemCommand {
 
   @override
   Map<String, Object?> toJson() => {'op': op, 'id': id};
+}
+
+/// 内容生产模板（ai-template P2）：人类在详情页「按模板处理」→ 对存量条目应用
+/// 某模板 → 入队 `template_apply:<templateId>`，交给 AI 宿主按模板 skill 处理。
+///
+/// **消费**模板（不增删改模板本身），故人类 actor=ui 可触发（与摘要同构）；
+/// 模板的管理权仍归 AI（ai-template ADR）。动作层校验模板与条目均存在后才入队。
+final class TemplateApplyCommand extends ItemCommand {
+  const TemplateApplyCommand(this.id, this.templateId, {super.expectedVersion});
+
+  final String id;
+  final String templateId;
+
+  @override
+  String get op => 'apply_template';
+
+  @override
+  String? get targetId => id;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'id': id,
+        'template_id': templateId,
+        if (expectedVersion != null) 'expected_version': expectedVersion,
+      };
 }
 
 // ───────────────────────────── 解析小工具 ─────────────────────────────

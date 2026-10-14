@@ -1,4 +1,4 @@
-import '../doc/rich_text.dart'
+import 'package:rich_text/markdown_subset.dart'
     show
         InlineRun,
         SpanLevelRun,

@@ -8,7 +8,7 @@ library;
 
 import 'package:path_provider/path_provider.dart';
 
-import '../doc/rich_text.dart' show MediaSuffix;
+import 'package:rich_text/markdown_subset.dart' show MediaSuffix;
 
 /// 块媒体行解析结果：类型 + 后缀归类。
 class BlockMedia {

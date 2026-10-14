@@ -6,7 +6,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../data/block_artifacts.dart' show BlockArtifactKind;
 import '../data/repository.dart';
-import '../doc/rich_text.dart' show classifyMediaUrl, MediaSuffix;
+import 'package:rich_text/markdown_subset.dart' show classifyMediaUrl, MediaSuffix;
 import '../media/media_toolkit.dart';
 import '../media/wav16k.dart';
 import 'asr.dart';

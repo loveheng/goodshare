@@ -8,7 +8,7 @@ import '../app/lifecycle_manager.dart';
 import 'toast.dart';
 import 'package:image_picker/image_picker.dart';
 
-import '../doc/rich_text.dart'
+import 'package:rich_text/markdown_subset.dart'
     show InlineMark, MediaSuffix, SpanListKind, SpanListRun, classifyMediaUrl;
 import '../share/attachments.dart'
     show copyToAppDir, resolveLocalMediaSrc, toLocalMediaUrl;

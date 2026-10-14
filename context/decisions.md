@@ -29,4 +29,13 @@ last-merge: none
 **最终决定**：模板 CRUD 走 MCP 工具 + handler.execute（R2 同出口），人类端 TemplatePreviewPage 只读无编辑入口；origin 预留 'user' 暂不放开（放开仅加 UI、不动 schema）；template_output 与 summary_md 语义分离、从首版独立（schema v23）；template_id 松散关联无 FK（删模板不级联删产出）。SSOT = context/epics/ai-template/。
 **AI 洞察**：这不是破 R2，而是澄清其边界——R2 防「人与 AI 走不同落库逻辑导致状态不一致」，不是「谁都能触发」；模板写逻辑仍单一出口，仅把触发权授予 AI，与 ai-app-split「goodshare 持数据、AI 经 MCP 托管」同构。
 
+### [2026-10-14] 模板应用 = 复刻 llm_summarize 远程任务接缝（派发给 AI 的待办） (src: 用户+AI)
+**场景/痛点**：P1 只解决了「模板管理 + 人类只读预览」。模板的真正价值是「选中存量条目 → 按模板 skill 处理 → 产出结构化内容」。若另起派发机制，会与 ai-app-split 的远程任务接缝（llm_summarize/llm_tags/block_summarize）重复造轮子——claim/心跳/回写/打码/乐观锁全要重写。
+**可选方案**：
+- B1 人类端本地 LLM 直接跑模板 → 否决：本机已摘除 LlmReconstructor（ai-app-split M2），且模板 skill 由 AI 托管、本地无 skill 文件
+- B2 新增独立 apply 通道（单独任务表/SDK）→ 否决：与远程集合接缝重复，claim/回写/打码/乐观锁全要重造
+- **采纳**：`template_apply:<templateId>` 直接复用远程任务集合——入队后由 claim_ai_task 认领（isRemoteTaskAction 加前缀判定）、resources/read goodshare://templates/{id} 取 skill（P1 已派生）、apply_ai_result 回写 template_output（ReconstructResult 加 templateOutput/templateId 两字段，落 inbox_items.template_output/_id/_output_anchor，与 summary_md 同走打码+版本锚）。
+**最终决定**：TemplateApplyCommand（ui 触发，=人类消费模板，不破 ADR「管理权归 AI」——apply 是消费非管理）入队 `template_apply:<id>`；item_detail_page「按模板处理」弹模板选择 → 提交待办 → _AiTaskStatusLine 通用待办条显示「处理中…」；宿主认领后读 skill、按模板结构处理、回写。无新增独占通道、无新 schema 列（v23 已建）。
+**AI 洞察**：「选模板套用」本质是「派发给 AI 的一条待办」，与「让 AI 写摘要」同构；把它塞进既有远程任务接缝，零新增基础设施即得 claim/心跳/回写/打码/乐观锁全套能力（R1 同一份可观测状态免费复用）。
+
 ## misc

@@ -1,4 +1,4 @@
-import '../doc/rich_text.dart';
+import 'package:rich_text/markdown_subset.dart';
 
 /// 速记所见即所得文本段模型（纯 Dart，可单测；2026-10-03 用户拍板「速记也
 /// 所见即所得，不再出现 md 标记」）。

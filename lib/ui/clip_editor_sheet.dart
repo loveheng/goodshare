@@ -9,7 +9,7 @@ import '../action/item_action_handler.dart';
 import '../ai/video_clips.dart';
 import 'toast.dart';
 import '../data/block_artifacts.dart' show BlockArtifactKind;
-import '../doc/rich_text.dart' show MarkdownSubsetParser, VideoBlock;
+import 'package:rich_text/markdown_subset.dart' show MarkdownSubsetParser, VideoBlock;
 import '../models/item.dart';
 import '../share/attachments.dart' show resolveLocalMediaSrc;
 

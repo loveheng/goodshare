@@ -18,7 +18,7 @@
 ///   AI 回写无冲刷路径。
 library;
 
-import '../doc/rich_text.dart' show MediaSuffix, classifyMediaUrl;
+import 'package:rich_text/markdown_subset.dart' show MediaSuffix, classifyMediaUrl;
 
 /// 便签段模型：文本与行内媒体按序混排，保存时整体序列化为一个条目。
 sealed class NoteSegment {

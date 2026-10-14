@@ -34,13 +34,13 @@ flowchart LR
 |---|---|---|
 | 1 引导 | MCP 工具描述声明支持全集（标题/粗体/斜体/下划线/行内码/链接/删除线/表格/高亮） | AI 第一次就写对，零损耗 |
 | 2 映射 | 入口对**全集外**语法做**语义映射**（找最接近的子集形式降级），不做「剥成纯文本」 | 例：脚注→括号注、引用链接 `[text][id]`→`[text](url)`（见 R3 两遍扫描）或纯文本；`==...==` 跨多个比较 `==`（如 `a == b == c`）按纯文本 + R1 note「疑似比较式未高亮」；禁止把 `~~x~~` 甩给用户看，也禁止静默丢格式 |
-| 3 告知 | 映射即降级，须在命令返回体/MCP 响应带 note（「表格已转为分行文本」） | R1：AI 可感知，下次直接用支持格式。当前 **仅脚注、引用链接、以及检测到的子集外结构（数学式 `$$`、HTML 标签，跳过敏感代码围栏与角括号自动链接 `<https://…>`）** 发 R1 note；子集外结构命中即告知「已降级为普通段落」，其余全子集内语法零映射零告知 |
+| 3 告知 | 映射即降级，须在命令返回体/MCP 响应带 note（「表格已转为分行文本」） | R1：AI 可感知，下次直接用支持格式。当前 **仅脚注、引用链接、以及检测到的子集外结构（HTML 标签，跳过敏感代码围栏与角括号自动链接 `<https://…>`）** 发 R1 note；**数学式 `$…$`/`$$…$$` 已是解析一等公民（见 §3.8），不再判为不支持、不发 R1 note**；子集外结构命中即告知「已降级为普通段落」，其余全子集内语法零映射零告知 |
 
 **引用链接处理（R3）**：入口 `parse` 第一遍扫描全文引用定义 `^\[([^\]]+)\]:\s+(\S+)$`，收集 `Map<String,String> refDefs`（键小写归一）；定义行（`[id]: url`）视为 meta，**不渲染为段落残壳**，从可见输出剥离。第二遍行内映射：`[text][id]` 命中 refDefs → 重写为 `[text](url)` 走正常链接解析（零残壳）；孤立 `[id]` / 缺定义 → 上标或纯文本 + R1 note「引用链接未找到定义，已转为纯文本」。此机制是「永远无残壳」总原则的硬保障。
 
 ## 3. 格式全量镜像对照表（枚举全部语法，与代码同源）
 
-三类语法的**全集**——每行与 `lib/doc/rich_text.dart` 实际代码逐支对齐（行内分支顺序即 `_pattern` 分组 1-9；块级即 `_parseBlocks` 判序）。三类镜像关系：
+三类语法的**全集**——每行与 `package:rich_text` 实际代码逐支对齐（行内分支顺序即 `_pattern` 分组 1-9；块级即 `_parseBlocks` 判序）。三类镜像关系：
 
 ```mermaid
 flowchart LR
@@ -49,7 +49,7 @@ flowchart LR
     R -- "序列化 serializeInline" --> M
 ```
 
-### 3.1 块级语法（`MarkdownSubsetParser._parseBlocks` 全集，10 行）
+### 3.1 块级语法（`MarkdownSubsetParser._parseBlocks` 全集，11 行）
 
 | # | md 语法 | 解析产物（RichBlock） | 安卓原生渲染 | 速记转盘输入 |
 |---|---|---|---|---|
@@ -63,6 +63,7 @@ flowchart LR
 | 8 | 整行 `![alt](url)` / `[label](url)`（后缀白名单） | `ImageBlock` / `AudioBlock` / `VideoBlock`（不命中白名单落回普通段落不丢内容） | 媒体卡（图片封面/播放器形态） | 拍照/相册/录音/视频就地插图（已有，非语法输入） |
 | 9 | `| 列1 | 列2 |` + `|---|---|` 对齐行（**收编**——知识收集场景 AI 结构化输出基本盘，GFM 官方扩展） | `TableBlock(header, rows, align)`（待加块级分支） | Table/DataTable 卡片（待加渲染分支，滚动适配窄屏） | 不提供（渲染收编，输入不扩；**AI 写零映射零损失**） |
 | 10 | 裸 URL / `www.` / `mailto:` 自动链接（**收编 GFM**） | `InlineRun(mark: link, url)`（渲染层 url 检测已有等价物，编辑层补 run 化） | 主题色 primary + tap 手势（同链接） | 不提供（渲染收编） |
+| 11 | `$$…$$` 块级数学（可跨多行，LaTeX 源码原样存储） | `MathBlock(source)`（`_MathBlockSyntax`，无闭合降级段落） | KaTeX 离线渲染（flutter_math_fork）：居中、超宽横向滚动；非法源码降级等宽文字（§3.8） | 不提供（渲染收编） |
 
 ### 3.2 行内语法（`_pattern` 分组 1-9 全集，5 种 mark + 转义）
 
@@ -74,6 +75,7 @@ flowchart LR
 | 3 | `` `码` ``（分组 6） | `InlineRun(mark: code)` | fontFamily: monospace + 代码底色 | 不提供（输入不扩充；AI 可写，入口不映射——已在全集内） |
 | 4 | `<u>下</u>`（分组 7，HTML 子集扩展） | `InlineRun(mark: underline)` | `TextDecoration.underline` | 行内子盘「下划线」 |
 | 5 | `[文本](url)`（分组 8,9） | `InlineRun(mark: link, url)`（plain 只含 label，url 载荷保全） | 主题色 primary + tap 手势（launch） | 不提供（AI 可写） |
+| — | `$…$` 行内数学（LaTeX，`_extractMath` 预处理双扫描，不进 `_pattern`；含货币歧义边缘规则） | `InlineMath(source)`（叶子节点，内部不递归解析） | KaTeX 离线渲染、基线居中对齐、超宽横向滚动；非法源码降级（§3.8） | 不提供（AI 可写） |
 | — | `~~删除~~`（收编，**尚无分组**） | `InlineMark.strikethrough`（待加枚举） | `TextDecoration.lineThrough`（待加分支） | 不提供（渲染收编，输入不扩） |
 | — | `==高亮==`（**收编**——知识收集场景 AI 标注高频，非 GFM 但 Pandoc/Obsidian 事实标准） | `InlineMark.highlight`（待加枚举） | 背景色高亮（待加分支） | 不提供（渲染收编，输入不扩；AI 写零映射零损失） |
 
@@ -164,7 +166,7 @@ flowchart LR
 **现有语法（rich_text.dart 实测引用）**——定义已存在于代码，行号随迭代漂移，以符号名为准：
 
 ```dart
-// lib/doc/rich_text.dart —— 行内标记枚举（5 种，现行全集）
+// package:rich_text —— 行内标记枚举（5 种，现行全集）
 enum InlineMark { bold, italic, code, underline, link }
 
 // 行内 run：纯文本坐标 [start, end)，link 携带 url 载荷
@@ -282,15 +284,34 @@ abstract class BlockHandler {
 
 **CoR 相对原 cascade 的额外耦合点（落地前必读）**：段落聚合需「连续非块起始行」，须由 `ParagraphHandler` 反向问 `parser.isBlockStart(line)`（遍历所有 handler 除自身），无法完全独立；且 `bareTodo` / 原 `_isBlockStart` 边界须显式对齐，否则易漂移。对比草稿（注册式 `ChainParser` + 各 `BlockHandler`）在本评审中已给出骨架，未落地；现状保持 `_parseBlocks` 内 if-cascade。
 
+### 3.8 数学公式（KaTeX 离线渲染，已实现）
+
+> 状态：**已实现**（2026-10-14）。解析层在 `package:rich_text`（行内 `$…$` → `InlineMath`、块级 `$$…$$` → `MathBlock`，含 `_extractMath` 货币歧义边缘规则、`_MathBlockSyntax` 跨多行、serialize 往返），渲染层在 goodshare `lib/ui/math_widget.dart`。
+
+**渲染契约**：
+- **引擎**：`flutter_math_fork`（纯 Dart 端口 KaTeX，离线、无 WebView）——Android 首发 + 低端机零网络依赖首选；caTeX 已停更，不采用。渲染器刻意留在 goodshare（不进 `rich_text` 共享包，符合 DIP 注记「各端渲染器不同」）。
+- **行内**（`InlineMath`）：`inlineMathSpan` → `WidgetSpan` 基线居中对齐（`PlaceholderAlignment.middle`），嵌入 `Text.rich`；超宽时内部横向滚动，不撑破段落流。
+- **块级**（`MathBlock`）：`mathBlockView` → 浅色圆角容器（`surfaceContainerLow`，与代码块/引用块同源质感），`MathStyle.display`；`LayoutBuilder` 给最小宽度 = 视口宽，**短公式居中、长公式超出后横向滚动**二者不冲突。
+- **错误兜底铁律（onErrorFallback）**：非法 / 不支持的 LaTeX **不崩、不丢内容**——降级为等宽源码文字（原样显示 `$…$` 内 LaTeX），与项目总原则「降级铁律：宁可样式平，不可吞内容」同构。单测锁定：`RichTextView(markdown: r'坏公式 $\frac$')` 显示源码、零异常。
+- **颜色/字号**：取当前 `TextStyle`（正文字号、主题 `onSurface` 色），随阅读态/serif 同构；数学字形走 KaTeX 自带字体。
+- **表格内行内数学**：表格单元格走 `_spans` 统一行内解析，自动覆盖 `InlineMath`（§3.5「表格内行内格式仍解析」）。
+- **编辑态**：`SpanTextEditingController` 对 `InlineMark.math` 套等宽 + 浅底源码样式（与行内码同质感），**不内嵌 Widget 预览**（可编辑文本内嵌 `WidgetSpan` 与光标/IME 冲突）；实时公式预览为后续项。源码即 plain 中 LaTeX 内容，回写经 `serializeInline` 还原 `$…$`，往返幂等。
+
+**验收口径（数学）**：
+1. `E=mc^2` 行内、`$$\frac a b$$` 块级渲染为可见公式；超宽公式可横向滚动。
+2. 非法 LaTeX（如 `$\frac$`）降级为源码文字、不抛异常。
+3. `parse → serialize → parse` 块树逐节点相等（数学节点零残壳，既有 `rich_text_parser_test` 往返锁覆盖）。
+
 ## 4. 实现落点（GFM 收编件）
 
 | 件 | 落点 | 说明 |
 |---|---|---|
-| 删除线+高亮收编 | `lib/doc/rich_text.dart` | 解析器加 `~~`/`==` 分组 + `InlineMark.strikethrough`/`highlight` 枚举 + seed/serialize/渲染三处同源 + 单测（`==` 收紧规则见 §3.6 ②） |
+| 删除线+高亮收编 | `package:rich_text` | 解析器加 `~~`/`==` 分组 + `InlineMark.strikethrough`/`highlight` 枚举 + seed/serialize/渲染三处同源 + 单测（`==` 收紧规则见 §3.6 ②） |
 | 粗斜体分支 | 同上 | `***x***` 分支插在粗体之前（§3.3-3、§3.6-②），bold+italic 双激活，单测锁定 |
 | 行内码反引号配对 | 同上 | §3.6 预处理双扫描方案（弃正则，防回溯），单测含超长文本性能用例 |
-| 表格+自动链接收编 | `lib/doc/rich_text.dart` + 渲染层 | 块级 `TableBlock(header, rows, align)` 分支 + Table/DataTable 卡片渲染（窄屏滚动适配）；自动链接 run 化；单测 |
+| 表格+自动链接收编 | `package:rich_text` + 渲染层 | 块级 `TableBlock(header, rows, align)` 分支 + Table/DataTable 卡片渲染（窄屏滚动适配）；自动链接 run 化；单测 |
 | 渲染标准落地 | `rich_text_view.dart` 等渲染层 | 按 §3.5 定标落：引用升级、代码块复制按钮+语言徽标、Checkbox 只读、链接下划线、行内码 Tag |
+| 数学公式渲染 | `lib/ui/math_widget.dart` + `package:rich_text` | 已实现（§3.8）：`flutter_math_fork` 离线渲染行内 `$…$`/块级 `$$…$$`，居中+超宽横滚，`onErrorFallback` 源码降级；解析层节点（`InlineMath`/`MathBlock`）、serialize 往返、AI 归一（`_hasUnsupportedGfm` 已排除数学）一并就绪 |
 | AI 写入归一层（含 R3 引用链接） | `lib/action/`（命令入口） | 仅**罕见结构**（脚注→括号注、引用链接等，§2 R3 / §3.6 ⑥）走语义映射 + R1 note 告知；表格/高亮/删除线已收编不再映射；MCP 文本写入工具前置依赖 |
 
 量级：**独立估算**（GFM 收编 + 渲染标准 + 归一层，与转盘 2-3 天分开计——粗估 3-5 天，实现前按件复核）。

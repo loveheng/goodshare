@@ -9,7 +9,7 @@ import '../ai/language_codes.dart';
 import '../ai/privacy_mask.dart';
 import '../data/block_artifacts.dart' show BlockArtifactKind;
 import '../data/repository.dart';
-import '../doc/rich_text.dart'
+import 'package:rich_text/markdown_subset.dart'
     show
         AudioBlock,
         ImageBlock,
@@ -132,6 +132,7 @@ class ItemActionHandler {
         final CreateTemplateCommand c => _createTemplate(c),
         final UpdateTemplateCommand c => _updateTemplate(c),
         final DeleteTemplateCommand c => _deleteTemplate(c),
+        final TemplateApplyCommand c => _templateApply(c, actor, seeVault, txn),
       };
 
   /// 原子批量执行：一条命令失败则整批回滚，杜绝「字改了但标签没打上」的脏数据。
@@ -1255,6 +1256,15 @@ class ItemActionHandler {
       final effectiveBody = keepHuman ? (item.humanMd ?? '') : maskedIncoming;
       values['summary_anchor'] = md5.convert(utf8.encode(effectiveBody)).toString();
     }
+    // 内容生产模板产出（ai-template P2）：按模板 skill 处理条目的结果，落
+    // template_output（独立字段，与 summary_md 语义分离）；同样过打码 + 版本锚
+    //（锚取「写入后正文」指纹，镜像 summary 分支，防止新产出对着旧正文失配）。
+    if (r.templateOutput != null) {
+      values['template_output'] = maskSensitiveText(r.templateOutput!, enabled: maskOn);
+      if (r.templateId != null) values['template_id'] = r.templateId;
+      final effectiveBody = keepHuman ? (item.humanMd ?? '') : maskedIncoming;
+      values['template_output_anchor'] = md5.convert(utf8.encode(effectiveBody)).toString();
+    }
     // 文档归一化元信息（2026-09-30）：覆盖率 / 降级 / 确认状态，供 UI 明示
     // 「提取了多少、哪些降级了」——降级不允许静默成功（content-pipeline §7）。
     // AI 会话（ai-writeback-revert）：**管线写回不再触发会话**（2026-10-05 拍板）——
@@ -1493,6 +1503,43 @@ class ItemActionHandler {
       targetId: cmd.id,
       note: '已删除模板「${cur.name}」（已产出的模板产出不受影响）',
     );
+  }
+
+  /// 内容生产模板（ai-template P2）：对存量条目应用某模板 → 入队
+  /// `template_apply:<templateId>`，交 AI 宿主按模板 skill 处理。
+  ///
+  /// 校验条目与模板均存在 + 正文非空（与摘要同构，确保 AI 有可处理文本）；
+  /// 入远程集合后由 claim_ai_task 认领 → resources/read skill → apply_ai_result 回写。
+  Future<CommandResult> _templateApply(
+    TemplateApplyCommand cmd,
+    CommandActor actor,
+    bool seeVault,
+    Transaction? txn,
+  ) async {
+    final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    final tpl = await _repo.byIdTemplate(cmd.templateId);
+    if (tpl == null) {
+      throw ActionException(
+        '模板不存在或已删除',
+        code: ActionErrorCode.invalidRequest,
+        hint: '刷新模板列表后重试',
+      );
+    }
+    if (item.bodyText.trim().isEmpty) {
+      throw ActionException(
+        '该条目没有可处理的正文',
+        code: ActionErrorCode.invalidRequest,
+        hint: '图片 / 音视频请先「识别文字」或「转写」出文本，再按模板处理',
+      );
+    }
+    final jobId = await _repo.enqueueTask(
+      cmd.id,
+      '${Repository.taskTemplateApply}:${cmd.templateId}',
+      txn: txn,
+    );
+    onEnqueued?.call();
+    return _result('apply_template', cmd.id, seeVault: seeVault, txn: txn, jobId: jobId,
+        note: await _queuedNote('已按模板「${tpl.name}」提交处理'));
   }
 
   // ---- 只读 / 批量维护（非命令：查询与例行清理，无脏数据风险） ----

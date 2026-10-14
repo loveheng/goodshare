@@ -1,4 +1,4 @@
-import '../doc/rich_text.dart';
+import 'package:rich_text/markdown_subset.dart';
 import '../models/item.dart';
 
 /// 文本/链接归一（摄入共用，ShareIntake 与 TextCollector 均走此函数）：

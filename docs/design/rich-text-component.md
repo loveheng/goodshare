@@ -23,7 +23,7 @@ updated: 2026-10-09
 ```mermaid
 flowchart TD
     A["调用层<br/>详情页 / 媒体附文 / 附录 / 搜索预览(未来)"] -->|"markdown 串 或 List&lt;RichBlock&gt; + variant"| B["呈现层 ContentBody<br/>排版令牌 / 块→widget / 虚拟化策略"]
-    B -->|"parse / serialize / toPlain"| C["规则层 RichDocument<br/>lib/doc/rich_text.dart 升格<br/>纯 Dart 不 import Flutter"]
+    B -->|"parse / serialize / toPlain"| C["规则层 RichDocument<br/>package:rich_text（纯 Dart 共享包）<br/>不 import Flutter"]
 ```
 
 职责边界（口诀：**换语法动规则层，换长相动呈现层，换页面动调用层**）：

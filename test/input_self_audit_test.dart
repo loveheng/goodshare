@@ -14,7 +14,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:goodshare/ui/composer_doc.dart' show ComposerDoc;
 import 'package:goodshare/ui/span_text_controller.dart'
     show SpanPasteNormalizeFormatter;
-import 'package:goodshare/doc/rich_text.dart' show InlineMark;
+import 'package:rich_text/markdown_subset.dart' show InlineMark;
 
 /// 把一段文本「敲进」当前活跃文本段（视作一次性输入/粘贴，触发随动）。
 /// ⚠️ 含 \n 会触发拆段（新段）；构建多行【同一段】内的列表请用 [seedText]。

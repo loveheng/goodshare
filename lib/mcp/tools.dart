@@ -592,7 +592,8 @@ List<Map<String, Object?>> _toolSchemasRaw() => [
       {
         'name': 'claim_ai_task',
         'description': '认领一条待远程处理的 AI 任务（AI 宿主 App 专用，ai-app-split.md §3.2）。'
-            '只认领大模型类任务（llm_summarize 摘要 / llm_tags 关键词 / block_summarize 块摘要）——'
+            '只认领大模型类任务（llm_summarize 摘要 / llm_tags 关键词 / block_summarize 块摘要 / '
+            'template_apply 模板处理）——'
             'OCR、转写等轻量任务由本机处理，不出现在此。原子认领：成功则任务转 processing，'
             '返回纯文本载荷（text 供推理；llm_tags 附 human_tags 既有标签；块任务附 block_key，'
             'text 为块源产物文本）与 version 乐观锁；无任务返回 {"status":"idle"}。'
@@ -638,6 +639,14 @@ List<Map<String, Object?>> _toolSchemasRaw() => [
             'block_key': {
               'type': 'string',
               'description': '块摘要任务：claim 返回的 block_key（条目级任务不传）',
+            },
+            'template_output': {
+              'type': 'string',
+              'description': '模板产出 Markdown（template_apply 任务回写，落 inbox_items.template_output）',
+            },
+            'template_id': {
+              'type': 'string',
+              'description': '产出所属模板 id（落 inbox_items.template_id）',
             },
             'note': {'type': 'string', 'description': '原因说明（无产出/降级时必填）'},
           },
@@ -1501,11 +1510,13 @@ Future<List<Map<String, Object?>>> callTool(
       }
       final summaryMd = _str(args['summary_md']);
       final tagsArg = (args['tags'] as List?)?.map((e) => '$e').toList();
+      final templateOutput = _str(args['template_output']);
       final note = _str(args['note']);
       final hasSummary = summaryMd != null && summaryMd.trim().isNotEmpty;
       final hasTags = tagsArg != null && tagsArg.isNotEmpty;
-      if (!hasSummary && !hasTags && (note == null || note.trim().isEmpty)) {
-        throw McpRpcError(errInvalidParams, 'summary_md / tags / note 至少给一个（无产出须带原因说明）');
+      final hasTemplateOutput = templateOutput != null && templateOutput.trim().isNotEmpty;
+      if (!hasSummary && !hasTags && !hasTemplateOutput && (note == null || note.trim().isEmpty)) {
+        throw McpRpcError(errInvalidParams, 'summary_md / tags / template_output / note 至少给一个（无产出须带原因说明）');
       }
       // 产出组装（按认领时 task_action 分叉；块摘要落块产物，条目字段零触碰）
       final taskAction = task['task_action'] as String?;
@@ -1527,6 +1538,8 @@ Future<List<Map<String, Object?>>> callTool(
               summaryMd: hasSummary ? summaryMd.trim() : null,
               tags: hasTags ? tagsArg : const [],
               note: note,
+              templateOutput: hasTemplateOutput ? templateOutput.trim() : null,
+              templateId: _str(args['template_id']),
             );
       // 任务记账与消费者同口径（queue_consumer catch 段）：落库成功 = completed
       //（note 透传「完成但无产出」原因）；落库被拒（乐观锁/Schema/编辑锁）= failed

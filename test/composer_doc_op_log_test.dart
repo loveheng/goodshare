@@ -9,7 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:goodshare/ui/composer_doc.dart'
     show ComposerDoc, DeleteOp, FormatRangeOp, InsertTextOp, StructureOp;
-import 'package:goodshare/doc/rich_text.dart'
+import 'package:rich_text/markdown_subset.dart'
     show InlineMark, SpanListKind, SpanListRun;
 import 'package:goodshare/share/note_seg.dart' show NoteTextSeg;
 

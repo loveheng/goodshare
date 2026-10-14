@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'package:goodshare/doc/rich_text.dart' show SpanListKind;
+import 'package:rich_text/markdown_subset.dart' show SpanListKind;
 import 'package:goodshare/share/quick_note_line_shape.dart' show LineShape, parseLine;
 
 /// 段类型枚举（问题#1 引导层·统一排版规约）：正文 / 一级标题 / 二级标题 /

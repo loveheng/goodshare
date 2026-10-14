@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:goodshare/doc/plain_to_md.dart';
-import 'package:goodshare/doc/rich_text.dart';
+import 'package:rich_text/markdown_subset.dart';
 import 'package:goodshare/ui/content_body.dart';
 import 'package:goodshare/ui/rich_text_view.dart';
 

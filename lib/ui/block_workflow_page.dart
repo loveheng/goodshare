@@ -6,7 +6,7 @@ import '../ai/subtitle.dart' show AsrCue;
 import '../ai/capability.dart';
 import '../ai/workflow.dart';
 import '../data/block_artifacts.dart' show BlockArtifactKind;
-import '../doc/rich_text.dart' show MediaSuffix, classifyMediaUrl;
+import 'package:rich_text/markdown_subset.dart' show MediaSuffix, classifyMediaUrl;
 import 'audio_playback_service.dart';
 import 'block_capability_host.dart';
 import 'block_capability_page.dart' show kPreviewMaxHeight;

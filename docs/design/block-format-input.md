@@ -88,7 +88,7 @@ flowchart LR
 |---|---|---|
 | UI 工具条 | 键盘上方工具条 + 格式排浮层 + 激活态 | `lib/pages/item_detail_page.dart`（`_EditBody` 邻接）或独立 `lib/ui/format_toolbar.dart` |
 | 编辑渲染 | 样式化编辑层（span 树 ↔ 块内容） | `lib/ui/`（新增，与 `rich_text_view.dart` 共用解析器） |
-| 语法 | `<u>` 解析/序列化分支：`InlineNode` 加 `InlineUnderline` 节点（sealed 穷举检查兜底漏改）+ 解析/渲染分支 | `lib/doc/rich_text.dart`（`MarkdownSubsetParser` 与 AST 同文件；降级铁律保证旧环节不丢内容） |
+| 语法 | `<u>` 解析/序列化分支：`InlineNode` 加 `InlineUnderline` 节点（sealed 穷举检查兜底漏改）+ 解析/渲染分支 | `package:rich_text`（`MarkdownSubsetParser` 与 AST 模型同包，经 `markdown_subset.dart` 聚合；降级铁律保证旧环节不丢内容） |
 | 状态 | `FormatState` + span 收口状态机 | `EditSession` 邻接（不动既有 op 事务语义） |
 
 ## 5. 落地顺序

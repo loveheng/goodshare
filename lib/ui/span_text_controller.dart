@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../doc/rich_text.dart';
+import 'package:rich_text/markdown_subset.dart';
 import '../share/quick_note_reveal.dart' show revealAt;
 import '../share/quick_note_line_shape.dart' show parseLine;
 
@@ -160,6 +160,11 @@ TextSpan buildSpanTextSpan({
             seg.copyWith(decoration: TextDecoration.lineThrough),
           InlineMark.highlight => seg.copyWith(
               backgroundColor: scheme.secondaryContainer.withValues(alpha: 0.5)),
+          // 编辑态：数学保持等宽源码文本渲染（不内嵌 Widget 预览，与 code 同质感）。
+          // 源码即 plain 中 LaTeX 内容，回写经 serializeInline 还原 `$…$`。
+          InlineMark.math => seg.copyWith(
+              fontFamily: 'monospace',
+              backgroundColor: scheme.surfaceContainerHighest),
         };
       } else if (m is _LevelTag) {
         // 行级标题档位：与详情页标题块同字级（mymind 对齐 token）——整档取

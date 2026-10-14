@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:goodshare/doc/rich_text.dart';
+import 'package:rich_text/markdown_subset.dart';
 import 'package:goodshare/models/item.dart' show TodoMark;
 
 void main() {
@@ -184,6 +184,7 @@ void main() {
           VideoBlock(:final url, :final label) => 'VID($label|$url)',
           TableBlock(:final header, :final rows) =>
             'TABLE{${header.join(',')}|${rows.map((r) => r.join(',')).join(';')}}',
+          MathBlock(:final source) => 'MATH[$source]',
         }).join('\n');
 
     /// parse→serialize→parse 块树逐节点相等（幂等）。
@@ -501,6 +502,7 @@ void main() {
           VideoBlock(:final url, :final label) => 'VID($label|$url)',
           TableBlock(:final header, :final rows) =>
             'TABLE{${header.join(',')}|${rows.map((r) => r.join(',')).join(';')}}',
+          MathBlock(:final source) => 'MATH[$source]',
         }).join('\n');
 
     void expectRoundtrip(String markdown) {
@@ -537,6 +539,7 @@ void main() {
           VideoBlock(:final url, :final label) => 'VID($label|$url)',
           TableBlock(:final header, :final rows) =>
             'TABLE{${header.join(',')}|${rows.map((r) => r.join(',')).join(';')}}',
+          MathBlock(:final source) => 'MATH[$source]',
         }).join('\n');
 
     test('解析：表头 + 分隔线 + 数据行 → TableBlock', () {
@@ -592,6 +595,7 @@ void main() {
           VideoBlock(:final url, :final label) => 'VID($label|$url)',
           TableBlock(:final header, :final rows) =>
             'TABLE{${header.join(',')}|${rows.map((r) => r.join(',')).join(';')}}',
+          MathBlock(:final source) => 'MATH[$source]',
         }).join('\n');
 
     test('定义行剥离且 [text][id] 重写为 [text](url)', () {
@@ -728,6 +732,7 @@ String _plainOf(RichBlock b) => switch (b) {
       VideoBlock(:final label) => '[视频: $label]',
       TableBlock(:final header, :final rows) =>
         [...header, for (final r in rows) ...r].join(' '),
+      MathBlock(:final source) => source,
     };
 
 String _inlineText(List<InlineNode> nodes) => nodes.map((n) => switch (n) {
@@ -739,6 +744,7 @@ String _inlineText(List<InlineNode> nodes) => nodes.map((n) => switch (n) {
       InlineHighlight(:final children) => _inlineText(children),
       InlineCode(:final code) => code,
       InlineLink(:final label) => label,
+      InlineMath(:final source) => source,
     }).join();
 
 /// 行内树 → 规范形（含节点类型，保证往返后节点类型也一致）。
@@ -751,4 +757,5 @@ String _treeInline(List<InlineNode> nodes) => nodes.map((n) => switch (n) {
       InlineHighlight(:final children) => 'H[${_treeInline(children)}]',
       InlineCode(:final code) => 'C($code)',
       InlineLink(:final label, :final url) => 'L($label|$url)',
+      InlineMath(:final source) => 'M($source)',
     }).join(',');

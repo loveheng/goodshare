@@ -24,7 +24,7 @@ updated: 2026-10-08
 | **A1** | 空项保存蒸发：文本真相模型下标记本就在文本，敲首字只是 `- `→`- 字`，旧坐标蒸发路径已删 | devlog 31 | 编辑器输入路径 | — | P1 | **已完成**（文本真相下已不存在；全量测试验证） |
 | **A2** | `# ` 打字无反应：S3 文本真相后 `# ` 直接写文本、`deriveLineRuns` 实时派生标题，已解决 | devlog 31 | 编辑器输入路径 | — | P2 | **已完成**（随 S3 文本真相；待真机复验） |
 | **A6** | 勾选撤销步：`toggleTodo` 已 `beginStructuralStep` 进撤销栈 | devlog 31 | `ComposerDoc` | — | P1 | **已完成**（代码落地；全量测试验证） |
-| **GFM-表** | 表格 `TableBlock` 收编：解析 + 序列化 + 渲染分支（横向滚动 Table）+ 窄屏适配 | rich-text-gfm §表9 | `lib/doc/rich_text.dart` + `rich_text_view` | — | P1 | **已完成**（全链路落地；757 测试绿） |
+| **GFM-表** | 表格 `TableBlock` 收编：解析 + 序列化 + 渲染分支（横向滚动 Table）+ 窄屏适配 | rich-text-gfm §表9 | `package:rich_text` + `rich_text_view` | — | P1 | **已完成**（全链路落地；757 测试绿） |
 | **GFM-链接** | 自动链接 `InlineLink(autolink)` 渲染收编：行内裸 url/www./mailto: 识别 | rich-text-gfm §表10 | `rich_text` | — | P2 | **已完成**（行内 link autolink 已支持） |
 | **GFM-码** | 行内码 run 化：行内 `` `code` `` 在编辑层提升为 `InlineRun(code)` | rich-text-gfm §3.2 | `span_codec` / `rich_text` | — | P2 | **已完成**（`inlineSpansOf` 已含 code 分支） |
 | **富文本/块附件** | 行内富文本（粗/斜/下划线/行内码）+ 媒体块（图/音/视）编辑能力 | 并行会话 WIP | 多文件 | — | P0 | **已完成**（WIP 已落地；757 测试绿） |

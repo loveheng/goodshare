@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../doc/rich_text.dart';
+import 'package:rich_text/markdown_subset.dart';
 import 'rich_text_view.dart';
 import 'tokens.dart';
 
@@ -34,7 +34,7 @@ class TodoInteractionScope extends InheritedWidget {
 
 /// 富文本正文公共组件（呈现层唯一入口，SSOT：docs/design/rich-text-component.md）。
 ///
-/// 三层架构：调用层（页面）→ 本组件（呈现层）→ `lib/doc/rich_text.dart`（规则层）。
+/// 三层架构：调用层（页面）→ 本组件（呈现层）→ `package:rich_text`（规则层）。
 /// 本组件不做语法解析（只调规则层）、不认识 `InboxItem`。
 ///
 /// 双面：

@@ -20,7 +20,7 @@ updated: 2026-10-09
 
 ## 2. 块模型与语法出口（规则层，纯 Dart）
 
-`lib/doc/rich_text.dart` 新增三个块类型：
+`package:rich_text` 新增三个块类型：
 
 ```dart
 class ImageBlock extends RichBlock { url, alt }

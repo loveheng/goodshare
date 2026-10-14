@@ -64,4 +64,4 @@ updated: 2026-10-01
 | `lib/ui/note_video_capture_page.dart`（已建，2026-10-01） | 自建拍摄页：取景器 + 60s 进度环 + 到点自动停 + 取消丢弃；只产文件路径 |
 | `lib/share/note_composer.dart` + `lib/pages/quick_note_sheet.dart` | 附件面板「拍摄/从相册选」入口，与拍照/录音链路同构 |
 | `lib/share/note_video_policy.dart`（已建，2026-10-01） | 附件态/主体态门槛常量集中定义（时长/大小 × 2 态）+ mp4/mov 白名单后置校验 |
-| `lib/ui/content_body.dart` / `lib/doc/rich_text.dart` | VideoBlock 渲染（形态不变，见 rich-text-media §3） |
+| `lib/ui/content_body.dart` / `package:rich_text` | VideoBlock 渲染（形态不变，见 rich-text-media §3） |

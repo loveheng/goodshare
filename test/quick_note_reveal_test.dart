@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:goodshare/doc/rich_text.dart' show SpanListKind;
+import 'package:rich_text/markdown_subset.dart' show SpanListKind;
 import 'package:goodshare/share/quick_note_line_shape.dart';
 import 'package:goodshare/share/quick_note_reveal.dart';
 

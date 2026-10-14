@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:goodshare/doc/rich_text.dart' show InlineMark;
+import 'package:rich_text/markdown_subset.dart' show InlineMark;
 import 'package:goodshare/ui/note_composer_editor.dart';
 
 /// 回归测试：覆盖 2026-10-08 的两处 UX 修复

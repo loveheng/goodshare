@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:goodshare/doc/rich_text.dart' show InlineMark, InlineRun;
+import 'package:rich_text/markdown_subset.dart' show InlineMark, InlineRun;
 import 'package:goodshare/ui/note_composer_editor.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 

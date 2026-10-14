@@ -3,8 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../ai/capability.dart';
-import '../doc/rich_text.dart';
+import 'package:rich_text/markdown_subset.dart';
 import 'block_capability_host.dart';
+import 'math_widget.dart';
 import 'media_blocks.dart';
 import 'tokens.dart';
 
@@ -297,6 +298,8 @@ Widget buildRichBlock(
       kind: BlockKind.text,
       anchorLabel: '表格块',
     ),
+    // 块级数学（$$…$$）：KaTeX 显示模式，居中 + 超宽横向滚动；非法源码降级。
+    MathBlock(:final source) => mathBlockView(source, _bodyStyle(theme, serif), scheme: scheme),
   };
 }
 
@@ -603,6 +606,8 @@ InlineSpan _span(BuildContext context, InlineNode node, TextStyle base) {
       // 默认不可点击（不引 url_launcher）；URL 保留在语义里供后续启用
       semanticsLabel: url.isEmpty ? label : '$label（$url）',
     ),
+    // 行内数学（$…$）：KaTeX 渲染，基线居中对齐；超宽横向滚动；非法源码降级。
+    InlineMath(:final source) => inlineMathSpan(source, base, scheme: scheme),
   };
 }
 

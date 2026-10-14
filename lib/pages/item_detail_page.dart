@@ -21,7 +21,7 @@ import '../data/block_artifacts.dart'
     show BlockArtifactInput, BlockArtifactKind, BlockArtifactMeta;
 import '../data/repository.dart';
 import '../doc/attach.dart';
-import '../doc/rich_text.dart';
+import 'package:rich_text/markdown_subset.dart';
 import '../ui/confirm_dialog.dart';
 import '../ui/toast.dart';
 import '../ui/overflow_sheet.dart';
@@ -1836,6 +1836,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     final summary = _item.summaryMd?.trim() ?? '';
     final hasSummary = summary.isNotEmpty;
     final hasTags = _item.tags.isNotEmpty;
+    final templateOutput = _item.templateOutput?.trim() ?? '';
+    final hasTemplateOutput = templateOutput.isNotEmpty;
 
     // 分区动作行（卡内右上角）：内容语义归 SectionLegendCard 签名，按钮只管操作。
     Widget sectionActions(
@@ -1931,6 +1933,28 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
               ],
             ),
           ),
+          const SizedBox(height: Insets.md),
+          // ── 模板产出（ai-template P2）：按模板 skill 处理条目的结果，可重跑）
+          SectionLegendCard(
+            legend: '模板产出',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    icon: const Icon(Icons.auto_awesome, size: 18),
+                    label: const Text('按模板处理'),
+                    onPressed: _showTemplatePicker,
+                  ),
+                ),
+                if (hasTemplateOutput)
+                  RichTextView(markdown: templateOutput, shrinkWrap: true)
+                else
+                  _inspirationEmpty('还没有模板产出，点「按模板处理」选模板'),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -1948,6 +1972,42 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
         vaultContext: widget.vaultContext,
       ),
       '标签已保存',
+    );
+  }
+
+  /// 内容生产模板（ai-template P2）：弹出模板列表 → 提交「按模板处理」待办，
+  /// 交 AI 宿主 claim 后按模板 skill 处理（落 inbox_items.template_output）。
+  Future<void> _showTemplatePicker() async {
+    final tpls = await widget.repo.listTemplates();
+    if (!mounted) return;
+    if (tpls.isEmpty) {
+      _snack('还没有可用模板，请先让 AI 创建模板');
+      return;
+    }
+    final chosen = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('按模板处理'),
+        children: [
+          for (final t in tpls)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, t.id),
+              child: Text(t.name),
+            ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消', style: TextStyle(color: Colors.grey)),
+          ),
+        ],
+      ),
+    );
+    if (chosen == null) return;
+    await _run(
+      () => widget.handler.execute(
+        TemplateApplyCommand(_item.id!, chosen),
+        vaultContext: widget.vaultContext,
+      ),
+      '已提交，待 AI 按模板处理',
     );
   }
 

@@ -60,6 +60,8 @@ class ReconstructResult {
     this.translatedMd,
     this.translateLang,
     this.summaryMd,
+    this.templateOutput,
+    this.templateId,
     this.note,
     this.clip,
     this.docMetaJson,
@@ -84,6 +86,13 @@ class ReconstructResult {
 
   /// 端侧 LLM 摘要（与 humanMd 并列存储，不覆盖原文；2026-09-28 v8）。null = 无摘要。
   final String? summaryMd;
+
+  /// 内容生产模板产出（ai-template P2）：按模板 skill 处理条目的结果 Markdown，
+  /// 落 `inbox_items.template_output`（与 [summaryMd] 语义分离、并行存储）。null = 无产出。
+  final String? templateOutput;
+
+  /// 产出所属模板 id（与 task_action 编码的 templateId 同源）；落 `inbox_items.template_id` 列。
+  final String? templateId;
 
   /// **原因说明**（2026-09-28）：降级 / 空产出 / 缺前置条件时写清"为什么"，
   /// 由消费者落进 `ai_task_queue.last_note`，最终出现在任务队列页、详情页状态条

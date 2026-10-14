@@ -6,7 +6,7 @@ import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:video_player/video_player.dart';
 
 import '../ai/subtitle.dart' show AsrCue, SubtitleMode;
-import '../doc/rich_text.dart';
+import 'package:rich_text/markdown_subset.dart';
 import '../share/attachments.dart' show resolveLocalMediaSrc;
 import 'audio_playback_service.dart';
 import 'feedback_views.dart';

@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:goodshare/action/commands.dart';
 import 'package:goodshare/action/item_action_handler.dart';
+import 'package:goodshare/ai/reconstructor.dart';
 import 'package:goodshare/data/db.dart';
 import 'package:goodshare/data/repository.dart';
 import 'package:goodshare/models/item.dart';
@@ -137,5 +138,67 @@ void main() {
     expect(json['template_output_stale'], isA<bool>());
     // 语义分离：无摘要时不应出现 summary 字段，template_output 独立落点
     expect(json.containsKey('summary'), isFalse);
+  });
+
+  // ── P2：template_apply 远程任务链路（复刻 llm_summarize 接缝）──
+
+  test('template_apply 进入远程集合：isRemoteTaskAction 识别 + claimRemoteTask 认领 + pendingTasks 排除', () async {
+    expect(Repository.isRemoteTaskAction('${Repository.taskTemplateApply}:abc'), isTrue);
+    expect(Repository.isRemoteTaskAction('llm_summarize'), isTrue);
+    expect(Repository.isRemoteTaskAction('ocr_and_extract'), isFalse);
+
+    final it = await repo.add(InboxItem(itemType: InboxItem.typeNote, rawContent: '正文', createdAt: 1));
+    await repo.enqueueTask(it.id!, '${Repository.taskTemplateApply}:tpl-9');
+    // 本地消费者不吃远程任务（占位守卫排除），避免双消费
+    final local = await repo.pendingTasks();
+    expect(
+      local.any((t) => (t['task_action'] as String? ?? '').startsWith('${Repository.taskTemplateApply}:')),
+      isFalse,
+    );
+    // 宿主可认领远程任务
+    final claimed = await repo.claimRemoteTask();
+    expect(claimed, isNotNull);
+    expect((claimed!['task_action'] as String).startsWith('${Repository.taskTemplateApply}:'), isTrue);
+  });
+
+  test('TemplateApplyCommand：校验模板/正文后入队 template_apply 远程任务', () async {
+    final wsId = await seedWorkspace();
+    final tpl = await repo.createTemplate(workspaceId: wsId, name: '周报', bodyMd: '# 周报');
+    final it = await repo.add(InboxItem(itemType: InboxItem.typeNote, rawContent: '本周做了X', createdAt: 1));
+
+    final r = await handler.execute(TemplateApplyCommand(it.id!, tpl.id), actor: CommandActor.ui);
+    expect(r.op, 'apply_template');
+    expect(r.jobId, isNotNull);
+    final claimed = await repo.claimRemoteTask();
+    expect(claimed, isNotNull);
+    expect((claimed!['task_action'] as String), '${Repository.taskTemplateApply}:${tpl.id}');
+
+    // 模板不存在 → 拒绝
+    expect(
+      () => handler.execute(TemplateApplyCommand(it.id!, 'no-such'), actor: CommandActor.ui),
+      throwsA(isA<ActionException>()),
+    );
+    // 无正文条目 → 拒绝（与摘要同构，确保 AI 有可处理文本）
+    final empty = await repo.add(InboxItem(itemType: InboxItem.typeNote, rawContent: '', createdAt: 2));
+    expect(
+      () => handler.execute(TemplateApplyCommand(empty.id!, tpl.id), actor: CommandActor.ui),
+      throwsA(isA<ActionException>()),
+    );
+  });
+
+  test('apply_ai_result 回写 template_output：落三列 + 锚', () async {
+    final it = await repo.add(InboxItem(
+        itemType: InboxItem.typeNote, rawContent: '原始正文', humanMd: '原始正文', createdAt: 1));
+    await handler.execute(
+      ApplyAiResultCommand(
+        it.id!,
+        ReconstructResult(humanMd: it.humanMd ?? '', templateOutput: '结构化产出内容', templateId: 'tpl-1'),
+      ),
+      actor: CommandActor.pipeline,
+    );
+    final after = await repo.byId(it.id!);
+    expect(after!.templateOutput, '结构化产出内容');
+    expect(after.templateId, 'tpl-1');
+    expect(after.templateOutputAnchor, isNotEmpty);
   });
 }

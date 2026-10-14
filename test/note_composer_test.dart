@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:goodshare/doc/rich_text.dart';
+import 'package:rich_text/markdown_subset.dart';
 import 'package:goodshare/share/note_composer.dart';
 
 void main() {

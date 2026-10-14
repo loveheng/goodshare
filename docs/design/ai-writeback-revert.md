@@ -221,4 +221,4 @@ settle 的 1.5s 计时器一旦 scheduling，若在到期前用户点击了悬�
 
 - `doc_meta_json` 已有的「确认态」字段**复用其语义**承载 `ai_session_state`，状态在 meta、内容在列，不重复造。
 - 云备份 `backup_service` 是整机备份，**不替代**本稿的按写回粒度撤销。
-- 归一化（`lib/doc/rich_text.dart`）保证写回文本语义不丢；本稿在其之上补「可控性」一层。
+- 归一化（`package:rich_text`）保证写回文本语义不丢；本稿在其之上补「可控性」一层。
