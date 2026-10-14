@@ -34,14 +34,23 @@ void mcpBinderMain() {
   );
 
   final channel = MethodChannel(_kChannel);
+  // Binder 插件→宿主事件发射器（#4/#5）：Dart 侧经原生 `pushEvent` 通道转
+  // `IMcpCallback.onEvent` 推给 goodhub（progress / 反向请求 / `_async` 终帧）。
+  server.onEventEmitter = (payload) {
+    channel.invokeMethod<void>('pushEvent', payload);
+  };
   channel.setMethodCallHandler((call) async {
     switch (call.method) {
       case 'dispatch':
-        // 同步 JSON-RPC 请求 → 响应字符串；长任务（>5s）日后走 _async（#4 批次）。
+        // 同步 JSON-RPC 请求 → 响应字符串；长任务（>5s）走 `_async` + onEvent 终帧（#4）。
         return await server.handleJsonRpc(call.arguments as String);
       case 'answerReverse':
-        // 宿主回答本插件经 onEvent 发出的反向请求（sampling 闭环，#5 批次接）。
+        // 宿主回答本插件经 onEvent 发出的反向请求（sampling 闭环，#5）。
         server.answerReverse(call.arguments as String);
+        return null;
+      case 'hostCallbackReady':
+        // 宿主已注册 IMcpCallback（registerCallback），onEvent 通道可用（#4/#5）。
+        // 原生 pushEvent 在 callback 为 null 时静默丢弃，此处仅作可观测标记。
         return null;
       default:
         throw PlatformException(code: 'not_implemented', message: call.method);

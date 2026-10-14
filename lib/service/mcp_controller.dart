@@ -1,7 +1,6 @@
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/repository.dart';
@@ -56,26 +55,20 @@ class McpController extends ChangeNotifier {
     return 'http://${ip ?? '127.0.0.1'}:$defaultPort/mcp';
   }
 
-  /// 打开 MCP 服务：前台服务保活 + 启动内嵌 HTTP server。
+  /// 打开 MCP 服务：前台服务保活（经统一协调器，与 AI 队列解绑）+ 启动内嵌 HTTP server。
   /// 返回 null 表示成功，否则为错误信息。
   Future<String?> enable() async {
     _lastError = null;
     try {
-      if (await FlutterForegroundTask.isRunningService) {
-        // 进程已被 AI 队列保活（前台服务单实例，插件 startService 对已运行
-        // 服务直接抛异常）：跳过拉起，进程本身已保活，server 照常 start。
-        // 通知沿用现有文案（AI 任务队列运行态）——两态并存时通知归属先拉起方。
-      } else {
-        // MCP 专用 DEFAULT 通道（2026-10-09 拍板）：用户显式开启、期待可感知
-        // ——抽屉置顶但不横幅轰炸；AI 队列维持 LOW 通道不变。
-        await ensureForegroundTaskInit(channelId: mcpFgChannelId);
-        final addr = await lanIpv4();
-        await FlutterForegroundTask.startService(
-          serviceTypes: [ForegroundServiceTypes.dataSync],
-          notificationTitle: '拾贝 · MCP 服务运行中',
-          notificationText: 'http://${addr ?? '127.0.0.1'}:$defaultPort/mcp（地址见 app 内 MCP 页）',
-        );
-      }
+      // Binder 插件路径由 goodhub 随调随起、不依赖本前台服务；此处仅 HTTP 回退
+      // （用户手动开启）需要保活，交由协调器与 AI 队列共享单实例、互不误杀。
+      final addr = await lanIpv4();
+      await ForegroundServiceCoordinator.instance.acquire(
+        ForegroundServiceCoordinator.mcpTag,
+        channelId: mcpFgChannelId,
+        title: '拾贝 · MCP 服务运行中',
+        text: 'http://${addr ?? '127.0.0.1'}:$defaultPort/mcp（地址见 app 内 MCP 页）',
+      );
       _server ??= McpServer(
         repo: repo,
         tokenProvider: () => _token,
@@ -117,11 +110,10 @@ class McpController extends ChangeNotifier {
     try {
       await _server?.stop();
     } catch (_) {/* 服务可能已停止 */}
+    // 仅释放 MCP 的保活声明；若 AI 队列仍持有，协调器不会停止服务（#2 解绑）。
     try {
-      if (await FlutterForegroundTask.isRunningService) {
-        await FlutterForegroundTask.stopService();
-      }
-    } catch (_) {/* 前台服务可能未在运行 */}
+      await ForegroundServiceCoordinator.instance.release(ForegroundServiceCoordinator.mcpTag);
+    } catch (_) {/* 协调器内部已容错 */}
     _server = null;
   }
 }

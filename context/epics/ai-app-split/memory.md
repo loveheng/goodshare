@@ -2,8 +2,8 @@
 dev-loop: memory
 format: v1
 epic: ai-app-split
-total-merged: 0
-last-merge: none
+total-merged: 2
+last-merge: 2026-10-13
 ---
 
 # ai-app-split · LLM 拆出至 AI 宿主 App

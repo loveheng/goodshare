@@ -2,36 +2,33 @@ import 'dart:async';
 
 import 'package:battery_plus/battery_plus.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../app/lifecycle_manager.dart';
 import '../data/repository.dart';
 import '../service/foreground_task_init.dart';
-import '../service/mcp_controller.dart';
 import 'queue_consumer.dart';
 
 /// 第 3 档：AI 队列后台常驻引擎。
 ///
-/// 复用 [McpController] 已持有的单前台服务（flutter_foreground_task 仅支持单实例）
-/// 保活主 isolate，使 OCR / 端侧转写 / 链接抓取等离线推理在 app 退后台后仍能继续消费
-/// `ai_task_queue`；按设备状态（电量 / 充电）调度，并在内存压力下优雅中断（V2 §3.x）。
+/// 经 [ForegroundServiceCoordinator] 独立声明前台服务保活（flutter_foreground_task
+/// 仅支持单实例，与 MCP 共享但生命周期解绑，#2），使 OCR / 端侧转写 / 链接抓取等
+/// 离线推理在 app 退后台后仍能继续消费 `ai_task_queue`；按设备状态（电量 / 充电）
+/// 调度，并在内存压力下优雅中断（V2 §3.x）。
 ///
 /// 生命周期：
-/// - 退后台且有待处理任务且设备状态允许 → 拉起 / 复用前台服务（进程保活，consumer 的
+/// - 退后台且有待处理任务且设备状态允许 → 经协调器拉起前台服务（进程保活，consumer 的
 ///   3s 轮询继续跑），通知栏显示「AI 离线处理中（剩余 N 条）」；
-/// - 回前台 → 若本服务独立持有前台服务且 MCP 未运行则停止（consumer 在前台照常跑）；
+/// - 回前台 → 释放 AI 保活声明（consumer 在前台照常跑，是否停服务由协调器按剩余持有者决定）；
 /// - 内存压力 → 暂停认领新任务 + 当前 processing 任务回滚 pending，待恢复后续跑，不崩溃。
 class AiQueueService extends ChangeNotifier {
   AiQueueService({
     required this.repo,
     required this.consumer,
-    required this.mcp,
   });
 
   final Repository repo;
   final QueueConsumer consumer;
-  final McpController mcp;
 
   static const _prefBgProcess = 'ai_bg_process';
 
@@ -40,7 +37,7 @@ class AiQueueService extends ChangeNotifier {
   int _batteryLevel = 100;
   bool _memoryPressure = false;
   bool _isBackgrounded = false;
-  bool _owningService = false; // 当前是否由本服务独立持有前台服务
+  bool _aiHeld = false; // 当前是否经由协调器持有前台服务
 
   /// 设置开关：退后台是否继续 AI 处理（默认开）。
   bool backgroundProcessingEnabled = true;
@@ -97,8 +94,9 @@ class AiQueueService extends ChangeNotifier {
     backgroundProcessingEnabled = v;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_prefBgProcess, v);
-    if (!v && _owningService && _isBackgrounded) {
-      await _stopService();
+    if (!v && _aiHeld) {
+      await ForegroundServiceCoordinator.instance.release(ForegroundServiceCoordinator.aiTag);
+      _aiHeld = false;
     }
     notifyListeners();
   }
@@ -111,27 +109,24 @@ class AiQueueService extends ChangeNotifier {
     final pending = await repo.pendingCount();
     if (pending == 0) return;
 
-    if (await FlutterForegroundTask.isRunningService) {
-      // MCP 已持有前台服务，进程本身已保活，consumer 继续跑；不抢通知
-      _owningService = false;
-      return;
-    }
-    await ensureForegroundTaskInit();
-    await FlutterForegroundTask.startService(
-      serviceTypes: [ForegroundServiceTypes.dataSync],
-      notificationTitle: '拾贝 · AI 离线处理中',
-      notificationText: '剩余 $pending 条待处理',
+    // 经协调器独立声明 AI 保活，不依赖/不检查 MCP 是否持有（#2 解绑）。
+    await ForegroundServiceCoordinator.instance.acquire(
+      ForegroundServiceCoordinator.aiTag,
+      channelId: fgChannelId,
+      title: '拾贝 · AI 离线处理中',
+      text: '剩余 $pending 条待处理',
     );
-    _owningService = true;
+    _aiHeld = true;
     _startProgressTimer();
   }
 
-  /// 回前台：本服务独立持有且 MCP 未运行则停止前台服务（consumer 在前台照常）。
+  /// 回前台：释放 AI 保活声明（consumer 在前台照常跑；是否停服务由协调器按剩余持有者决定）。
   Future<void> _onResumed() async {
     _isBackgrounded = false;
     _stopProgressTimer();
-    if (_owningService && !mcp.running) {
-      await _stopService();
+    if (_aiHeld) {
+      await ForegroundServiceCoordinator.instance.release(ForegroundServiceCoordinator.aiTag);
+      _aiHeld = false;
     }
     // 前台继续处理（并回收可能的僵尸任务）
     unawaited(consumer.reclaimStaleTasks());
@@ -139,9 +134,10 @@ class AiQueueService extends ChangeNotifier {
   }
 
   Future<void> _onBatteryChanged() async {
-    if (!_deviceOk && _owningService && _isBackgrounded) {
-      // 退后台期间电量跌破阈值：停止保活以省电，任务留待充电后续跑
-      await _stopService();
+    if (!_deviceOk && _aiHeld && _isBackgrounded) {
+      // 退后台期间电量跌破阈值：释放保活以省电，任务留待充电后续跑
+      await ForegroundServiceCoordinator.instance.release(ForegroundServiceCoordinator.aiTag);
+      _aiHeld = false;
     }
     notifyListeners();
   }
@@ -164,20 +160,16 @@ class AiQueueService extends ChangeNotifier {
 
   Future<void> _stopService() async {
     _stopProgressTimer();
-    _owningService = false;
-    try {
-      if (await FlutterForegroundTask.isRunningService) {
-        await FlutterForegroundTask.stopService();
-      }
-    } catch (_) {
-      // 服务可能已被 MCP 或系统停止
+    if (_aiHeld) {
+      await ForegroundServiceCoordinator.instance.release(ForegroundServiceCoordinator.aiTag);
+      _aiHeld = false;
     }
   }
 
   void _startProgressTimer() {
     _stopProgressTimer();
     _progressTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
-      if (!_owningService) return;
+      if (!_aiHeld) return;
       final pending = await repo.pendingCount();
       if (pending == 0) {
         // 队列已空：停止保活（进程回前台或交还系统调度）
@@ -185,8 +177,10 @@ class AiQueueService extends ChangeNotifier {
         return;
       }
       try {
-        await FlutterForegroundTask.updateService(
-          notificationText: '剩余 $pending 条待处理',
+        await ForegroundServiceCoordinator.instance.update(
+          ForegroundServiceCoordinator.aiTag,
+          title: '拾贝 · AI 离线处理中',
+          text: '剩余 $pending 条待处理',
         );
       } catch (_) {
         // 通知更新失败不阻塞队列

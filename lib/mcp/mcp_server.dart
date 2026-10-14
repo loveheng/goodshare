@@ -35,6 +35,12 @@ class McpServer {
   final Map<String, Completer<Object?>> _pendingServerRequests = {};
   int _serverReqSeq = 0;
 
+  /// Binder 插件→宿主事件发射器（#4/#5）：经原生 `pushEvent` 通道转
+  /// `IMcpCallback.onEvent` 推给 goodhub（progress / 反向请求 / `_async` 终帧）。
+  /// 仅 Binder 后台引擎（[mcpBinderMain]）接入；为 null 表示非 Binder（HTTP / 测试），
+  /// 反向请求与 `_async` 终帧不可用（此时采样走 SSE 流、工具同步返回）。
+  void Function(String payload)? onEventEmitter;
+
   StreamSubscription<String>? _changesSub;
 
   static const _builtinInstructions =
@@ -291,6 +297,47 @@ class McpServer {
     }
   }
 
+  /// Binder 专属：插件→宿主事件发射（#4/#5）。仅 [onEventEmitter] 非空（Binder 后台引擎接入）时有效。
+  void _emitOnEvent(String payload) => onEventEmitter?.call(payload);
+
+  /// Binder 长任务清单（#4）：预计超 Binder 调用预算（§1.2.3 <5s）的工具必须登记于此，
+  /// 走 `_async` + onEvent 终帧，避免 `call` 同步阻塞触发 ANR。新增超预算工具须登记。
+  static const Set<String> _kBinderAsyncTools = {'ai_suggest_tags'};
+
+  /// 丢弃后台 Future（避免 unawaited 告警），用于 `_async` 工具的非阻塞派发。
+  static void _fireAndForget(Future<void> future) {}
+
+  /// Binder 反向请求通道（#5）：`sampling/createMessage` 帧经 [_emitOnEvent] 推宿主，
+  /// 宿主经 `answerReverse` 回注唤醒 completer（与 HTTP SSE 版同源，仅承载通道不同）。
+  Future<Object?> _binderSampling(Object? sParams) =>
+      _serverRequest('sampling/createMessage', sParams, _emitOnEvent);
+
+  /// Binder `_async` 工具后台执行：真实结果/错误经 onEvent 终帧回注（#4）。
+  Future<void> _runAsyncTool(Object? id, String name, Map<String, Object?> args) async {
+    try {
+      final content = await callTool(name, args, repo, sampling: _binderSampling);
+      _emitAsyncResult(id, result: {'content': content, 'isError': false});
+    } on McpRpcError catch (e) {
+      _emitAsyncResult(id, error: e.toMap());
+    } catch (e) {
+      _emitAsyncResult(id, error: _rpcError(id, errInternal, '工具执行失败: $e'));
+    }
+  }
+
+  /// 经 onEvent 推 `_async` 终帧（id 与原始 tools/call 同，GoodHub 按 id 关联完成 completer）。
+  /// 响应帧（id + result/error，无 method）与反向请求帧（id + method）经同一 onEvent 通道，
+  /// GoodHub 按「是否含 method」路由（§1.2.2）。
+  void _emitAsyncResult(Object? id, {Map<String, Object?>? result, Map<String, Object?>? error}) {
+    if (onEventEmitter == null) return;
+    final frame = <String, Object?>{'jsonrpc': '2.0', 'id': id};
+    if (error != null) {
+      frame['error'] = error;
+    } else {
+      frame['result'] = result;
+    }
+    onEventEmitter!(jsonEncode(frame));
+  }
+
   Future<Object?> _dispatch(String method, Object? params) async {
     switch (method) {
       case 'initialize':
@@ -362,9 +409,12 @@ class McpServer {
   ///
   /// 供 [McpBinderService] 经 MethodChannel 调用，与 [_onRequest] 同协议语义，
   /// 但**无** Origin 校验 / `X-Api-Key` 鉴权（Binder 侧走同签名 `signature` 权限，
-  /// 见 thirdconnect.md §1.2.6）/ 端口；反向请求响应经 [answerReverse] 单独通道回注。
+  /// 见 thirdconnect.md §1.2.6）/ 端口；反向请求响应经 [answerReverse] 单独通道回注，
+  /// 长任务终帧与反向请求帧经 [onEventEmitter]（原生 pushEvent → `IMcpCallback.onEvent`）外发。
   /// 覆盖：常规请求（initialize/tools/list/tools/call/resources/prompts）、
-  /// 通知（id==null，回空 ack）、反向请求响应（method==null 且 id 在途，唤醒 completer）。
+  /// 通知（id==null，回空 ack）、反向请求响应（method==null 且 id 在途，唤醒 completer）、
+  /// 长任务 tools/call（[onEventEmitter] 非空且工具在 [_kBinderAsyncTools]）→ 立即回
+  /// `{"_async":true}`，真实结果经 onEvent 终帧回注（#4/#5，规避 Binder 调用预算 <5s）。
   Future<String> handleJsonRpc(String requestJson) async {
     Object? msg;
     try {
@@ -388,6 +438,22 @@ class McpServer {
     }
     if (method is! String) {
       return jsonEncode(_rpcError(id, errInvalidRequest, '缺少 method'));
+    }
+    // #4/#5：Binder 长任务（[onEventEmitter] 已接 + 工具在 [_kBinderAsyncTools]）走 `_async`
+    // + onEvent 终帧——call 立即秒回，真实结果后台算出后经 onEvent 推同 id 终帧，
+    // 避免同步阻塞越过 Binder 调用预算（§1.2.3 <5s）触发 ANR（sampling 最长 90s）。
+    if (method == 'tools/call' && onEventEmitter != null) {
+      final p = msg['params'] is Map<String, Object?>
+          ? msg['params'] as Map<String, Object?>
+          : const <String, Object?>{};
+      final name = p['name'];
+      if (name is String && _kBinderAsyncTools.contains(name)) {
+        final args = p['arguments'] is Map<String, Object?>
+            ? p['arguments'] as Map<String, Object?>
+            : const <String, Object?>{};
+        _fireAndForget(_runAsyncTool(id, name, args));
+        return jsonEncode({'jsonrpc': '2.0', 'id': id, 'result': {'_async': true}});
+      }
     }
     try {
       final result = await _dispatch(method, msg['params']);

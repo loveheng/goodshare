@@ -164,7 +164,7 @@ Future<void> main() async {
   consumer.start();
   // 第 3 档：前台服务保活 + 设备状态感知调度 + 内存压力优雅中断
   // （consumer 启动 / 僵尸回收 / resumed 排空均收口进 AiQueueService）
-  aiQueue = AiQueueService(repo: repo, consumer: consumer, mcp: mcp);
+  aiQueue = AiQueueService(repo: repo, consumer: consumer);
   consumer.canProcess = () async => aiQueue.inferenceAllowed;
   await aiQueue.init();
   runApp(

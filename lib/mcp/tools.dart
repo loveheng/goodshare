@@ -36,6 +36,10 @@ import 'jsonrpc.dart';
 /// 字幕把 MCP 响应撑爆；1 小时转写约 50KB，256KB 帽余量充足）。
 const int _kSubtitleInlineMaxBytes = 256 * 1024;
 
+/// get_item 图片内联的单文件上限：Binder 事务 1MB 上限的对策（eval §4），超过改
+/// 返回 mcp-blob:// URI 由宿主经 resources/read 取字节，避免 Binder 事务撑爆。
+const int _kInlineMaxBytes = 512 * 1024;
+
 /// MCP annotations.readOnlyHint 声明（ai-app-split.md §3.5）：客户端权限网关的
 /// 建议值源（goodhub 拍板 C2——hint 只作建议、客户端终裁决、冲突按更严格者）。
 /// 只列**纯查询**工具（与 goodhub 本地兜底表同口径）；未收录工具经包装层默认
@@ -84,7 +88,8 @@ List<Map<String, Object?>> _toolSchemasRaw() => [
       },
       {
         'name': 'get_item',
-        'description': '读取单个收集条目的完整内容（原文 + 人类态/机器态）；图片条目会返回 base64 图像内容块；'
+        'description': '读取单个收集条目的完整内容（原文 + 人类态/机器态）；图片条目小图返回 base64 图像块，'
+            '大图/大附件（超 512KB）返回 mcp-blob:// URI 由宿主经 resources/read 取字节；'
             '已转写的音/视频条目会带 subtitles 字段（SRT/VTT 及译文文件内容内联，超 256KB 只报大小）；'
             '行内媒体块的派生产物清单在 block_artifacts 字段（block_key/kind/file_path），'
             '块任务进度在 block_tasks 字段（action/block_key/status/note）。',
@@ -569,11 +574,12 @@ List<Map<String, Object?>> _toolSchemasRaw() => [
       },
       {
         'name': 'ai_suggest_tags',
-        'description': '为条目即时建议标签：经 MCP sampling 反向请求宿主大模型同步返回，'
-            '纯只读——不落库、不入任务队列、不改条目。适合对话中即时拿建议（本调用 '
-            '会同步等待宿主推理）；需要把标签写入条目请用 extract_tags（异步入队落库）。'
-            '宿主不支持 sampling / 配额超限 / 超时会返回结构化 status（sampling_unavailable '
-            '/ sampling_quota_exceeded / sampling_failed / no_content）而非报错。',
+        'description': '为条目即时建议标签：经 MCP sampling 反向请求宿主大模型返回，'
+            '纯只读——不落库、不入任务队列、不改条目。适合对话中即时拿建议；需要把标签'
+            '写入条目请用 extract_tags（异步入队落库）。Binder 路径走 `_async` + onEvent 终帧'
+            '（不阻塞 Binder 调用预算），HTTP 走 SSE 流；宿主不支持 sampling / 配额超限 /'
+            '超时会返回结构化 status（sampling_unavailable / sampling_quota_exceeded /'
+            ' sampling_failed / no_content）而非报错。',
         'inputSchema': {
           'type': 'object',
           'properties': {
@@ -907,11 +913,18 @@ Future<List<Map<String, Object?>>> callTool(
         final file = File(f);
         if (await file.exists()) {
           final mime = _mimeOf(f);
-          if (mime.startsWith('image/') && await file.length() <= 4 * 1024 * 1024) {
+          final len = await file.length();
+          if (mime.startsWith('image/') && len <= _kInlineMaxBytes) {
+            // 小图直接内联（Binder 1MB 事务安全）；大图/非图片改 mcp-blob URI，
+            // 宿主经 resources/read(mcp-blob://) 取字节（#3，严禁 $ref://）。
             final b64 = base64Encode(await file.readAsBytes());
             blocks.add({'type': 'image', 'data': b64, 'mimeType': mime});
           } else {
-            blocks.add(_text('[附件] $f（$mime，未内联）'));
+            blocks.add({
+              'type': 'resource_link',
+              'uri': 'mcp-blob://com.zzh.goodshare/${Uri.encodeComponent(f)}',
+              'mimeType': mime,
+            });
           }
         }
       }

@@ -4,6 +4,9 @@
 /// 可见性与工具面同口径：Vault 与已删条目物理不可见（Repository 默认查询保证）。
 library;
 
+import 'dart:convert';
+import 'dart:io';
+
 import '../data/repository.dart';
 import 'jsonrpc.dart';
 
@@ -18,6 +21,13 @@ const kPromptMinHubVersion = '0.1.0';
 
 /// resources URI 前缀：只读数据面单入口，非法前缀/嵌套路径一律 -32602。
 const kResourceUriPrefix = 'goodshare://items/';
+
+/// mcp-blob URI 前缀：get_item 大附件/大图经此 URI 暴露，宿主再 resources/read
+/// 取字节（Binder 1MB 事务上限对策，#3；严禁 $ref://——其语义/可达性不可控）。
+const kBlobUriPrefix = 'mcp-blob://com.zzh.goodshare/';
+
+/// resources/read 文本阈值帽（Binder 1MB 事务上限对策，#3）：超阈值截断并提示走 get_item。
+const _kResourceTextMaxBytes = 512 * 1024;
 
 /// 官方预置模板（ai-app-split.md §3.7：prompts 只描述意图编排，不新增工具；
 /// 正文引用既有工具面，宿主模型按其执行）。{arg} 占位符经 prompts/get 字面替换。
@@ -140,10 +150,14 @@ Future<List<Map<String, Object?>>> listResources(Repository repo) async {
 
 /// resources/read（§3.8）：text = 条目正文（human_md ?? raw_content，与
 /// claim text 同基线）；非法 URI 或条目不可见 → -32602（Vault 物理不可见）。
+/// 另支持 mcp-blob:// URI（#3：get_item 大附件/大图暴露的字节入口）。
 Future<List<Map<String, Object?>>> readResource(
   Repository repo,
   String uri,
 ) async {
+  if (uri.startsWith(kBlobUriPrefix)) {
+    return _readBlob(uri);
+  }
   if (!uri.startsWith(kResourceUriPrefix)) {
     throw McpRpcError(errInvalidParams, '不支持的资源 URI: $uri');
   }
@@ -153,7 +167,59 @@ Future<List<Map<String, Object?>>> readResource(
   }
   final it = await repo.byId(id, aiVisible: true);
   if (it == null) throw McpRpcError(errInvalidParams, '资源不存在或不可见: $uri');
+  final body = it.bodyText;
+  final bytes = utf8.encode(body);
+  if (bytes.length > _kResourceTextMaxBytes) {
+    // Binder 1MB 事务上限对策：超阈值截断，避免事务撑爆；全文走 get_item。
+    final truncated = _truncateUtf8(body, _kResourceTextMaxBytes);
+    return [
+      {
+        'uri': uri,
+        'mimeType': 'text/plain',
+        'text': '$truncated\n…(已截断，全文请用 get_item 读取)',
+      },
+    ];
+  }
   return [
-    {'uri': uri, 'mimeType': 'text/plain', 'text': it.bodyText},
+    {'uri': uri, 'mimeType': 'text/plain', 'text': body},
   ];
+}
+
+/// mcp-blob://com.zzh.goodshare/[encodedPath] → 读文件字节，以 blob(base64) 返回。
+/// 路径经 [Uri.encodeComponent] 编码后放入 URI，此处解码还原（#3）。
+Future<List<Map<String, Object?>>> _readBlob(String uri) async {
+  final encoded = uri.substring(kBlobUriPrefix.length);
+  final path = Uri.decodeComponent(encoded);
+  final file = File(path);
+  if (!await file.exists()) {
+    throw McpRpcError(errInvalidParams, 'blob 不存在: $uri');
+  }
+  final mime = _blobMimeOf(path);
+  final bytes = await file.readAsBytes();
+  return [
+    {'uri': uri, 'mimeType': mime, 'blob': base64Encode(bytes)},
+  ];
+}
+
+/// 按 UTF-8 字节安全截断（不切断多字节字符），用于 resources/read 文本阈值帽。
+String _truncateUtf8(String s, int maxBytes) {
+  var end = s.length;
+  while (end > 0 && utf8.encode(s.substring(0, end)).length > maxBytes) {
+    end--;
+  }
+  return s.substring(0, end);
+}
+
+/// blob 路径 MIME 推断（与 tools.dart _mimeOf 同源，避免反向 import 成环）。
+String _blobMimeOf(String path) {
+  final ext = path.split('.').last.toLowerCase();
+  return switch (ext) {
+    'png' => 'image/png',
+    'jpg' || 'jpeg' => 'image/jpeg',
+    'webp' => 'image/webp',
+    'gif' => 'image/gif',
+    'mp4' => 'video/mp4',
+    'mp3' => 'audio/mpeg',
+    _ => 'application/octet-stream',
+  };
 }
