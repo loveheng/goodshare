@@ -16,9 +16,6 @@ import 'ai/asr_reconstructor.dart';
 import 'ai/ai_queue_service.dart';
 import 'ui/toast.dart';
 import 'ai/capabilities.dart';
-import 'ai/llm.dart';
-import 'ai/llm_model_manager.dart';
-import 'ai/llm_reconstructor.dart';
 import 'ai/block_extract_audio_reconstructor.dart';
 import 'ai/clip_reconstructor.dart';
 import 'ai/model_manager.dart';
@@ -99,14 +96,9 @@ Future<void> main() async {
   await backup.load();
   final models = ModelManager();
   await models.load();
-  final llmModels = LlmModelManager();
-  await llmModels.load();
   await ShareIntake(handler, collector).init();
   // AI 队列消费者：v1 = 图片 ML Kit OCR + 音频 Sherpa 离线转写（均受设置开关门控）
   // + 链接离线抓取 + 其余占位复制
-  final llmEngine = ChannelLlmEngine();
-  // R1 串联摘要步持有者（与 consumer registry 里的 LlmReconstructor 同引擎实例）
-  final llmR1 = LlmReconstructor(engine: llmEngine);
   // 文档扫描能力实例：同时注入 caps（UI 取用）与注册表（能力清单），保持单例
   final docScan = DocumentScanCapability();
   caps.documentScan = docScan;
@@ -116,9 +108,6 @@ Future<void> main() async {
       OcrReconstructor(
         isOcrEnabled: () => caps.ocrEnabled,
         isUrlFetchEnabled: () => caps.urlFetchEnabled,
-        // R1 串联摘要步（2026-10-09 二次收敛）：抓取后原地调 LLM（头部 1500 截断），
-        // 模型不在位静默跳过——无独立任务、无开关、无链
-        summarizeHead: llmR1.summarizeUrlHead,
       ),
       // 图片分类（ML Kit Image Labeling，2026-09-29）：仅手动触发，base 模型离线可用
       ImageLabelCapability(),
@@ -147,13 +136,10 @@ Future<void> main() async {
       // 文档归一化（content-pipeline §9，2026-10-06）：document 摄入自动入队
       // normalize_document，按扩展名分派 html/plain/pdf/md 归一化器
       const DocumentNormalizeReconstructor(),
-      // 端侧 LLM（2026-09-28）：摘要（summary_md）与关键词提取，均由显式命令入队
-      // 视频切片（2026-09-29）：区间音轨→ASR→LLM 摘要，产出合并进 clips_json
-      LlmReconstructor(engine: llmEngine),
       // 块附件通道（2026-10-05 v21）：行内视频块提取音轨（block_extract_audio）
       const BlockExtractAudioReconstructor(),
+      // 视频切片（2026-09-29）：区间音轨→ASR 转写（端侧 LLM 摘要已拆至 AI 宿主，ai-app-split M2）
       ClipReconstructor(
-        engine: llmEngine,
         models: models,
         isAsrEnabled: () => caps.asrEnabled,
       ),
@@ -175,7 +161,6 @@ Future<void> main() async {
       mcp: mcp,
       caps: caps,
       models: models,
-      llmModels: llmModels,
       aiQueue: aiQueue,
       backup: backup,
     ),
@@ -355,7 +340,6 @@ class GoodShareApp extends StatelessWidget {
     required this.mcp,
     required this.caps,
     required this.models,
-    required this.llmModels,
     required this.aiQueue,
     required this.backup,
   });
@@ -366,7 +350,6 @@ class GoodShareApp extends StatelessWidget {
   final McpController mcp;
   final AiCapabilities caps;
   final ModelManager models;
-  final LlmModelManager llmModels;
   final AiQueueService aiQueue;
   final BackupService backup;
 
@@ -401,7 +384,6 @@ class GoodShareApp extends StatelessWidget {
         mcp: mcp,
         caps: caps,
         models: models,
-        llmModels: llmModels,
         aiQueue: aiQueue,
         backup: backup,
       ),

@@ -81,12 +81,6 @@ class MainActivity : FlutterActivity() {
                     result.notImplemented()
                 }
             }
-        // 端侧 LLM 桥（docs/design/on-device-llm.md）：isAvailable/unavailableReason/
-        // generate/socModel 四方法协议，实现见 LlmBridge。
-        LlmBridge.register(
-            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "goodshare/llm"),
-            this,
-        )
         // 媒体探测桥（media-native P1，替换 FFprobeKit 只读元数据）：见 MediaBridge。
         MediaBridge.register(
             MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "goodshare/media"),

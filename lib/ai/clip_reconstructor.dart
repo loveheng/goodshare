@@ -10,8 +10,6 @@ import '../doc/rich_text.dart' show classifyMediaUrl, MediaSuffix;
 import '../media/media_toolkit.dart';
 import '../media/wav16k.dart';
 import 'asr.dart';
-import 'llm.dart';
-import 'llm_reconstructor.dart';
 import 'model_manager.dart';
 import 'reconstructor.dart';
 import 'subtitle.dart';
@@ -26,12 +24,9 @@ import 'video_clips.dart';
 /// 任一环节失败 → 该区间 status=failed + note 明说哪一步失败（不置死信，可重启）。
 class ClipReconstructor implements AiReconstructor {
   const ClipReconstructor({
-    required this.engine,
     this.models,
     this.isAsrEnabled,
   });
-
-  final OnDeviceLlmEngine engine;
 
   /// 模型管理器；null = 环境无模型（转写占位，如 VM 测试）。
   final ModelManager? models;
@@ -52,7 +47,7 @@ class ClipReconstructor implements AiReconstructor {
 
   @override
   Future<ReconstructResult> reconstruct(ReconstructInput input) async {
-    // 失败路径一律回传条目既有文本，防止 human_md 被清空（与 LlmReconstructor 同守卫）
+    // 失败路径一律回传条目既有文本，防止 human_md 被清空
     final base = input.humanMd ?? input.rawContent ?? '';
     final itemClip = Repository.parseClipTaskAction(input.taskAction);
     final blockClip = Repository.parseBlockClipAction(input.taskAction);
@@ -169,24 +164,11 @@ class ClipReconstructor implements AiReconstructor {
         }
       }
 
-      // ---- 步骤③：端侧 LLM 摘要（依赖转写文本；复用 LlmReconstructor 提示词/降级口径）----
+      // ---- 步骤③：摘要（端侧大模型已拆至 AI 宿主 App，ai-app-split M2）----
+      // 本地不再持有 LiteRT 引擎：摘要步跳过，转写文本仍照常产出（ClipSegment.text）。
+      // 需要摘要由 AI 宿主经 claim/apply 远程处理后落块产物。
       if (steps.contains(kClipStepSummary)) {
-        if (text == null) {
-          failures.add('摘要未生成：没有转写文本');
-        } else {
-          final r = await LlmReconstructor(engine: engine).reconstruct(ReconstructInput(
-            itemId: input.itemId,
-            itemType: 'note',
-            rawContent: text,
-            humanMd: text,
-            taskAction: Repository.taskLlmSummarize,
-          ));
-          if (r.summaryMd == null || r.summaryMd!.trim().isEmpty) {
-            failures.add('摘要未生成：${r.note ?? '端侧大模型未产出'}');
-          } else {
-            summary = r.summaryMd!.trim();
-          }
-        }
+        failures.add('摘要需端侧大模型（已拆至 AI 宿主 App），本次仅完成提取/转写');
       }
     } catch (e) {
       // DEGRADE: 任一环节异常按「区间置 failed + 明说原因」处理，不置死信不重入队。
