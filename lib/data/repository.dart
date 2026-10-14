@@ -6,6 +6,7 @@ import 'package:sqflite/sqflite.dart';
 
 import '../ai/video_clips.dart';
 import '../models/item.dart';
+import '../models/template.dart';
 import '../models/workspace.dart';
 import 'block_artifacts.dart';
 import 'db.dart';
@@ -634,6 +635,97 @@ class Repository extends ChangeNotifier {
       [itemId],
     );
     return rows.map(Workspace.fromMap).toList();
+  }
+
+  // ───────── 内容生产模板（2026-10-14 v23，ai-template：AI 托管 + 双视图） ─────────
+  //
+  // 模板是独立数据域（同 workspace 定位），CRUD 走 Repository 直接方法 + MCP 工具
+  // 直调，**不经 ItemActionHandler 条目命令协议**——命令协议的乐观锁/打码/machine_json
+  // 是针对条目内容写的；模板产出 template_output 的写入（P2 apply）才走命令协议。
+  // body_md 为单一源：人类预览页渲染它、AI skill 文件从它派生。管理权归 AI（人类只读）。
+
+  Future<Template> createTemplate({
+    required String workspaceId,
+    required String name,
+    String? description,
+    required String bodyMd,
+    String origin = 'ai',
+  }) async {
+    final db = await _database();
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final t = Template(
+      id: InboxItem.newId(),
+      workspaceId: workspaceId,
+      name: name.trim(),
+      description: description?.trim(),
+      bodyMd: bodyMd,
+      origin: origin,
+      version: 0,
+      createdAt: now,
+      updatedAt: now,
+    );
+    await db.insert('templates', t.toMap());
+    notifyListeners();
+    return t;
+  }
+
+  /// 更新模板（白名单补丁 + 乐观锁）：传 [expectedVersion] 则 CAS，冲突抛
+  /// StateError（防并发覆盖）；version 每次 +1。返回更新后的模板（不存在 → null）。
+  Future<Template?> updateTemplate(
+    String id, {
+    String? name,
+    String? description,
+    String? bodyMd,
+    int? expectedVersion,
+  }) async {
+    final db = await _database();
+    final cur = await byIdTemplate(id);
+    if (cur == null) return null;
+    if (expectedVersion != null && expectedVersion != cur.version) {
+      throw StateError('模板版本冲突（expected $expectedVersion，current ${cur.version}）');
+    }
+    final patch = <String, Object?>{
+      if (name != null) 'name': name.trim(),
+      if (description != null) 'description': description.trim(),
+      'body_md': ?bodyMd,
+      'version': cur.version + 1,
+      'updated_at': DateTime.now().millisecondsSinceEpoch,
+    };
+    await db.update('templates', patch, where: 'id = ?', whereArgs: [id]);
+    notifyListeners();
+    return byIdTemplate(id);
+  }
+
+  /// 删除模板。**不影响已产出的 template_output**（inbox_items.template_id 松散
+  /// 关联、无 FK 级联）：历史结构化产出作归档内容永久保留，仅本列成孤儿。
+  Future<void> deleteTemplate(String id) async {
+    final db = await _database();
+    await db.delete('templates', where: 'id = ?', whereArgs: [id]);
+    notifyListeners();
+  }
+
+  /// 模板列表（按更新时间倒序）；[workspaceId] 非空则按工作区过滤。
+  Future<List<Template>> listTemplates({String? workspaceId}) async {
+    final db = await _database();
+    final rows = await db.query(
+      'templates',
+      where: workspaceId == null ? null : 'workspace_id = ?',
+      whereArgs: workspaceId == null ? null : [workspaceId],
+      orderBy: 'updated_at DESC',
+    );
+    return rows.map(Template.fromMap).toList();
+  }
+
+  /// 单个模板（不存在返回 null）。
+  Future<Template?> byIdTemplate(String id, {Transaction? txn}) async {
+    final db = txn ?? await _database();
+    final rows = await db.query(
+      'templates',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : Template.fromMap(rows.first);
   }
 
   Future<List<InboxItem>> listDeleted({int limit = 200}) async {

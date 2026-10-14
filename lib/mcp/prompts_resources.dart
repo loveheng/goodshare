@@ -8,6 +8,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../data/repository.dart';
+import '../models/template.dart';
 import 'jsonrpc.dart';
 
 /// 模板版本（CoW 告警基线，ai-app-split.md §3.7）：宿主比对 template_version
@@ -21,6 +22,9 @@ const kPromptMinHubVersion = '0.1.0';
 
 /// resources URI 前缀：只读数据面单入口，非法前缀/嵌套路径一律 -32602。
 const kResourceUriPrefix = 'goodshare://items/';
+
+/// 内容生产模板资源前缀（ai-template）：goodshare://templates/{id} → 派生 skill 文件。
+const kTemplateUriPrefix = 'goodshare://templates/';
 
 /// mcp-blob URI 前缀：get_item 大附件/大图经此 URI 暴露，宿主再 resources/read
 /// 取字节（Binder 1MB 事务上限对策，#3；严禁 $ref://——其语义/可达性不可控）。
@@ -136,6 +140,7 @@ Map<String, Object?> getPrompt(
 /// name 取标题，空标题回退 preview 截断。
 Future<List<Map<String, Object?>>> listResources(Repository repo) async {
   final items = await repo.list(limit: 200, aiVisible: true);
+  final templates = await repo.listTemplates();
   return [
     for (final it in items)
       {
@@ -144,6 +149,13 @@ Future<List<Map<String, Object?>>> listResources(Repository repo) async {
             ? it.humanTitle!
             : it.preview,
         'mimeType': 'text/plain',
+      },
+    // 内容生产模板（ai-template）：AI 经 goodshare://templates/{id} 读 skill 文件
+    for (final t in templates)
+      {
+        'uri': '$kTemplateUriPrefix${t.id}',
+        'name': t.name,
+        'mimeType': 'text/markdown',
       },
   ];
 }
@@ -157,6 +169,9 @@ Future<List<Map<String, Object?>>> readResource(
 ) async {
   if (uri.startsWith(kBlobUriPrefix)) {
     return _readBlob(uri);
+  }
+  if (uri.startsWith(kTemplateUriPrefix)) {
+    return _readTemplate(repo, uri);
   }
   if (!uri.startsWith(kResourceUriPrefix)) {
     throw McpRpcError(errInvalidParams, '不支持的资源 URI: $uri');
@@ -222,4 +237,44 @@ String _blobMimeOf(String path) {
     'mp3' => 'audio/mpeg',
     _ => 'application/octet-stream',
   };
+}
+
+/// goodshare://templates/{id} → 派生 skill 文件（ai-template）：AI 侧只读视图。
+/// 非法 URI / 模板不存在 → -32602。
+Future<List<Map<String, Object?>>> _readTemplate(
+  Repository repo,
+  String uri,
+) async {
+  final id = uri.substring(kTemplateUriPrefix.length);
+  if (id.isEmpty || id.contains('/') || id.contains('?')) {
+    throw McpRpcError(errInvalidParams, '非法模板资源 URI: $uri');
+  }
+  final t = await repo.byIdTemplate(id);
+  if (t == null) throw McpRpcError(errInvalidParams, '模板不存在: $uri');
+  return [
+    {'uri': uri, 'mimeType': 'text/markdown', 'text': templateSkillMd(t)},
+  ];
+}
+
+/// 模板 → AI skill 文件（派生只读）：单一源 [Template.bodyMd] + 元数据组装成
+/// skill 文档，AI 经 resources/read 获取；人类预览页直接渲染 body_md（另一视图）。
+/// 双视图同源、零漂移——AI 改模板经 MCP 写 body_md，skill 文件随之重新派生。
+String templateSkillMd(Template t) {
+  final buf = StringBuffer();
+  buf.writeln('---');
+  buf.writeln('name: ${t.name}');
+  if (t.description != null && t.description!.trim().isNotEmpty) {
+    buf.writeln('description: ${t.description}');
+  }
+  buf.writeln('template_version: ${t.version}');
+  buf.writeln('origin: ${t.origin}');
+  buf.writeln('workspace: ${t.workspaceId}');
+  buf.writeln('---');
+  buf.writeln();
+  buf.writeln('# ${t.name}');
+  buf.writeln();
+  buf.writeln('按以下结构骨架帮用户整理内容；将 {{占位符}} 替换为实际值。');
+  buf.writeln();
+  buf.writeln(t.bodyMd);
+  return buf.toString();
 }

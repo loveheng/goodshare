@@ -49,6 +49,7 @@ const Map<String, bool> _kReadOnlyHints = {
   'get_item': true,
   'query_machine_data': true,
   'list_workspaces': true,
+  'list_template': true,
   'list_jobs': true,
   'get_job_status': true,
   'get_timeline_context': true,
@@ -713,6 +714,58 @@ List<Map<String, Object?>> _toolSchemasRaw() => [
             'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
           },
           'required': ['workspace_id', 'id'],
+        },
+      },
+      {
+        'name': 'list_template',
+        'description': '列出内容生产模板（AI 托管，ai-template）。按 workspace_id 过滤（可选）。'
+            '返回 id/name/description/origin/version/updatedAt；body_md 经 goodshare://templates/{id} 资源单独读取。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'workspace_id': {'type': 'string', 'description': '工作区 id（可选；缺省列全部）'},
+          },
+        },
+      },
+      {
+        'name': 'create_template',
+        'description': '新建内容生产模板（AI 托管）。body_md 为单一源：人类预览页渲染它、skill 文件从它派生；{{占位符}} 标记待填充位置。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'workspace_id': {'type': 'string', 'description': '所属工作区 id（list_workspaces 返回）'},
+            'name': {'type': 'string', 'description': '模板名，不能为空'},
+            'description': {'type': 'string', 'description': '模板用途说明（可选）'},
+            'body_md': {'type': 'string', 'description': '模板骨架 markdown，{{占位符}} 标记待填充位置，不能为空'},
+            'origin': {'type': 'string', 'description': "来源：'ai' / 'official' / 'user'（'user' 预留暂不开放），默认 'ai'"},
+          },
+          'required': ['workspace_id', 'name', 'body_md'],
+        },
+      },
+      {
+        'name': 'update_template',
+        'description': '更新模板（白名单补丁 name/description/body_md + 乐观锁）。传 expected_version 做 CAS，冲突返回 version_conflict。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '模板 id（list_template 返回）'},
+            'name': {'type': 'string', 'description': '新名称（可选）'},
+            'description': {'type': 'string', 'description': '新说明（可选）'},
+            'body_md': {'type': 'string', 'description': '新骨架 markdown（可选）'},
+            'expected_version': {'type': 'integer', 'description': '可选乐观锁：当前模板 version'},
+          },
+          'required': ['id'],
+        },
+      },
+      {
+        'name': 'delete_template',
+        'description': '删除模板。不影响已产出的 template_output（松散关联，产出作归档保留）。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '模板 id（list_template 返回）'},
+          },
+          'required': ['id'],
         },
       },
     ];
@@ -1570,6 +1623,80 @@ Future<List<Map<String, Object?>>> callTool(
       }
       final r = await _guarded(() => handler.execute(
             RemoveFromWorkspaceCommand(wsId, id),
+            actor: CommandActor.ai,
+          ));
+      return [_text(jsonEncode(r.toJson()))];
+
+    case 'list_template':
+      final wsId = _str(args['workspace_id']);
+      final ts = await repo.listTemplates(workspaceId: wsId?.trim());
+      return [
+        _text(jsonEncode({
+          'count': ts.length,
+          'templates': [
+            for (final t in ts)
+              {
+                'id': t.id,
+                'workspace_id': t.workspaceId,
+                'name': t.name,
+                if (t.description != null) 'description': t.description,
+                'origin': t.origin,
+                'version': t.version,
+                'updated_at': _iso(t.updatedAt),
+              },
+          ],
+        })),
+      ];
+
+    case 'create_template':
+      final wsId = _str(args['workspace_id']);
+      final name = _str(args['name']);
+      final bodyMd = _str(args['body_md']);
+      if (wsId == null || wsId.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 workspace_id 不能为空');
+      }
+      if (name == null || name.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 name 不能为空');
+      }
+      if (bodyMd == null || bodyMd.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 body_md 不能为空');
+      }
+      final r = await _guarded(() => handler.execute(
+            CreateTemplateCommand(
+              wsId.trim(),
+              name.trim(),
+              description: _str(args['description']),
+              bodyMd: bodyMd,
+              origin: _str(args['origin']) ?? 'ai',
+            ),
+            actor: CommandActor.ai,
+          ));
+      return [_text(jsonEncode(r.toJson()))];
+
+    case 'update_template':
+      final id = _str(args['id']);
+      if (id == null || id.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      }
+      final r = await _guarded(() => handler.execute(
+            UpdateTemplateCommand(
+              id.trim(),
+              name: _str(args['name']),
+              description: _str(args['description']),
+              bodyMd: _str(args['body_md']),
+              expectedVersion: _int(args['expected_version']),
+            ),
+            actor: CommandActor.ai,
+          ));
+      return [_text(jsonEncode(r.toJson()))];
+
+    case 'delete_template':
+      final id = _str(args['id']);
+      if (id == null || id.trim().isEmpty) {
+        throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      }
+      final r = await _guarded(() => handler.execute(
+            DeleteTemplateCommand(id.trim()),
             actor: CommandActor.ai,
           ));
       return [_text(jsonEncode(r.toJson()))];

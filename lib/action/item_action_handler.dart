@@ -129,6 +129,9 @@ class ItemActionHandler {
         final AddToWorkspaceCommand c => _addToWorkspace(c, seeVault, txn),
         final RemoveFromWorkspaceCommand c => _removeFromWorkspace(c),
         final MigrateAttachCommand c => _migrateAttach(c, txn),
+        final CreateTemplateCommand c => _createTemplate(c),
+        final UpdateTemplateCommand c => _updateTemplate(c),
+        final DeleteTemplateCommand c => _deleteTemplate(c),
       };
 
   /// 原子批量执行：一条命令失败则整批回滚，杜绝「字改了但标签没打上」的脏数据。
@@ -1406,6 +1409,90 @@ class ItemActionHandler {
     await _repo.removeFromWorkspace(cmd.workspaceId, cmd.itemId);
     return _result('remove_from_workspace', cmd.itemId,
         seeVault: false, note: '已移出工作区「${ws.name}」');
+  }
+
+  /// 新建内容生产模板（AI 托管，人类无创建入口，ai-template）：校验 workspace
+  /// 存在 + name/body_md 非空 → repo.createTemplate。管理权归 AI（R2 写出口同守）。
+  Future<CommandResult> _createTemplate(CreateTemplateCommand cmd) async {
+    final name = cmd.name.trim();
+    if (name.isEmpty) {
+      throw ActionException('模板名称不能为空', code: ActionErrorCode.invalidRequest);
+    }
+    if (cmd.bodyMd.trim().isEmpty) {
+      throw ActionException('模板内容 body_md 不能为空', code: ActionErrorCode.invalidRequest);
+    }
+    final ws = await _repo.byIdWorkspace(cmd.workspaceId);
+    if (ws == null) {
+      throw ActionException(
+        '工作区不存在：id=${cmd.workspaceId}',
+        code: ActionErrorCode.notFound,
+        hint: '先执行 list_workspaces 确认 id',
+      );
+    }
+    final t = await _repo.createTemplate(
+      workspaceId: cmd.workspaceId,
+      name: name,
+      description: cmd.description,
+      bodyMd: cmd.bodyMd,
+      origin: cmd.origin,
+    );
+    return CommandResult(
+      op: 'create_template',
+      targetId: t.id,
+      note: '已创建模板「${t.name}」',
+    );
+  }
+
+  /// 更新模板：存在性校验 + 乐观锁 CAS（repo.updateTemplate 冲突抛 StateError，
+  /// 转 version_conflict、与条目乐观锁同码，宿主/AI 可统一重试）。
+  Future<CommandResult> _updateTemplate(UpdateTemplateCommand cmd) async {
+    final cur = await _repo.byIdTemplate(cmd.id);
+    if (cur == null) {
+      throw ActionException(
+        '模板不存在：id=${cmd.id}',
+        code: ActionErrorCode.notFound,
+        hint: '先执行 list_template 确认 id',
+      );
+    }
+    try {
+      await _repo.updateTemplate(
+        cmd.id,
+        name: cmd.name,
+        description: cmd.description,
+        bodyMd: cmd.bodyMd,
+        expectedVersion: cmd.expectedVersion,
+      );
+    } on StateError catch (e) {
+      throw ActionException(
+        e.message,
+        code: ActionErrorCode.versionConflict,
+        hint: '重新读取模板取最新 version，再带 expected_version 重试',
+      );
+    }
+    final updated = (await _repo.byIdTemplate(cmd.id))!;
+    return CommandResult(
+      op: 'update_template',
+      targetId: updated.id,
+      note: '已更新模板「${updated.name}」（v${updated.version}）',
+    );
+  }
+
+  /// 删除模板：存在性校验；**不影响已产出的 template_output**（松散关联、无 FK 级联）。
+  Future<CommandResult> _deleteTemplate(DeleteTemplateCommand cmd) async {
+    final cur = await _repo.byIdTemplate(cmd.id);
+    if (cur == null) {
+      throw ActionException(
+        '模板不存在：id=${cmd.id}',
+        code: ActionErrorCode.notFound,
+        hint: '先执行 list_template 确认 id',
+      );
+    }
+    await _repo.deleteTemplate(cmd.id);
+    return CommandResult(
+      op: 'delete_template',
+      targetId: cmd.id,
+      note: '已删除模板「${cur.name}」（已产出的模板产出不受影响）',
+    );
   }
 
   // ---- 只读 / 批量维护（非命令：查询与例行清理，无脏数据风险） ----

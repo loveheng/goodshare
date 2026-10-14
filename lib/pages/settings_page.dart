@@ -18,6 +18,7 @@ import '../sync/backup_service.dart';
 import 'attach_migration_page.dart';
 import 'mcp_page.dart';
 import 'recent_deleted_page.dart';
+import 'template_preview_page.dart';
 import 'update_page.dart';
 
 /// tonal 按钮按压=底色实色加深（主题层按压反馈纪律的全局 pressed 色是
@@ -405,6 +406,18 @@ class _SettingsPageState extends State<SettingsPage> {
                   handler: widget.handler,
                   repo: widget.repo,
                 ),
+              ),
+            ),
+          ),
+          ListTile(
+            leading: const Icon(Icons.description_outlined),
+            title: const Text('模板库'),
+            subtitle: const Text('内容生产模板预览（由 AI 管理，只读）'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(
+                builder: (_) => TemplatePreviewPage(repo: widget.repo),
               ),
             ),
           ),

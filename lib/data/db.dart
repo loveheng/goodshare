@@ -16,7 +16,7 @@ class Db {
     final dir = await getDatabasesPath();
     final db = await openDatabase(
       _pathOverride ?? p.join(dir, 'goodshare.db'),
-      version: 22,
+      version: 23,
       onCreate: (db, version) => _createAll(db),
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -67,6 +67,9 @@ class Db {
         await _ensureBlockArtifactsTable(db);
         // 幂等补齐 inbox_items.summary_anchor（v21→v22 摘要正文版本锚）
         await _ensureSummaryAnchorColumn(db);
+        // 幂等建 templates 表 + 补齐 inbox_items 模板产出三列（v22→v23 内容生产模板）
+        await _ensureTemplatesTable(db);
+        await _ensureTemplateOutputColumns(db);
       },
       onOpen: (db) async {
         // ai_task_queue 的外键级联依赖此开关，sqflite 默认关闭
@@ -102,6 +105,9 @@ class Db {
         translate_lang TEXT,                        -- 译文语言码（BCP-47），与 translated_md 成对
         summary_md TEXT,                            -- 端侧 LLM 摘要（与 human_md 并列不覆盖，2026-09-28 v8）
         summary_anchor TEXT,                        -- 摘要正文版本锚：写摘要时 human_md 的 md5（2026-10-10 v22，失配=摘要过期）
+        template_output TEXT,                       -- 模板产出：AI 按内容生产模板处理的结构化内容（与 human_md/summary_md 并列不覆盖；2026-10-14 v23，语义与摘要分离）
+        template_id TEXT,                           -- 模板产出对应模板 uuid（nullable；松散关联无 FK：模板删除不影响 template_output，产出作归档保留）
+        template_output_anchor TEXT,                -- 模板产出正文版本锚：写产出时 human_md 的 md5（失配=产出过期）
         clips_json TEXT,                            -- 视频切片（关键区间）附属记录（2026-09-29 v10，lib/ai/video_clips.dart）
         doc_meta_json TEXT,                         -- 归一化覆盖率与确认状态（2026-09-30 v12，content-pipeline §7）
         attach_state TEXT NOT NULL DEFAULT 'owned', -- 文件引用状态 ref/owned/lost（2026-09-30 v13）
@@ -156,6 +162,22 @@ class Db {
         PRIMARY KEY (workspace_id, item_id),
         FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
         FOREIGN KEY (item_id) REFERENCES inbox_items(id) ON DELETE CASCADE
+      )
+    ''');
+    // 内容生产模板（2026-10-14 v23）：AI 托管的事实源，body_md 为单一源，
+    // 人类视图渲染它、AI skill 文件从它派生；挂靠 workspace，外键级联清理。
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS templates (
+        id TEXT NOT NULL UNIQUE,          -- uuid
+        workspace_id TEXT NOT NULL,        -- 所属工作区（FK）
+        name TEXT NOT NULL,
+        description TEXT,
+        body_md TEXT NOT NULL,             -- 单一事实源：markdown 结构骨架（{{占位符}}）
+        origin TEXT NOT NULL DEFAULT 'ai', -- 'ai' 生成 / 'official' 官方预置 / 'user' 人类手动（预留，暂不开放）
+        version INTEGER NOT NULL DEFAULT 0,-- 乐观锁版本号
+        created_at INTEGER NOT NULL,       -- 毫秒时间戳
+        updated_at INTEGER NOT NULL,       -- 毫秒时间戳
+        FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
       )
     ''');
     await db.execute('CREATE INDEX IF NOT EXISTS idx_inbox_created ON inbox_items(created_at DESC)');
@@ -310,6 +332,47 @@ class Db {
     final has = cols.any((c) => (c['name'] as String?) == 'summary_anchor');
     if (!has) {
       await db.execute('ALTER TABLE inbox_items ADD COLUMN summary_anchor TEXT');
+    }
+  }
+
+  /// 幂等建 templates 表（v22→v23 内容生产模板，2026-10-14）。
+  ///
+  /// AI 托管的事实源：body_md 单一源双派生（人类渲染样式 / AI skill 文件），
+  /// 挂靠 workspace，外键级联清理。与 _createAll 的 templates 定义一致。
+  static Future<void> _ensureTemplatesTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS templates (
+        id TEXT NOT NULL UNIQUE,
+        workspace_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT,
+        body_md TEXT NOT NULL,
+        origin TEXT NOT NULL DEFAULT 'ai',
+        version INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+      )
+    ''');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_templates_workspace ON templates(workspace_id)');
+  }
+
+  /// 幂等补齐 inbox_items 模板产出三列（v22→v23，2026-10-14）。
+  ///
+  /// 模板产出与摘要**语义分离、从首版即独立**：template_output / template_id /
+  /// template_output_anchor 与 summary_md / summary_anchor 平级但不混用——
+  /// 「按模板处理」的产出落 template_output，绝不进 summary_md。
+  static Future<void> _ensureTemplateOutputColumns(Database db) async {
+    final cols = await db.rawQuery('PRAGMA table_info(inbox_items)');
+    final names = cols.map((c) => c['name'] as String?).toSet();
+    if (!names.contains('template_output')) {
+      await db.execute('ALTER TABLE inbox_items ADD COLUMN template_output TEXT');
+    }
+    if (!names.contains('template_id')) {
+      await db.execute('ALTER TABLE inbox_items ADD COLUMN template_id TEXT');
+    }
+    if (!names.contains('template_output_anchor')) {
+      await db.execute('ALTER TABLE inbox_items ADD COLUMN template_output_anchor TEXT');
     }
   }
 

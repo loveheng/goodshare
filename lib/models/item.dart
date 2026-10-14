@@ -50,6 +50,9 @@ class InboxItem {
     this.translateLang,
     this.summaryMd,
     this.summaryAnchor,
+    this.templateOutput,
+    this.templateId,
+    this.templateOutputAnchor,
     this.clipsJson,
     this.inspirationMd,
     this.docMetaJson,
@@ -97,6 +100,17 @@ class InboxItem {
   /// 摘要正文版本锚（schema v22，2026-10-10）：写摘要时 humanMd 的 md5 指纹。
   /// 与现 humanMd 失配 = 摘要对应旧正文（用户编辑/reprocess 未产新摘要）。
   final String? summaryAnchor;
+  /// 模板产出（schema v23，2026-10-14）：AI 按内容生产模板处理的结构化内容，
+  /// 与 humanMd/summaryMd 并列不覆盖。**与摘要语义分离、独立落点**（ai-template）。
+  final String? templateOutput;
+  /// 模板产出对应模板 uuid（nullable）。**松散关联（无外键）**：模板删除后本列
+  /// 成孤儿，但 templateOutput 作为归档产出照常展示，不级联删除。
+  final String? templateId;
+  /// 模板产出正文版本锚（v23）：写产出时 humanMd 的 md5，失配=产出过期。
+  /// **口径与 summaryAnchor 完全镜像**（trim 判空 / null 兜底保守判过期 /
+  /// md5(humanMd) 一致）；写产出时也需镜像 summary 的 effectiveBody 口径
+  /// （本次写入后正文），避免「摘要显示最新而产出误判 stale」的细微偏差。
+  final String? templateOutputAnchor;
   final String? clipsJson; // 视频切片（关键区间）附属记录 JSON（schema v10，2026-09-29）
 
   /// 灵感区：用户私密碎片想法（schema v16，2026-10-01，detail-two-zone §3）。
@@ -214,6 +228,15 @@ class InboxItem {
     return anchor != md5.convert(utf8.encode(humanMd ?? '')).toString();
   }
 
+  /// 模板产出是否可能过期（v23 版本锚判定，同 isSummaryStale 口径）。
+  bool get isTemplateOutputStale {
+    final s = templateOutput?.trim() ?? '';
+    if (s.isEmpty) return false;
+    final anchor = templateOutputAnchor;
+    if (anchor == null) return true; // 存量产出无锚：按可能过期保守处理
+    return anchor != md5.convert(utf8.encode(humanMd ?? '')).toString();
+  }
+
   Map<String, Object?> toMap() => {
         if (id != null) 'id': id,
         'item_type': itemType,
@@ -230,6 +253,9 @@ class InboxItem {
         'translate_lang': translateLang,
         'summary_md': summaryMd,
         'summary_anchor': summaryAnchor,
+        'template_output': templateOutput,
+        'template_id': templateId,
+        'template_output_anchor': templateOutputAnchor,
         'clips_json': clipsJson,
         'inspiration_md': inspirationMd,
         if (docMetaJson != null) 'doc_meta_json': docMetaJson,
@@ -309,6 +335,9 @@ class InboxItem {
       translateLang: map['translate_lang'] as String?,
       summaryMd: map['summary_md'] as String?,
       summaryAnchor: map['summary_anchor'] as String?,
+      templateOutput: map['template_output'] as String?,
+      templateId: map['template_id'] as String?,
+      templateOutputAnchor: map['template_output_anchor'] as String?,
       clipsJson: map['clips_json'] as String?,
       inspirationMd: map['inspiration_md'] as String?,
       docMetaJson: map['doc_meta_json'] as String?,
@@ -351,6 +380,9 @@ class InboxItem {
     String? translateLang,
     String? summaryMd,
     String? summaryAnchor,
+    String? templateOutput,
+    String? templateId,
+    String? templateOutputAnchor,
     String? clipsJson,
     String? docMetaJson,
     String? attachState,
@@ -389,6 +421,9 @@ class InboxItem {
         translateLang: translateLang ?? this.translateLang,
         summaryMd: summaryMd ?? this.summaryMd,
         summaryAnchor: summaryAnchor ?? this.summaryAnchor,
+        templateOutput: templateOutput ?? this.templateOutput,
+        templateId: templateId ?? this.templateId,
+        templateOutputAnchor: templateOutputAnchor ?? this.templateOutputAnchor,
         clipsJson: clipsJson ?? this.clipsJson,
         docMetaJson: docMetaJson ?? this.docMetaJson,
         attachState: attachState ?? this.attachState,

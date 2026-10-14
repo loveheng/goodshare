@@ -136,6 +136,13 @@ Map<String, Object?> itemToJson(InboxItem it) => {
         'summary': it.summaryMd!.trim(),
         'summary_stale': it.isSummaryStale,
       },
+      // 模板产出（ai-template v23，与摘要并列、语义分离）：AI 经 get_item 读到
+      // 与人类预览同一份结构化产出；template_output_stale 同 summary_stale 口径。
+      if (it.templateOutput?.trim().isNotEmpty ?? false) ...{
+        'template_output': it.templateOutput!.trim(),
+        'template_output_stale': it.isTemplateOutputStale,
+        if (it.templateId != null) 'template_id': it.templateId,
+      },
       // 译文与原文并列回传：AI 读到什么，人在详情页看到的就是什么（状态可见性对称）
       if (it.hasTranslation)
         'translation': {'lang': it.translateLang, 'text': it.translatedMd},
@@ -190,6 +197,24 @@ sealed class ItemCommand {
           _reqField(json, 'workspace_id', op),
           ackNonEmpty: json['ack_non_empty'] == true,
         );
+      case 'create_template':
+        return CreateTemplateCommand(
+          _reqField(json, 'workspace_id', op),
+          _reqField(json, 'name', op),
+          description: _str(json['description']),
+          bodyMd: _reqField(json, 'body_md', op),
+          origin: _str(json['origin']) ?? 'ai',
+        );
+      case 'update_template':
+        return UpdateTemplateCommand(
+          _reqField(json, 'id', op),
+          name: _str(json['name']),
+          description: _str(json['description']),
+          bodyMd: _str(json['body_md']),
+          expectedVersion: _int(json['expected_version']),
+        );
+      case 'delete_template':
+        return DeleteTemplateCommand(_reqField(json, 'id', op));
     }
     final id = _reqId(json, op);
     final ev = _int(json['expected_version']);
@@ -379,6 +404,9 @@ sealed class ItemCommand {
     'add_to_workspace',
     'remove_from_workspace',
     'migrate_attach',
+    'create_template',
+    'update_template',
+    'delete_template',
   ];
 }
 
@@ -1327,6 +1355,94 @@ final class RemoveFromWorkspaceCommand extends ItemCommand {
   @override
   Map<String, Object?> toJson() =>
       {'op': op, 'workspace_id': workspaceId, 'id': itemId};
+}
+
+/// 新建内容生产模板（= MCP create_template；AI 托管，人类无创建入口，ai-template）。
+///
+/// body_md 为单一源：人类预览页渲染它、AI skill 文件从它派生。挂靠 workspace。
+final class CreateTemplateCommand extends ItemCommand {
+  const CreateTemplateCommand(
+    this.workspaceId,
+    this.name, {
+    this.description,
+    required this.bodyMd,
+    this.origin = 'ai',
+  });
+
+  final String workspaceId;
+  final String name;
+  final String? description;
+  final String bodyMd;
+
+  /// 'ai' / 'official' / 'user'（'user' 预留、暂不开放）。
+  final String origin;
+
+  @override
+  String get op => 'create_template';
+
+  /// 操作对象是模板不是条目，故无条目目标 id。
+  @override
+  String? get targetId => null;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'workspace_id': workspaceId,
+        'name': name,
+        if (description != null) 'description': description,
+        'body_md': bodyMd,
+        'origin': origin,
+      };
+}
+
+/// 更新模板（= MCP update_template）：白名单补丁 + 乐观锁（[expectedVersion]
+/// 复用基类乐观锁字段携带**模板 version**、非条目 version；handler 转交 repo CAS）。
+final class UpdateTemplateCommand extends ItemCommand {
+  const UpdateTemplateCommand(
+    this.id, {
+    this.name,
+    this.description,
+    this.bodyMd,
+    super.expectedVersion,
+  });
+
+  final String id;
+  final String? name;
+  final String? description;
+  final String? bodyMd;
+
+  @override
+  String get op => 'update_template';
+
+  @override
+  String? get targetId => id;
+
+  @override
+  Map<String, Object?> toJson() => {
+        'op': op,
+        'id': id,
+        if (name != null) 'name': name,
+        if (description != null) 'description': description,
+        if (bodyMd != null) 'body_md': bodyMd,
+        if (expectedVersion != null) 'expected_version': expectedVersion,
+      };
+}
+
+/// 删除模板（= MCP delete_template）。**不影响已产出的 template_output**
+/// （inbox_items.template_id 松散关联、无 FK 级联）：产出作归档内容永久保留。
+final class DeleteTemplateCommand extends ItemCommand {
+  const DeleteTemplateCommand(this.id);
+
+  final String id;
+
+  @override
+  String get op => 'delete_template';
+
+  @override
+  String? get targetId => id;
+
+  @override
+  Map<String, Object?> toJson() => {'op': op, 'id': id};
 }
 
 // ───────────────────────────── 解析小工具 ─────────────────────────────

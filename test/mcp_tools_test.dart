@@ -227,9 +227,9 @@ void main() {
     expect(byJob['found'], isFalse, reason: 'job_id 入口也必须做条目可见性门控');
   });
 
-  test('工具清单共 38 个且不含 execute_action', () {
+  test('工具清单共 42 个且不含 execute_action', () {
     final names = toolSchemas().map((s) => s['name']).toList();
-    expect(names.length, 38); // M3 +ai_suggest_tags（sampling 最小消费，§3.11）
+    expect(names.length, 42); // M3 +ai_suggest_tags；ai-template P1 +4 模板 CRUD
     expect(names, isNot(contains('execute_action')));
     expect(names, containsAll([
       'update_item', 'unlock_edit', 'set_vault', 'set_pin', 'reprocess_item',
@@ -241,6 +241,8 @@ void main() {
       'block_extract_audio_item',
       'list_workspaces', 'create_workspace', 'rename_workspace',
       'delete_workspace', 'add_to_workspace', 'remove_from_workspace',
+      // 内容生产模板（ai-template P1，AI 托管）
+      'list_template', 'create_template', 'update_template', 'delete_template',
       'get_job_status', 'list_jobs',
       // AI 宿主 App 接缝（ai-app-split.md §3，M1）
       'claim_ai_task', 'touch_ai_task', 'apply_ai_result',
@@ -251,7 +253,7 @@ void main() {
     final schemas = toolSchemas();
     const readOnlySeven = [
       'list_items', 'get_item', 'query_machine_data',
-      'list_workspaces', 'list_jobs', 'get_job_status', 'get_timeline_context',
+      'list_workspaces', 'list_template', 'list_jobs', 'get_job_status', 'get_timeline_context',
       // M3：ai_suggest_tags 只读+反向推理，不产生任何写路径（ai-app-split.md §3.11）
       'ai_suggest_tags',
     ];
