@@ -1,7 +1,8 @@
 {
-  "versionCode": 4006,
-  "versionName": "1.2.0",
-  "apkUrl": "https://r2.oklhj.eu.org/updates/app-release.apk",
-  "sha256": "a5676be1b351dd0e09728d2eba8f96423a637e93e7695a4aa0b52b5f1b634026",
-  "changelog": "feat(sync): 备份传输层落地 S3（SigV4 薄封装 + Multipart）并移除 WebDAV"
+  "versionCode": 8067,
+  "versionName": "1.3.0",
+  "applicationId": "com.zzh.goodshare",
+  "apkUrl": "https://r2.oklhj.eu.org/updates/goodshare/app-release.apk",
+  "sha256": "e82d3178ec1b7447d7fc1bc58b3cf79d73d24cd4d28953b34b8a300f1a8bc36b",
+  "changelog": "feat(rich-text): 接入 package:rich_text + 数学公式 LaTeX 渲染闭环"
 }

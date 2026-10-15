@@ -48,7 +48,7 @@ class _UpdatePageState extends State<UpdatePage> {
   Future<void> _bootstrap() async {
     final info = await PackageInfo.fromPlatform();
     final prefs = await SharedPreferences.getInstance();
-    _service = UpdateService(prefs);
+    _service = UpdateService(prefs, applicationId: info.packageName);
     final url = await _service.sourceUrl();
     _urlCtrl.text = url ?? '';
     if (!mounted) return;
@@ -112,6 +112,7 @@ class _UpdatePageState extends State<UpdatePage> {
       final apk = await _service.downloadApk(
         manifest.apkUrl,
         expectedSha256: manifest.sha256,
+        expectedApplicationId: manifest.applicationId,
         onProgress: (received, total) => mounted
             ? setState(() {
                 _received = received;

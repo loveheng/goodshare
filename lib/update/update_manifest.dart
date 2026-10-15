@@ -40,6 +40,7 @@ class UpdateManifest {
     required this.apkUrl,
     this.sha256,
     this.changelog,
+    this.applicationId,
     this.config = RemoteConfig.empty,
   });
 
@@ -58,6 +59,7 @@ class UpdateManifest {
       versionName: versionName,
       apkUrl: apkUrl,
       sha256: json['sha256'] as String?,
+      applicationId: json['applicationId'] as String?,
       changelog: json['changelog'] as String?,
       config: json['config'] is Map<String, Object?>
           ? RemoteConfig.fromJson(json['config'] as Map<String, Object?>)
@@ -73,9 +75,24 @@ class UpdateManifest {
   final String apkUrl;
   final String? sha256;
   final String? changelog;
+
+  /// 清单声明归属的应用（Android applicationId）。
+  /// `release-r2.sh` 发布时自动写入；旧格式清单无此字段（null）。
+  /// 多 app 共用同一更新托管（如同一个 R2 桶）时，客户端据此识别「源指错了」。
+  final String? applicationId;
   final RemoteConfig config;
 
   bool isNewerThan(int currentVersionCode) => versionCode > currentVersionCode;
+
+  /// 身份一致性（防串包/串配置）：[currentApplicationId] 为当前应用的包名。
+  /// 任一侧缺失（旧清单未声明 / 调用方未知当前身份）时放行——向后兼容；
+  /// 双方都非空且不一致 → false，调用方必须拒用该清单（含其 config 段）。
+  bool matchesApplication(String? currentApplicationId) {
+    final declared = applicationId;
+    if (declared == null || declared.isEmpty) return true;
+    if (currentApplicationId == null || currentApplicationId.isEmpty) return true;
+    return declared == currentApplicationId;
+  }
 }
 
 class UpdateException implements Exception {

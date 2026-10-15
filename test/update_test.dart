@@ -27,6 +27,23 @@ void main() {
       expect(() => UpdateManifest.parse('{"versionName":"x"}'), throwsFormatException);
       expect(() => UpdateManifest.parse('not json'), throwsA(isA<Object>()));
     });
+
+    test('applicationId 身份比对（防串包/串配置）', () {
+      final m = UpdateManifest.parse(
+        '{"versionCode":4,"versionName":"1.2.0","apkUrl":"https://x/y.apk","applicationId":"com.zzh.goodshare"}',
+      );
+      expect(m.applicationId, 'com.zzh.goodshare');
+      expect(m.matchesApplication('com.zzh.goodshare'), isTrue);
+      expect(m.matchesApplication('com.other.app'), isFalse,
+          reason: '清单声明别的 app 时必须判不一致，调用方拒用（含 config 段）');
+
+      // 旧格式清单无 applicationId：向后兼容放行，完整性由 sha256 兜底
+      final legacy = UpdateManifest.parse(
+        '{"versionCode":3,"versionName":"1.1.0","apkUrl":"https://x/y.apk"}',
+      );
+      expect(legacy.applicationId, isNull);
+      expect(legacy.matchesApplication('com.zzh.goodshare'), isTrue);
+    });
   });
 
   test('下载 APK + sha256 校验（本地 HttpServer 流式）', () async {
@@ -74,6 +91,50 @@ void main() {
     );
 
     await dir.delete(recursive: true);
+    await server.close(force: true);
+  });
+
+  test('UpdateService 串包防线：check() 拒检 + downloadApk() 拒下', () async {
+    SharedPreferences.setMockInitialValues({});
+    var manifestBody =
+        '{"versionCode":9,"versionName":"9.9.9","apkUrl":"https://x/y.apk","applicationId":"com.other.app"}';
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((req) async {
+      req.response.write(manifestBody);
+      await req.response.close();
+    });
+    final base = 'http://127.0.0.1:${server.port}';
+    final prefs = await SharedPreferences.getInstance();
+
+    final service = UpdateService(
+      prefs,
+      defaultSourceUrl: base,
+      applicationId: 'com.zzh.goodshare',
+    );
+
+    // 清单声明别的 app → check() 拒检（config 也不会被应用）
+    await expectLater(
+      service.check(),
+      throwsA(isA<UpdateException>()
+          .having((e) => e.message, 'message', contains('com.other.app'))),
+    );
+
+    // 清单声明本 app → 放行
+    manifestBody =
+        '{"versionCode":9,"versionName":"9.9.9","apkUrl":"https://x/y.apk","applicationId":"com.zzh.goodshare"}';
+    expect((await service.check()).applicationId, 'com.zzh.goodshare');
+
+    // 旧清单无 applicationId → 向后兼容放行
+    manifestBody = '{"versionCode":9,"versionName":"9.9.9","apkUrl":"https://x/y.apk"}';
+    expect((await service.check()).applicationId, isNull);
+
+    // downloadApk 二次防线：期望身份不一致，下载前直接拒（不发起请求）
+    await expectLater(
+      service.downloadApk('$base/app-release.apk',
+          expectedApplicationId: 'com.other.app'),
+      throwsA(isA<UpdateException>()),
+    );
+
     await server.close(force: true);
   });
 

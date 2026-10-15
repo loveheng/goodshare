@@ -1,7 +1,7 @@
 #!/bin/bash
 # release-r2 — 拾贝一键发布到 Cloudflare R2（应用内自更新源）
 #
-# 流程: 读 pubspec 版本 → flutter build apk --release（仅 arm64-v8a，目标设备均为 64 位，注入 UPDATE_SOURCE_URL）
+# 流程: 读 pubspec 版本 → flutter build apk --release（自更新整包，arm64 纯净，versionCode=pub build，注入 UPDATE_SOURCE_URL）
 #       → 算 sha256 → 生成 updates/goodshare-update.json → 上传 apk+json 到 R2 公开域
 #
 # 前置:
@@ -65,7 +65,7 @@ command -v node >/dev/null 2>&1 || { echo "FAIL: 需要 node（本机应已具�
 command -v flutter >/dev/null 2>&1 || command -v "$HOME/flutter/bin/flutter" >/dev/null 2>&1 || { echo "FAIL: flutter 不可用"; exit 1; }
 
 # ---- 版本 ----
-VERSION_LINE="$(grep -m1 '^version:' pubspec.yaml)"
+VERSION_LINE="$(grep -m1 '^version:' pubspec.yaml | sed -E 's/[[:space:]]*#.*$//')"
 VERSION_NAME="$(echo "$VERSION_LINE" | sed -E 's/.*:\s*([0-9.]+)\+.*/\1/')"
 VERSION_CODE="$(echo "$VERSION_LINE" | sed -E 's/.*\+([0-9]+).*/\1/')"
 [ -z "$CHANGELOG" ] && CHANGELOG="$(git log -1 --pretty=%s 2>/dev/null || echo '')"
@@ -73,22 +73,33 @@ VERSION_CODE="$(echo "$VERSION_LINE" | sed -E 's/.*\+([0-9]+).*/\1/')"
 CHANGELOG_ESC="${CHANGELOG//\\/\\\\}"
 CHANGELOG_ESC="${CHANGELOG_ESC//\"/\\\"}"
 
-APK="build/app/outputs/flutter-apk/app-arm64-v8a-release.apk"
+# ---- 应用身份（写入清单，客户端据此防串包：源指错到别的 app 时拒装/拒用配置）----
+GRADLE_FILE="android/app/build.gradle.kts"
+[ -f "$GRADLE_FILE" ] || GRADLE_FILE="android/app/build.gradle"
+APP_ID="$(sed -nE 's/^[[:space:]]*applicationId[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$GRADLE_FILE" | head -n1)"
+[ -n "$APP_ID" ] || APP_ID="$(sed -nE 's/^[[:space:]]*applicationId[[:space:]]+"([^"]+)".*/\1/p' "$GRADLE_FILE" | head -n1)"
+if [ -z "$APP_ID" ]; then
+  echo "FAIL: 无法从 $GRADLE_FILE 解析 applicationId（客户端串包防线依赖此字段，不可省略）"
+  exit 1
+fi
+
+APK="build/app/outputs/flutter-apk/app-release.apk"
 ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 PUBLIC_BASE="https://${R2_PUBLIC_DOMAIN}"
 APK_URL="${PUBLIC_BASE}/${REMOTE_PREFIX}/app-release.apk"
 SRC_URL="${PUBLIC_BASE}/${REMOTE_PREFIX}"
 
 echo "版本: v${VERSION_NAME} (build ${VERSION_CODE})"
+echo "应用身份: ${APP_ID}（写入清单，客户端校验一致后才允许更新）"
 echo "更新源 URL（填 App 更新页）: ${SRC_URL}"
 
 if [ "$DRY_RUN" = 1 ]; then
   echo "[dry-run] 将执行:"
   echo "  flutter pub get"
   echo "  flutter analyze"
-  echo "  flutter build apk --release --split-per-abi --target-platform android-arm64 --dart-define=UPDATE_SOURCE_URL=\"$SRC_URL\""
+  echo "  flutter build apk --release --dart-define=UPDATE_SOURCE_URL=\"$SRC_URL\""
   echo "  sha256sum $APK"
-  echo "  生成 updates/goodshare-update.json (apkUrl=$APK_URL)"
+  echo "  生成 updates/goodshare-update.json (apkUrl=$APK_URL, applicationId=$APP_ID)"
   echo "  node scripts/upload-r2.mjs $APK $REMOTE_PREFIX/app-release.apk application/vnd.android.package-archive"
   echo "  node scripts/upload-r2.mjs updates/goodshare-update.json $REMOTE_PREFIX/goodshare-update.json application/json"
   exit 0
@@ -97,7 +108,7 @@ fi
 # ---- 构建 ----
 flutter pub get
 flutter analyze
-flutter build apk --release --split-per-abi --target-platform android-arm64 --dart-define=UPDATE_SOURCE_URL="$SRC_URL"
+flutter build apk --release --dart-define=UPDATE_SOURCE_URL="$SRC_URL"
 
 [ -f "$APK" ] || { echo "FAIL: 构建产物不存在: $APK"; exit 1; }
 SHA="$(sha256sum "$APK" | cut -d' ' -f1)"
@@ -108,6 +119,7 @@ cat > updates/goodshare-update.json <<EOF
 {
   "versionCode": ${VERSION_CODE},
   "versionName": "${VERSION_NAME}",
+  "applicationId": "${APP_ID}",
   "apkUrl": "${APK_URL}",
   "sha256": "${SHA}",
   "changelog": "${CHANGELOG_ESC}"
