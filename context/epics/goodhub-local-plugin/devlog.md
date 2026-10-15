@@ -96,3 +96,21 @@ dummy 的 slowEcho/reverseDemo e2e 覆盖，#10 真机联调前先有回归护�
 - **安全红线**：release keystore 禁入 git；联调 debug keystore 绝不可当 release 用（一旦 release 用 debug key 无法换签）。
 
 `todos.md` #9 已挂接文档并标注状态（声明侧落 / release 签名配置缺口 / goodhub 侧待回执 / 门禁未跑）。#9 是 #10 硬前置。
+
+## 2026-10-15 DP2 回退收敛：HTTP 服务隐藏为内部调试（loopback-only）
+
+用户拍板：MCP HTTP 服务不对外（局域网）暴露、仅作内部调试用，MCP 主机制全部走 goodhub 本地 Binder 插件。落地：
+
+1. **bind 收敛**：`mcp_server.dart` `HttpServer.bind` 由 `anyIPv4` 改 `loopbackIPv4`（仅 127.0.0.1，局域网不可达）；桌面端唯一接入途径=USB + `adb reverse tcp:8765 tcp:8765`。
+2. **LAN 路径清除**：删 `lib/util/lan_ip.dart`；`mcp_controller.dart` `endpoint()` 去 async 化收敛为同步 getter（恒 `http://127.0.0.1:8765/mcp`），`enable()` 前台通知文案改 loopback 表述；`mcp_page.dart` 删「局域网端点」tile 与指南 LAN 章节，USB/adb reverse 升为唯一途径（标注仅内部调试用）。
+3. **文档同步**：mcp-integration.md（删方式 B、加 loopback 说明块）、docs/README.md 索引、product-requirements.md §4 通道描述。
+
+验证（2026-10-15）：`flutter analyze` 0 issue；mcp_server_test + mcp_binder_test 25/25 全绿（含 127.0.0.1 回环访问路径实证 loopback bind 生效）；全量 `flutter test --timeout 60s` 816 全过（跳已知损坏 tag_display_repro_test）。DP2「HTTP 保留作可关闭回退」语义收紧为「保留但隐藏」——开关/前台保活机制不变，仅网络面收敛。
+
+## 2026-10-15 设置入口隐藏：调试手势（长按「关于」）
+
+用户追问「设置里也移除了吗」→ 拍板方案=**藏在调试手势里**（普通用户看不到，开发者仍可开关；彻底移除入口会留下关不掉的僵尸服务）。落地：
+
+1. `settings_page.dart` 删「MCP 网关」分区与「服务与连接」tile（设置树不再可见）。
+2. 长按「关于」分区标题 → 调试菜单 BottomSheet（`_showDebugSheet`）→ 「MCP 调试服务」tile（带运行态）→ 进 McpPage。调试菜单是收纳位，后续其他调试入口也挂这里。
+3. `mcp-integration.md` 手机端准备第 1 步改为长按手势路径。

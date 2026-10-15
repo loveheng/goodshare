@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-08
+updated: 2026-10-15
 ---
 
 # docs/ 结构索引
@@ -19,12 +19,12 @@ updated: 2026-10-08
 
 ## guide（接入指南）
 
-- [mcp-integration.md](guide/mcp-integration.md) — MCP 接入指南：手机端准备、USB/局域网连接、stdio 客户端配置、工具一览与安全提示。
+- [mcp-integration.md](guide/mcp-integration.md) — MCP 接入指南：手机端准备、USB（adb reverse）连接、stdio 客户端配置、工具一览与安全提示。
 - [self-update.md](guide/self-update.md) — 自更新手册：更新源配置、清单/下载/校验/安装流程与 Shorebird 受阻记录。⚠️ 同上，frontmatter 待归一。
 
 ## design（UI 设计规范）
 
-- [ui-spec.md](design/ui-spec.md) — UI 设计规范：Material You/M3 视觉系统、5 底 tab + FAB 导航、页面清单、设置树、组件库与双态呈现；配套约束见项目 skill `goodshare-ui`。
+- [ui-spec.md](design/ui-spec.md) — UI 设计规范：Material You/M3 视觉系统、3 底 tab（全部/工作区/设置）+ 侧边栏导航、页面清单、设置树、组件库与双态呈现；配套约束见项目 skill `goodshare-ui`。
 - [workspace.md](design/workspace.md) — 工作区管理闭环交互设计稿（active 2026-10-05）：删除守门与清空链路（删工作区≠删内容语义红线、列表层长按单删不做多选、非空守门 B 快捷删「保留内容并删除」、ackNonEmpty 仅 ui actor 的动作层同守门、重命名复用整页创建表单）；「移出本工作区」批量转正为独立候选。
 - [card-batch-selection.md](design/card-batch-selection.md) — 卡片长按批量选择模式方案蓝本（draft 未实现）：长按进选择模式 + 底部操作栏取代导航、四动作（置顶/工作区/保险箱/删除）声明式配置、置顶全链路（pinned_at + PinCommand + MCP set_pin）、四层抽象（词汇表/执行全共享，呈现分形态：列表选择栏/详情底栏/⋯面板）、整体落地切片。
 - [block-format-input.md](design/block-format-input.md) — 编辑态格式输入方案蓝本（draft 未实现）：键盘工具条「格式」按钮先选后打、块级标题/正文真所见即所得、行内加粗/斜体/下划线自研样式化编辑层（无 md 标记可见，不换编辑器）、`<u>` 语法扩展。
@@ -38,10 +38,12 @@ updated: 2026-10-08
 - [quick-note-draft.md](design/quick-note-draft.md) — 速记条草稿持久化方案蓝本（draft 未实现）：QuickNoteBar 接入既有 drafts 表/DraftController 基建（防抖+退后台 flush+结构变更即写），static 内存草稿退役，进程被杀重开原样恢复（含媒体段）。
 - [detail-visual-hierarchy.md](design/detail-visual-hierarchy.md) — 详情页视觉层级方案蓝本（draft 未实现）：灵感区分区头统一换 SectionLegendCard 骑框签（消两套分区语言）、区块间距调档、便签标题槽显示规则（无标题显创建时间绝对格式、用户标题优先、不回写 human_title）；水平留白丢失 bug 已修复（空 SliverPadding 死代码）。
 - [detail-two-zone.md](design/detail-two-zone.md) — 详情页两区改版与区块能力平台设计：公共区/灵感区分工、区块能力分发（ContentCapability 自声明 + CapabilityChain 任务链）、单卡链式能力卡（不嵌套）、分享分流（截图 PNG / PDF 兜底）。
+- [detail-page-visual-audit.md](design/detail-page-visual-audit.md) — 详情页视觉与人机交互对账蓝本（draft 未拍板）：结构盘点 + 优点保持 + P0 一致性（分区语言双轨/状态条位置/TLDR vs 摘要重叠）/ P1 层级 / P2 真机验收项，附实施顺序与验证口径。
 - [asr-subtitle.md](design/asr-subtitle.md) — 音频转写与字幕生成设计：VAD 分段取时间戳的可选下载资源 `silero-vad-v5`、文本与 SRT/VTT 双产物、无 VAD 时降级为纯文本的门控；§8 为端侧翻译层（引擎接口/路由/双语字幕三模式/译文存储与命令）。
 - [ocr-cn-adaptation.md](design/ocr-cn-adaptation.md) — 中文 OCR 适配设计。
 - [ai-capabilities-overview.md](design/ai-capabilities-overview.md) — AI 能力总览。
 - [ai-app-split.md](design/ai-app-split.md) — AI 宿主 App 拆分契约（M0 接缝 SSOT）：LLM 任务拆至独立宿主 App（master/交互式 MCP 客户端，非 worker）、3 个新增 MCP 工具（claim/touch/apply）、占位守卫、M2 剥离行为清单与验收标准。
+- [ai-template.md](design/ai-template.md) — 内容生产模板（AI 托管+人类消费）SSOT：body_md 双视图派生、ADR 管理权归 AI、P2 只追加回写（模板三列早退、human_md 零触碰）、ai_visible 授权断点口径（人类显式触发=一次性授权）、详情页呈现规约四条。
 - [goodhub-local-plugin.md](design/goodhub-local-plugin.md) — goodshare 改造为 goodhub 本地 Binder 插件评估稿（active 2026-10-13）：现状 HTTP MCP server vs 目标本地插件（零端口/系统发现/同签名权限/随调随起）对照、必须实现清单（对照 thirdconnect.md §1.2）、五个决策点与 PoC 范围。
 - [goodshare-goodhub-local-plugin-eval.md](design/goodshare-goodhub-local-plugin-eval.md) — PoC 阶段一评估报告（active 2026-10-13，goodhub 宿主侧视角）：对照 goodhub 契约 SSOT thirdconnect.md TC1~TC14 逐条核对 AIDL/manifest/Service/handleJsonRpc 合规性，及必须修的 bug 清单（交回 goodshare 侧）。
 - [block-artifact-workflow.md](design/block-artifact-workflow.md) — 块附件通道与工作流式三级能力页：行内媒体块 AI 能力（block_artifacts 派生表 schema v21、block_* 队列动作串、手动即授权门禁豁免）、WorkflowSpec 声明式能力编排（一步双产物/锚点切换/应用导出动词）、三级页工作流轨重设计（结构保留只换芯）。

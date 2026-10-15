@@ -15,8 +15,10 @@ format: v3
 
 ## misc
 
+- [ ] [2026-10-15] (清理)(层:L1)(重:轻) LLM 迁出遗留物清理：仓库样例 `updates/llm-manifest.json` 已无代码消费（self-update.md 该节已标退役）；用户设备上已下载的 ~1.5GB 模型文件成孤儿（不强制清理，M2 已知残留）——自更新「清理缓存」入口或下次发版时一并处理 (src: ai, 2026-10-15 文档漂移对账)
+
 - [ ] [2026-10-05] (功能)(层:L1)(重:重) 独立 MCP 日程 app「拾光/shiguang」（**已立项**，仓库 ~/app/shiguang，设计冻结稿 e72b737）：大脑在桌面 AI 客户端（零端侧 LLM，复刻 goodshare Human-AI 对称架构）；三表模型（plans 带 spec/open_items/importance、fixed_slots 带星期集合、blocks 带 source/pinned/label）、九工具面、三层行为层（instructions/prompts/skill）、确定性 Housekeeper 管家；SSOT=~/app/shiguang/docs/design/schedule-app.md（**已冻结**，十轮评审 392ea83：九工具面不变、模型仅 plans+5 字段 blocks+3 标志位）；下一步=flutter create + dev-init 起骨架、MCP 框架层搬运 (src: 用户发起，十轮评审后冻结)
-- [ ] [2026-10-02] (测试)(层:L0)(重:中) 端侧 LLM 4B 档真机实测（定 R1/R3 实现深度）：Qwen3-4B/3B int4 GPU 包在 8 Gen 3（OnePlus 13R）跑分（decode tk/s、内存峰值、发热）+ OCR 修正小样评估（命中率/误改率，含数字保护校验）；设备基线=8 Gen 3/天玑 9400 + 12GB（on-device-llm.md §3.1a） (src: ai, 4B/NPU 讨论链拍板)
+- [ ] [2026-10-02] (测试)(层:L0)(重:中) ~~端侧 LLM 4B 档真机实测~~**迁出至宿主仓**（2026-10-15）：goodshare 已不持有端侧 LLM（ai-app-split M2），4B/NPU 选型归 goodhub 账本（宿主 BYOK 云端已通、端侧模型档选型待宿主侧排期）；本仓不再跟进 (src: ai, 4B/NPU 讨论链拍板 → 2026-10-15 归属更正)
 - [ ] (功能)(层:L3)(重:重) app 内 agent/自动化引擎（**已划 V4**，2026-10-02 拍板）：app 兼作 MCP host（第四 `CommandActor.agent` 槽位）+ 对外连其他本地 MCP 服务（日历等）；起步=固定工作流引擎（确定性管道+局部 LLM 判断点，离线可靠），通用 LLM agent 后置（端侧 1.5B 多步调用可靠性不足/云 API 破坏离线承诺）；价值=住进手机生命周期（充电/后台/定时，复用 AiQueueService 基建），补桌面 host 不在线空档。硬纪律：独立成层、业务层零耦合，其他 app 只出现在工作流配置数据里。前置：V2 素材加工（event.v1 等）+ V3 分域授权。SSOT：PRD §9 V4 行
 - [ ] (功能)(层:L1)(重:重) MCP 客户端分域授权（**已划 V3**，2026-10-02 拍板「V2 先把加工链路走通」）：客户端注册表（按客户端发 token）+ 三维权限域——工具域（tools/list 按 scope 过滤）、数据域（类型/工作区白名单，沿用 Vault 排除）、内容形态（raw/processed 二档，processed 与 V2 打码层协同）；默认新客户端=只读+processed+Vault 排除，预设 2-3 档避免细粒度矩阵；设置页「接入客户端」管理区（生成/吊销/选档）。方案评估见 2026-10-02 会话，SSOT：PRD §9 V3 行
 - [ ] (功能)(层:L1)(重:重) iOS 端适配：需 macOS 构建；验证 receive_sharing_intent iOS 行为与前台服务限制（预期「app 前台时 MCP 可用」）

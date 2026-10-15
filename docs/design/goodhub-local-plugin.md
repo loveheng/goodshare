@@ -1,6 +1,6 @@
 ---
 status: draft
-updated: 2026-10-13
+updated: 2026-10-15
 ---
 
 # goodshare → goodhub 本地 Binder 插件改造
@@ -14,7 +14,7 @@ updated: 2026-10-13
 ## 改造清单（10 项，落 `context/epics/goodhub-local-plugin/todos.md`）
 1. **Binder 插件 PoC**：AndroidManifest 声明 exported Service + `com.zzh.goodhub.action.MCP_SERVER` + meta-data(`SERVER_ID`=`goodshare`/`SERVER_TITLE`=`GoodShare`) + Android 11+ `<queries>` action；删 `HttpServer` 端口监听，新 Service 壳把 `call(json)` 转现有 `McpServer._dispatch`（验证 initialize/tools/list/tools/call 走通）。
 2. **前台服务与 AI 队列保活解绑**：MCP 改 Binder 后不再自起前台服务保活（goodhub 随调随起）；AI 队列后台推理保活保留独立前台服务（`ai_queue_service.dart` 复用点解耦）。
-3. **大结果 `mcp-blob://` URI 降级**：`get_item` 图片内联（4MB 帽，tools.dart:910）改 `mcp-blob://com.zzh.goodshare/<path>`（严禁 `$ref://`），`resources/read` 文本加阈值帽。
+3. **大结果 `mcp-blob://` URI 降级**：`get_item` 图片内联（512KB 帽，tools.dart `_kInlineMaxBytes`）改 `mcp-blob://com.zzh.goodshare/<path>`（严禁 `$ref://`），`resources/read` 文本加阈值帽。
 4. **`ai_suggest_tags` 改 `_async`**：同步采样 90s 阻塞改立即回 `{"_async":true}` + `onEvent` 推同 id 终帧；HTTP 版 SSE 帧流（`_streamingToolCall`）平移为 `IMcpCallback.onEvent` 帧。
 5. **sampling 反向请求闭环迁移**：`ai_suggest_tags` 经 `IMcpCallback.onEvent` 推 `sampling/createMessage`、宿主 `answerReverse` 回，按 `srv_<n>` id 关联，复用 completer 注册表（mcp_server.dart:271-292）。
 6. **接入 `goodhub-mcp-plugin-core` SDK**：工具 hand-coded `switch(name)`（tools.dart:798）迁 `@McpTool` 注解，裸名交 SDK 自动前缀加/剥（依赖 SDK 交付；未到位手搓 `IMcpChannel` 兜底）。

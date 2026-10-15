@@ -28,6 +28,7 @@ last-merge: 2026-10-13
 - [2026-10-11] M3 接缝扩展提交落盘：capabilities 增 `sampling`+`resources.subscribe`、GET /mcp SSE 下行（ResourceSubscriptionHub，server 级全局订阅 + updated 广播）、Repository.itemChanges 变更事件流、`ai_suggest_tags` 只读消费工具（工具总数 38）；sampling 反向推理（SSE 流内 `srv_` 帧 + 宿主 POST 回程）；修复 HttpResponse.bufferOutput 缓冲滞留（SSE 帧即时性）。契约文档本仓 ai-app-split.md 新增 §3.10/§3.11 + 修订 §3.6/§3.8。
 - [2026-10-11] 验证口径：goodshare 本仓 795 测试全过 + analyze 0；M3 实施验证与全量测试归属 goodhub 侧 m3-ui-subs-sampling epic 账本。
 - [2026-10-14] M2 减法完成并验证：拆除端侧大模型引擎（`lib/ai/llm*.dart` 五件套 + 双端 `LlmBridge.*` + `litertlm-android` 依赖 + proguard keep + 设置页模型区 + `ClipReconstructor` 本地摘要步 + R1 `summarizeHead` 装配），LLM 任务契约（常量/`SummarizeCommand`/MCP `summarize_item` 等/`summary_md`/claim-touch-apply 接缝）全保留；`flutter analyze` 0 issue + `flutter test` 790 全过（较 M3 少 5 = 删 2 个 LLM 测试文件）；`on-device-llm.md` 墓碑化指向 ai-app-split.md；备份分支 `keep/on-device-llm` 存拆除前完整态。
+- [2026-10-15] **宿主闭环已通（用户确认）**：goodhub 侧接入 `claim/touch/apply_ai_task` 跑通远程 LLM 闭环——宿主证据：`lib/mcp/goodshare_task_api.dart`（三原语）+ `lib/task/task_loop_service.dart`（认领循环）+ `lib/ui/claim_loop_page.dart`（交互面）；BYOK 云端（StepFun step-3.7-flash，chat+tool_calls 双探针过）与 Binder 节点卡（T5/T6）均已在宿主仓归并。goodshare 侧接缝工作**全部完成**，LLM 工具族（summarize_item/extract_tags/block_summarize/template_apply）从「入队空转」变为「宿主消费产出」。
 
 ## 断点
-- [断点] M2 减法已完成（2026-10-14）：goodshare 本地不再持有端侧 LLM。下一步 = goodhub 宿主侧接入 `claim/touch/apply_ai_task` 跑通远程 LLM 闭环；goodshare→goodhub 接入形态演进见独立 epic `goodhub-local-plugin`（本地 Binder 插件改造）。
+- [断点] **ai-app-split 本仓 Scope 已收官**（2026-10-15）：M1 三工具 ✅ / M2 减法 ✅ / M2.5+3 契约扩展 ✅ / 宿主闭环 ✅。后续：① ai-template P2（template_apply 消费方已就绪）可开工；② 按宿主实际使用反馈补接缝（如附件通道 FileProvider 延后件、长任务 progress 中途帧）；③ 4B 端侧实测等原端侧议题随引擎迁出，归宿主账本。

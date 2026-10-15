@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-09-28
+updated: 2026-10-15
 ---
 
 # 拾贝（goodshare）全局产品需求文档 (PRD)
@@ -39,10 +39,10 @@ updated: 2026-09-28
 | Share 接收 | Share Extension | **receive_sharing_intent**（已依赖） | 已定 |
 | 录音采集 | — | `record` 类插件（实现前核实 pub.dev 择优） | MVP 采集，V2 接 STT |
 | 剪贴板嗅探 | — | `clipboard` / 平台通道 | V2 |
-| 健康数据 | HealthKit / Health Connect | `health` 包 | V3 |
-| 日历 | 系统日历 | `device_calendar` 包 | V3 |
-| 锁屏/桌面组件 | Widgets | `home_widget` 包 | V3 |
-| 端侧 AI | ONNX / CoreML | **V2 调用系统自带模型**：iOS Foundation Models / Android AICore Gemini Nano，零下载、不内置；不可用设备回退 V1 | 已定 |
+| 健康数据 | HealthKit / Health Connect | ~~`health` 包~~ | **砍除**（2026-10-15，发展方向调整，见 context/decisions.md） |
+| 日历 | 系统日历 | ~~`device_calendar` 包~~ | **砍除**（2026-10-15） |
+| 锁屏/桌面组件 | Widgets | ~~`home_widget` 包~~ | **砍除**（2026-10-15） |
+| 端侧 AI | ONNX / CoreML | **已迁出本仓**（ai-app-split，2026-10-14 M2 落地）：LLM 推理在独立 AI 宿主 App（goodhub），goodshare 经 MCP `claim/touch/apply_ai_task` 协作；本机保留 ML Kit 全族 + Sherpa 转写 | 已定 |
 | 加密 Vault | — | **SQLCipher（`sqflite_sqlcipher`）或文件级 AES-256** | V3 |
 
 ## 4. 系统架构
@@ -62,7 +62,7 @@ flowchart TD
     MCP -->|query_machine_data 等| PC
 ```
 
-**已落地的 MCP 通道**（无需重写）：手机内嵌 `McpServer`（`lib/mcp/mcp_server.dart`）监听 `0.0.0.0:8765` 的 `POST /mcp`，`x-api-key` 鉴权；PC 端经 `mcp-bridge/stdio-bridge.mjs` 桥接 stdio ↔ Streamable HTTP（局域网或 `adb reverse tcp:8765 tcp:8765`）。
+**已落地的 MCP 通道**（无需重写）：手机内嵌 `McpServer`（`lib/mcp/mcp_server.dart`）监听 `127.0.0.1:8765`（仅 loopback，不对外暴露，内部调试用）的 `POST /mcp`，`x-api-key` 鉴权；PC 端经 `mcp-bridge/stdio-bridge.mjs` 桥接 stdio ↔ Streamable HTTP（须 `adb reverse tcp:8765 tcp:8765`）。MCP 主机制另走 goodhub 本地 Binder 插件（docs/design/goodhub-local-plugin.md）。
 
 ## 5. 数据模型（修正版 Schema）
 
@@ -84,7 +84,7 @@ flowchart TD
 CREATE TABLE inbox_items (
     rowid INTEGER PRIMARY KEY AUTOINCREMENT,   -- FTS5 外容表映射用
     id TEXT NOT NULL UNIQUE,                    -- uuid，对外稳定标识
-    item_type TEXT NOT NULL,                    -- 逻辑类型，可由 AI 重分类：'url','image','video','audio','chatlog','note','document'（便签=note，文档=document，图片=image，视频=video，音频=audio；'health' 随健康接入 V3 引入）
+    item_type TEXT NOT NULL,                    -- 逻辑类型，可由 AI 重分类：'url','image','video','audio','chatlog','note','document'（便签=note，文档=document，图片=image，视频=video，音频=audio；'health' 随健康抓取砍除不再引入）
     source_type TEXT,                            -- 入库原始类型（如截图），入库后不变，供溯源与重分类
     source_app TEXT,                            -- 来源 e.g. 'wechat','safari','clipboard'
 
@@ -98,7 +98,7 @@ CREATE TABLE inbox_items (
     machine_json TEXT,                          -- 强类型结构化数据
 
     tags TEXT,                                  -- JSON Array: ["前端","团建"]
-    facets_json TEXT,                           -- JSON: 多视角聚类，视角→标签数组（如 {"主题":[...],"事件":[...]}），可空；AI 分类页消费（见 V2 §3.8）
+    facets_json TEXT,                           -- JSON: 多视角聚类，视角→标签数组（如 {"主题":[...],"事件":[...]}），可空；由 AiReconstructor 管线产出（见 §6 模块二）
     is_vault INTEGER NOT NULL DEFAULT 0,        -- 0 公开 / 1 私密保险箱
     is_processed INTEGER NOT NULL DEFAULT 0,    -- 0 待处理 / 1 完成 / -1 失败
     collect_mode TEXT NOT NULL DEFAULT 'scatter', -- 'scatter' 分散 / 'merge' 合并（合并判定：同一来源 App + 5 分钟时间窗内的连续文本收集；MCP add_item 不参与合并，永远独立成条）
@@ -112,7 +112,7 @@ CREATE TABLE inbox_items (
 CREATE INDEX idx_inbox_created ON inbox_items(created_at DESC);
 CREATE INDEX idx_inbox_vault ON inbox_items(is_vault);
 
--- 2. 健康与时光机上下文
+-- 2. 健康与时光机上下文（健康/日历抓取已于 2026-10-15 砍除，表保留为时光机上下文占位，见 context/decisions.md）
 CREATE TABLE daily_metrics (
     date TEXT PRIMARY KEY,                      -- YYYY-MM-DD
     steps INTEGER NOT NULL DEFAULT 0,
@@ -150,10 +150,10 @@ CREATE VIRTUAL TABLE search_index USING fts5(
 | 系统级 Share 接收 URL / 图片 / 文件 / TXT 聊天记录 | **MVP** | `receive_sharing_intent` 已依赖，需补接收→写 `raw_content`→入队逻辑 |
 | 剪贴板智能嗅探 | V2 | 唤醒时校验剪贴板，过滤乱码，高价值 URL 弹窗捕获 |
 | 文本收集模式（合并 / 分散，默认分散） | **MVP** | 分散：每次收集 1 条；合并：**同一来源 App + 5 分钟内**的连续文本收集追加为 1 条并附 `appendix_json`，`edit_locked=1`，需 解除编辑 方可改；**纯 URL 段不参与合并**（独立成条供 `summarize_url` 处理）；MCP `add_item` 不参与合并（详见 §5.3 / 设计 §4.9） |
-| 锁屏/桌面小组件（录音转待办 / 相机 OCR） | V3 | `home_widget` |
-| 静默抓取 Health / 日历 | V3 | `health` + `device_calendar` → 写 `daily_metrics` |
+| ~~锁屏/桌面小组件（录音转待办 / 相机 OCR）~~ | ~~V3~~ | **砍除**（2026-10-15）：原 `home_widget` 方案，发展方向调整后无产品位置 |
+| ~~静默抓取 Health / 日历~~ | ~~V3~~ | **砍除**（2026-10-15）：原 `health` + `device_calendar` → 写 `daily_metrics`；`daily_metrics` 表保留为占位 |
 
-> **AI 派生类型约束**（2026-10-02 修订：**聊天场景取消**，`chatlog` 不再是产出目标）：发票 / 文档等常来自截图，入库暂记 `source_type='image'`、`item_type` provisional 为 `image`；经 AI 管线（V2 §3.8）识别后重分类为 `document`，侧边栏「文档」分类以 AI 派生 `item_type` 为准。未处理截图在侧边栏归「图片」。人工改判入口已于 2026-10-02 取消（UI 不提供类型细分改判）；仅保留 MCP `update_item(item_type)` 白名单纠正（仅 `image→document`）作为 AI / PC 侧通道。
+> **AI 派生类型约束**（2026-10-02 修订：**聊天场景取消**，`chatlog` 不再是产出目标）：发票 / 文档等常来自截图，入库暂记 `source_type='image'`、`item_type` provisional 为 `image`；经 AI 管线（§6 模块二 `AiReconstructor`）识别后重分类为 `document`，侧边栏「文档」分类以 AI 派生 `item_type` 为准。未处理截图在侧边栏归「图片」。人工改判入口已于 2026-10-02 取消（UI 不提供类型细分改判）；**MCP `update_item(item_type)` 白名单通道亦已于 2026-10-09 退役**（重分类命令整体摘除）——`item_type` 现仅由摄入源事实 + 端侧管线回写（`CommandActor.pipeline`）决定，外部主体不可改。
 
 ### 模块二：端侧 AI 双态重构管线
 
@@ -165,17 +165,17 @@ CREATE VIRTUAL TABLE search_index USING fts5(
 | 自动打标 2–3 个 + 身份证/银行卡默认打码 | V2 | 规则 + LLM |
 | 通用截图解析（发票 / 名片 / 聚会计划，OCR→LLM 套领域 Schema） | V2 | ScreenshotParser 通用管线，详见 V2 §4 |
 
-**v1 管线行为（已定）**：队列消费者把 `raw_content` 原样复制进 `human_md`，`machine_json` 置空，`is_processed=1`，保证端到端不卡死；AI 能力以接口 `AiReconstructor` 抽象（详见 V2 §3.8），系统模型 / 占位 / 云端兜底等多实现可插拔替换该消费者，架构不变。**2026-09-27 分期调整：OCR 与音频转写提前至 v1**——图片条目经 ML Kit 端侧文字识别（中文脚本，标准 GMS 设备）产出文本；速记录音在采集时经系统语音识别端侧转写（onDevice 探测，不支持则 UI 明示仅存音频），转写文本随原始层入库；无 GMS 设备的 bundled OCR 适配为后续项；LLM 双态重构仍为 V2。**设置项（2026-09-27 登记）**：设置 → AI 模式提供「图片 OCR」「录音端侧转写」开关，进入设置时做本机能力检测（GMS 可用性 / 系统语音识别），**首次检测结果持久化、此后不再检测**；无能力小字提示并置灰，有能力默认开启；OCR 关闭时图片走占位管线，转写关闭时录音仅存音频。另设「链接离线抓取正文」开关（默认开，2026-09-27 决策）：url 条目在队列中抓取网页标题+正文写入人类态，失败回退原文。
+**v1 管线行为（已定）**：队列消费者把 `raw_content` 原样复制进 `human_md`，`machine_json` 置空，`is_processed=1`，保证端到端不卡死；AI 能力以接口 `AiReconstructor` 抽象（详见 §6 模块二与 `docs/architecture/human-ai-parity.md`），多实现可插拔替换该消费者，架构不变。**2026-09-27 分期调整：OCR 与音频转写提前至 v1**——图片条目经 ML Kit 端侧文字识别（中文 bundled 库，无 GMS 依赖）产出文本；速记录音仅存音频文件（`record` 插件），转写改由 Sherpa 端侧文件转写**手动触发**（`lib/ai/asr*.dart`，设置开关 + 模型档位门控；speech_to_text 采集时同步转写方案已废除）；LLM 双态重构已迁出宿主 App（见下）。**设置项（2026-09-27 登记）**：设置 → AI 模式提供「图片 OCR」「录音端侧转写」开关，进入设置时做本机能力检测（GMS 可用性 / 系统语音识别），**首次检测结果持久化、此后不再检测**；无能力小字提示并置灰，有能力默认开启；OCR 关闭时图片走占位管线，转写关闭时录音仅存音频。另设「链接离线抓取正文」开关（默认开，2026-09-27 决策）：url 条目在队列中抓取网页标题+正文写入人类态，失败回退原文。**LLM 归属变更（2026-10-14，ai-app-split M2）**：双态重构/摘要/打标所用端侧 LLM 引擎已整体迁出至独立 AI 宿主 App——本机不再持有任何大模型，上述任务改经 MCP `claim/touch/apply_ai_task` 远程认领回写；`AiReconstructor` 抽象与队列门禁保留，SSOT = docs/design/ai-app-split.md。
 
 ### 模块三：便签编辑器与人类干预
 
-实时离线错别字/语法校验 + Diff 高亮；手动干预 `human_md`；一键文风切换（口语→职场）。**优先级 V2**，最小设计见 V2 §5。
+实时离线错别字/语法校验 + Diff 高亮；手动干预 `human_md`；一键文风切换（口语→职场）。**已落地**：块编辑器 + 手动干预 + 待办勾选（2026-09~10）；**AI 增强部分（校对/文风/Diff）已砍除**（V2 R4，2026-10-09 收敛拍板：1.5B 中文校对不可信、过度工程）——重活归桌面 AI 客户端经 MCP。
 
 ### 模块四：时光机与加密舱
 
 | 需求 | 优先级 | 说明 |
 |---|---|---|
-| Timeline 视图（按天聚合 收集内容；健康/日历上下文 V3 接入） | V2 | `inbox_items` 按天分组；V3 起 JOIN `daily_metrics` |
+| Timeline 视图（按天聚合 收集内容；健康/日历上下文已砍除） | V2 | `inbox_items` 按天分组（ui-spec §3 收敛为排序维度）；`daily_metrics` 无数据源、恒空 |
 | Biometric Vault（长按移入，AES-256，FaceID，MCP 物理隔离） | V3 | SQLCipher / 文件 AES；MCP 默认 `is_vault=0` |
 | AI 分类浏览（多视角聚类：主题 / 事件 / 项目…，顶部滑动切换视角与标签） | V2 | 依赖模块二 AI 打标（`facets`）；MVP 占位无视角时为空态 |
 
@@ -187,7 +187,7 @@ CREATE VIRTUAL TABLE search_index USING fts5(
 
 **传输**：Streamable HTTP `POST /mcp`，`x-api-key` 鉴权，无状态（不签发 session id）。端点 `http://<手机LAN_IP>:8765/mcp`，PC 经 `mcp-bridge/stdio-bridge.mjs` 桥接。
 
-**v1 工具集（在现有 `list_items/get_item/add_item` 基础上扩展）：**
+**v1 工具集（在现有 `list_items/get_item/add_item` 基础上扩展；截至 2026-10-15 工具族共 42 个，完整一览以 docs/guide/mcp-integration.md 为准）：**
 
 ```mermaid
 flowchart LR
@@ -206,11 +206,11 @@ flowchart LR
 | Tool | 入参 | 行为 | 优先级 |
 |---|---|---|---|
 | `list_items` | `query?, type?, limit?, offset?` | 列/搜条目，时间倒序；**默认排除 `is_vault=1`、`is_deleted=1` 与 `ai_visible=0`** | MVP |
-| `get_item` | `id` | 全文 + 图片 base64（≤4MB）；`is_deleted=1` 或 `ai_visible=0` 条目 AI 不可读 | MVP |
+| `get_item` | `id` | 全文 + 图片 base64（≤512KB 内联）；更大附件返回 `mcp-blob://` URI 由宿主经 `resources/read` 取字节；`is_deleted=1` 或 `ai_visible=0` 条目 AI 不可读 | MVP |
 | `add_item` | `content, title?, tags?` | PC→手机写回（即 `sync_thought_to_mobile`）；经此 AI 建条入口创建的笔记 `author=ai`、`ai_visible=1`、`ai_editable=1` | MVP |
 | `query_machine_data` | `query, type?('url'\|'image'\|'video'\|'audio'\|'chatlog'\|'note'\|'document')` | 返回 `machine_json` 结构化数组，**过滤 Vault、已删与 `ai_visible=0` 条目**；`type` 与 `item_type` 同源（canonical 枚举，见 §5.3），废弃旧 `invoice` 伪类型 | MVP |
-| `get_timeline_context` | `date` | 返回 `{ health, events, ingested_items }`；MVP/V2 阶段 `health`/`events` 恒为空（健康/日历 V3 接入） | MVP |
-| `update_item` | `id, patch{title?,tldr?,tags?,human_md?,machine_json?,item_type?}` | 编辑（= UI 详情 / 侧边栏编辑），写回并可触发重处理；`machine_json` 落库前须通过对应领域 Schema 校验（如 `invoice.v1`），失败整单拒写；`item_type` 仅允许白名单方向 `image→document`（发票/文档截图）且要求 `source_type='image'`（人工/PC 纠正通道，2026-09-27 决策；2026-10-02 修订：聊天场景取消，`chatlog` 目标移除） | MVP |
+| `get_timeline_context` | `date` | 返回 `{ health, events, ingested_items }`；健康/日历抓取已于 2026-10-15 砍除，`health`/`events` 恒为空（占位保留） | MVP |
+| `update_item` | `id, patch{title?,tldr?,tags?,human_md?,machine_json?}` | 编辑（= UI 详情 / 侧边栏编辑），写回并可触发重处理；`machine_json` 落库前须通过对应领域 Schema 校验（如 `invoice.v1`），失败整单拒写；~~`item_type` 白名单改判~~已于 2026-10-09 退役（重分类命令整体摘除，类型仅由摄入源 + 管线回写决定） | MVP |
 | `delete_item` | `id` | 软删除（`is_deleted`→1，关联 `ai_task_queue` 任务取消；30 天后物理清理，期间可恢复） | MVP |
 | `set_vault` | `id, on:bool` | 移入保险箱（置 `is_vault`；真实加密 V3）；**MCP 仅可移入（on=true）——移出走 UI 生物识别后操作，防大模型自行解除 Vault 隔离（实现期明确，与隐私硬约束同源）** | MVP |
 | `reprocess_item` | `id` | 重新入 `ai_task_queue`（= UI「重新处理」；MVP 占位管线下为幂等重跑） | MVP |
@@ -269,25 +269,25 @@ sequenceDiagram
 
 ## 9. 分期路线图
 
-- **MVP（本次目标）**：重建 Schema（§5.3，含 `facets_json`；v1 旧表功能未经设计，直接弃旧数据重建、不做迁移）→ Share 入库 + 入队 → 扩展 MCP 机器态工具（§7）→ UI（时光机轻量版［=按天分组内容线］+ 全部·分类视图 + 详情 + MCP 设置页）→ AI 队列脚手架（§6 模块二 v1 行为；图片 OCR 与速记转写已提前实现（2026-09-27），LLM 双态重构仍为占位）。铁三角：*数据进得来、双态存得下、PC 读得到*。**MVP 不含**：Vault 真加密（V3）、离线双态 AI 重构（V2，仅接口与占位）、AI 多视角聚类（V2，facets 为空时 AI 分类空态）。导航 5 tab 全展示，但 AI 分类 / 保险箱 MVP 为占位空态，V2/V3 填充。
-- **V2**：以 `v2-requirements.md`（2026-10-02 收敛版）为准——媒体文本 MCP 优先加工（document 接线 + MCP 工具补齐）、摄入自动双态重构管线（R1）+ 隐私打码（R2）、通用截图解析（R3）、便签 AI 增强（R4）、温控节流（R5）；FTS 检索演进随量级触发（vector-embeddings.md 三步走）。
+- **MVP（本次目标）**：重建 Schema（§5.3，含 `facets_json`；v1 旧表功能未经设计，直接弃旧数据重建、不做迁移）→ Share 入库 + 入队 → 扩展 MCP 机器态工具（§7）→ UI（时光机轻量版［=按天分组内容线］+ 全部·分类视图 + 详情 + MCP 设置页）→ AI 队列脚手架（§6 模块二 v1 行为；图片 OCR 与速记转写已提前实现（2026-09-27））。铁三角：*数据进得来、双态存得下、PC 读得到*。**MVP 不含**：Vault 真加密（V3）、AI 多视角聚类（V2，facets 为空时 AI 分类空态）。**导航口径修正（2026-10-15 对账）**：原「5 tab 全展示」已被 ui-spec §3 收敛取代——现为 3 tab（全部/工作区/设置）+ 侧边栏（保险箱等低频入口），时光机降为排序维度、AI 分类降为标签筛选维度。
+- **V2**：以 `v2-requirements.md`（2026-10-02 收敛版 + 2026-10-09 二次收敛）为准——媒体文本 MCP 优先加工（document 接线 + MCP 工具补齐，已落地）、摄入 URL 抓取（R1，已落地）+ 隐私打码（R2，已落地）；通用截图解析（R3）、便签 AI 增强（R4）、温控节流（R5）按 2026-10-09 拍板砍除/除名；R1 的 LLM 摘要步随 2026-10-14 ai-app-split M2 迁至宿主 App，**宿主闭环 2026-10-15 已跑通**（goodhub claim/apply 远程 LLM 闭环，LLM 工具族结束空转）——V2 全线收官，余真机使用反馈；FTS 检索演进随量级触发（vector-embeddings.md 三步走）。
 - **V3**（主题：**信任边界 → 新数据源 → 性能 → 平台扩展**；2026-10-02 重排拍板——敏感数据严格排在权限栅栏之后，先锁后开）：
   1. **AI 可视性分级限制（保险箱概念演进：容器→标记）**——三层级标记（列表多选条目 / 详情区块级 / 更细层级单独限制），用户语言「仅自己可见」；保险箱重构为**受限视图**（审计界面）；继承单向（默认继承、子级只加严不放宽）；**备份语义反转**（受限内容进备份，排除逻辑=恢复丢失）；机器码按钮复用交互语言不复用语义；权限梯度=V2 自动打码 < 手动标记 < 分域授权；区块级标记走侧信道 JSON（锚点漂移实现期设计，BlockAnchorStore 经验）。**对抗性口径**：受限=对所有 AI 消费端不可见（MCP+本地管线），`CommandActor.agent` 同受约束不豁免；执行三原则=单点强制 / 只加严不放宽（AI 解除标记必须走 UI，set_vault 同款先例）/ 越权测试矩阵四用例；信任边界声明=标记只保证「经 App 接口」不可见，备份外流与物理 root 访问在模型外。
   2. **MCP 客户端分域授权**——客户端注册表：按客户端发 token + 三维权限域［工具域 tools/list 过滤 / 数据域类型·工作区白名单（消费 1 的标记）/ 内容形态 raw·processed，processed 与 V2 打码层协同］；默认新客户端=只读+processed+受限排除；预设 2-3 档避免细粒度矩阵；V2 维持单 token 信任模型。
   3. **Vault AES 加密**——SQLCipher（`sqflite_sqlcipher`）或文件级 AES-256 + FaceID 门；加密落地后备份排除语义重估。
   4. **FTS 检索**——SQLite FTS5 + trigram 分词器替换 LIKE（vector-embeddings.md 三步走的中期档，量级触发条件大概率在本期内满足；接在安全项之后做，避免与权限改动撞数据层）。
-  5. **Health/日历静默抓取**——`health` + `device_calendar` 写 `daily_metrics`；健康截图解析 `health_record.v1` 复用 V2 R3 管线扩展 Schema；时间线 JOIN 健康样本。**严格晚于 1-3**：栅栏就位才开门接敏感数据。
-  6. **NPU 后端实装**——ExecuTorch QNN（高通，8 Gen 3 优先：`.pte` 导出验证+跑分+退化输出检查）→ LiteRT MTK CompiledModel（联发科，谷歌路线）；跟 4B 实测数据走（on-device-llm.md §2.1 分期②③），属性能增强非主线。
-  - **平台扩展轨（随缘，不阻塞主线，不占主线排序）**：锁屏/桌面组件（`home_widget`：录音转待办、相机 OCR 直达）、鸿蒙 OHOS 适配（flutter_flutter fork + 插件 ohos 化）。
+  5. ~~**Health/日历静默抓取**~~——**砍除**（2026-10-15，用户拍板「发展方向已变、放弃不做」，见 context/decisions.md）：原 `health` + `device_calendar` 写 `daily_metrics`、健康截图解析 `health_record.v1`、时间线 JOIN 健康样本全部取消；`daily_metrics` 表保留为占位不删。
+  6. ~~**NPU 后端实装**~~——**迁出本仓**（2026-10-14 ai-app-split M2）：原 ExecuTorch QNN / LiteRT MTK CompiledModel 均服务端侧 LLM，随引擎一并归 AI 宿主 App（on-device-llm.md 已墓碑化，设计随迁宿主仓）；goodshare 侧不再有 NPU 议题，仅留 SoC 感知的 ASR 模型档位。
+  - **平台扩展轨（随缘，不阻塞主线，不占主线排序）**：~~锁屏/桌面组件（`home_widget`）~~**砍除**（2026-10-15）、鸿蒙 OHOS 适配（flutter_flutter fork + 插件 ohos 化）。
 - **V4**：**app 内 agent/自动化引擎**——app 兼作 MCP host（命令层新增第四 `CommandActor.agent` 槽位），对外连接其他本地 MCP 服务（日历等），跨 app 编排收进端侧；起步走**固定工作流引擎**（确定性管道 + 局部 LLM 判断点，离线可靠），通用 LLM agent 后置（端侧 1.5B 多步工具调用可靠性不足、云端 API 破坏离线承诺）；独特价值=住进手机生命周期（充电/后台/定时触发，复用 AiQueueService 前台服务基建），补「桌面 host 不在线不交换」空档。硬纪律：独立成层、业务层零耦合，其他 app 只出现在工作流配置数据里。前置：V2 素材加工（event.v1 等结构化产物）与 V3 分域授权（agent host 属信任客户端档）。2026-10-02 拍板。
 
 ## 10. 风险与开放问题
 
 | 项 | 风险 | 缓解 |
 |---|---|---|
-| 双态 AI 质量 / 隐私 | 「完全离线」与「高质量」短期互斥 | v1 云端兜底 + 隐私页明示联网；V2 换本地模型 |
+| 双态 AI 质量 / 隐私 | 「完全离线」与「高质量」互斥 | LLM 已迁出至 AI 宿主 App（ai-app-split）：端侧/云端引擎选择权归宿主，goodshare 只保证数据出口打码（R2 恒开）与 Vault 隔离 |
 | FTS5 设备兼容性 | 低端机 SQLite 缺模块 | 先用 LIKE，探测后启用（§5.4） |
 | Vault 加密实现 | SQLite 无原生加密 | SQLCipher 或文件级 AES（V3） |
-| `is_processed=-1` 失败重试 | 队列无重试机制 | V2 加退避重试 + 死信 |
+| `is_processed=-1` 失败重试 | 队列无自动重试 | 失败任务置 failed + `last_note` 明因、可手动 reprocess；卡死 processing 由 `reclaimStaleTasks`（30s 无心跳）回收；退避重试/死信仍属后续项 |
 
-**开放问题（待决策）**：① 云端 LLM 供应商与密钥托管方式；② Vault 用 SQLCipher 整库加密还是字段级 AES；③ Timeline 是否预聚合物化视图。
+**开放问题（待决策）**：① ~~云端 LLM 供应商与密钥托管方式~~——已关闭（2026-10-14）：随 LLM 拆出归宿主 App 侧决策，goodshare 不涉云端推理；② Vault 用 SQLCipher 整库加密还是字段级 AES；③ Timeline 是否预聚合物化视图（现为排序维度，暂不需要）。

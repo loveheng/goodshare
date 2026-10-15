@@ -1,12 +1,14 @@
 ---
 status: active
-updated: 2026-10-11
+updated: 2026-10-15
 ---
 
 # AI 宿主 App 拆分契约（M0 接缝）
 
 > goodshare ↔ AI 宿主 App 的分界与 MCP 接缝契约 SSOT。2026-10-10 拍板（方向四轮收敛：worker → 纯客户端 → 分治模型 → 只拆 LLM）。
 > M1/M2 实施以此文为唯一接缝事实源；任何一边改动接缝须同轮修本文档。宿主 App 自身的产品设计（UI / agent / 共享区）不在本文范围——它独立成仓、自成 SSOT。
+
+**实施状态（2026-10-15 对账）**：M1（三接缝工具 + 占位守卫）✅ d34dda5；M2.5（Tier/prompts/resources/SSE 帧流）✅；M3（resources.subscribe + sampling 反向推理 + ai_suggest_tags）✅；**M2 减法（摘 LiteRT 引擎）✅ 2026-10-14 ad06133**——本文 §5/§6 由「计划」转为「已落地」描述。**宿主闭环 ✅（2026-10-15 用户确认）**：goodhub 侧 claim/touch/apply 远程 LLM 闭环跑通（`goodshare_task_api.dart` + `task_loop_service` + BYOK 云端/Binder 节点卡均在宿主仓归并），LLM 工具族结束「入队空转」。剩余 = 按宿主使用反馈补接缝（附件通道 FileProvider 延后件、长任务 progress 中途帧）。
 
 ## 1. 角色定位（拍板）
 

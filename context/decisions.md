@@ -38,4 +38,26 @@ last-merge: none
 **最终决定**：TemplateApplyCommand（ui 触发，=人类消费模板，不破 ADR「管理权归 AI」——apply 是消费非管理）入队 `template_apply:<id>`；item_detail_page「按模板处理」弹模板选择 → 提交待办 → _AiTaskStatusLine 通用待办条显示「处理中…」；宿主认领后读 skill、按模板结构处理、回写。无新增独占通道、无新 schema 列（v23 已建）。
 **AI 洞察**：「选模板套用」本质是「派发给 AI 的一条待办」，与「让 AI 写摘要」同构；把它塞进既有远程任务接缝，零新增基础设施即得 claim/心跳/回写/打码/乐观锁全套能力（R1 同一份可观测状态免费复用）。
 
+## scope
+
+### [2026-10-15] 砍除锁屏/桌面组件与健康/日历抓取（V3 两项） (src: 用户)
+**场景/痛点**：PRD §3/§6/§9 将「锁屏/桌面小组件（home_widget）」与「Health/日历静默抓取（health + device_calendar）」列为 V3。用户 2026-10-15 明确放弃：app 实际发展方向已与当初蓝图不同——端侧 LLM 拆给宿主 App、内容加工走 MCP、使用重心在收集/浏览/桌面 AI 联动，Widget 快捷入口与健康数据管线不再有产品位置。
+**可选方案**：
+- A1 保留待 V3 排期 → 否决：无产品需求支撑，占路线图位误导后续排期
+- A2 顺手删 `daily_metrics` 表与占位 → 不采纳：表无读写方、零成本，备份清单已含；删表要动 schema 版本与备份兼容，收益为零
+- **采纳**：需求文档三处同步标记砍除（墓碑式注明日期与原因），代码零改动
+**最终决定**：PRD（docs/product/product-requirements.md）§3 技术栈映射、§5.3 数据模型注释、§6 模块一/模块四、§7 get_timeline_context 行、§9 V3 路线图（含平台扩展轨）同步标记「砍除（2026-10-15）」；`get_timeline_context` 的 health/events 恒空口径不变（本就是占位）；`daily_metrics` 表保留作时光机上下文占位、不删。SSOT = 本决定 + PRD 对应行。
+**AI 洞察**：这是产品收敛的延续——V2 已砍 R3/R4/R5、LLM 拆至宿主，V3「新数据源」轨（健康/日历）本就排在信任栅栏之后且严格晚于安全项，Widget 属「平台扩展轨（随缘）」从未排期。两项砍除后 V3 主线只剩：AI 可视性分级、MCP 客户端分域授权、Vault AES 加密、FTS 检索、NPU 后端实装。
+
+## ai-template-p2
+
+### [2026-10-15] P2 只追加回写 + 授权断点修复 + 详情页呈现规约 (src: 用户+AI)
+**场景/痛点**：ai-template P2（存量内容按模板处理）要落地，用户明确约束「对用户的文本不做修改、只是追加内容」。对账发现两个断点：① 现行回写靠 rawEcho 间接保护（宿主回显 rawContent 判等保留 human_md），但 `human_md` 为空的条目会被填入 rawContent——「只追加」不能靠技巧，要结构保证；② LLM 迁宿主后 UI 触发的 summarize/extract_tags/template_apply 入队即被 `claim_ai_task` 的 `aiVisible:true` 过滤挡死（人类笔记默认 ai_visible=0）——功能对默认场景不可用，是 M2 后的通用断点。
+**可选方案**：
+- A1 模板产出物理拼进 human_md 末尾 → 否决：动用户文本，与「不做修改」直接冲突；且与 P1「template_output 独立列、语义与摘要分离」的 Schema 决策相悖
+- A2 claim 侧对模板任务豁免 ai_visible → 否决：豁免放在读取侧=门禁形同虚设，MCP 发起的同类任务也能蹭豁免；防呆必须下沉写入入口
+- **采纳**：① `_applyAiResult` 对 `template_apply:<id>` 分支早退（镜像 clip/块任务先例），只写模板三列（打码+版本锚），条目级字段零触碰，无产出连模板列也不写；② 授权下沉入队口——远程入队点 `actor==ai && ai_visible=0` 拒（forbidden+hint），`actor==ui`（人类显式触发）= 一次性授权；claim 信任已入队任务（byId 去 aiVisible 过滤，Vault/已删天然挡）；③ 详情页呈现规约四条（入口降权/渐进披露/选择器 BottomSheet+原文不改明示/状态与 stale 完备）
+**最终决定**：SSOT = docs/design/ai-template.md（本次新建）；只追加语义以「apply 前后 human_md/raw_content 逐字相等（含空 human_md 条目）」为测试钉子。同条目同模板 active 任务在队即拒（防连点）。
+**AI 洞察**：断点②的根因是「读门禁放在读取侧、而写入侧无门禁」的倒置——v20 设计时所有 LLM 都在本机管线（pipeline 主体天然可信），迁宿主后 claim 成为新的读取面，门禁位置却没跟着搬到入队口。修法不是给 claim 打补丁，而是把授权判定放回「谁发起」：人类显式触发=授权，AI 发起=守 ai_visible——与 set_vault「移出仅 UI」同款主体思想。
+
 ## misc

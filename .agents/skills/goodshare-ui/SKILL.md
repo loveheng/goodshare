@@ -19,7 +19,7 @@ description: 拾贝 goodshare（Flutter 分享收集器+MCP）UI 层规范事实
 - 视觉基准 **mymind 风格**（2026-09-30 拍板「留骨头、换皮」，口径见 `ui-spec` §2 引言）：**代码层 Material 库照用**（Scaffold/Sheet/TextField 是 Flutter 地基）、**主题层 ThemeData 全量 override 为 mymind 令牌（M3 默认视觉一个像素不许露出）**、**视觉层只认 mymind 基准（「像不像 M3」不是评价维度）**。不照搬「文件极客」的**文件管理隐喻**（文件夹 / 清理）——本 App 是内容 / 时间线中枢。
 - 导航固定（2026-09-29 信息结构收敛，SSOT=ui-spec §3）：底部 **3 tab（全部 / 工作区 / 设置）** + **底部常驻速记条**（仅首页，点即聚焦打字即存；导入类走顶部 `＋` 菜单）+ 侧边栏（低频/隐私入口：保险箱·最近删除·AI 任务队列）。**无悬浮球**；时光机/AI 分类已降为筛选维度、保险箱入侧边栏，`timeline_page`/`ai_tags_page`/`floating_ball` 已删除——不得复活，不得新开顶层入口（除非回写 PRD / V2 需求）。
 - 详情页必须支持 `human_md`（Markdown 渲染）与 `machine_json`（可切换 JsonView）**双态呈现**；双态共享同一 `item` 数据，禁止双源。
-- 详情 / 编辑采用**模板 + 按类型策略**：`ItemViewTemplate`（`lib/ui/item_view_template.dart`）+ `ItemViewRegistry` 按 `item_type` 分发；新增文件类型 = 实现模板 + 注册，框架零改动（与 `AiReconstructor` 同构，V2 §3.8）。
+- 详情 / 编辑采用**模板 + 按类型策略**：`ItemViewTemplate`（`lib/ui/item_view_template.dart`）+ `ItemViewRegistry` 按 `item_type` 分发；新增文件类型 = 实现模板 + 注册，框架零改动（与 `AiReconstructor` 抽象同构，见 PRD §6 模块二）。
 - **标签维度**（2026-09-29 降级，原「AI 分类」tab 删除）：标签是主列表筛选 chips 之一，按 `facets` 过滤，视觉走 ui-spec §2.3 胶囊流；依赖 AI 打标，无 `facets` 时空态，不做假数据。
 - Vault 内容在 MCP 层物理隔离（`is_vault=0` 过滤），UI 进入需生物识别（`local_auth`）。
 - 设置树固定 `ui-spec` §5 五分组；新增开关先在需求登记再落地。

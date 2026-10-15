@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-13
+updated: 2026-10-15
 ---
 
 # goodshare 接入 goodhub 本地插件机制 · 评估结论（goodshare 侧）
@@ -49,7 +49,7 @@ updated: 2026-10-13
 |---|---|---|---|---|
 | 1 | 能否移除 HTTP 端口监听、改 Binder Service | **是（可行，前台服务须解耦）** | 中 M（约 1 周） | 业务/传输解耦是前提；删 `HttpServer` + 新 Android Service 壳 + `call` 转发 `_dispatch`。前台服务不能顺手删——AI 队列后台推理仍需保活，须把「AI 队列保活」与「MCP 可达性」解绑（MCP 走 Binder 自动发现，无需自起前台服务） |
 | 2 | 接入 `goodhub-mcp-plugin-core` SDK 可行性 | **是（推荐，工具注册方式要改）** | 中 M（SDK 到位后约 1~1.5 周） | 须把 hand-coded `switch(name)`（`tools.dart:798`）迁成 `@McpTool` 注解方法，裸名交给 SDK 自动前缀加/剥。SDK 未到位时手搓 `com.zzh.goodhub.mcp.IMcpChannel` 兜底（文档要求优先 SDK，手搓额外 +0.5 周） |
-| 3 | 大结果是否触发 1MB 事务上限、需 URI 降级 | **是（确定性触发，必须改）** | 小~中 S~M（约 0.5 周） | 硬爆点=`get_item` 图片内联 4MB 帽（`tools.dart:910`）→ 改 `mcp-blob://com.zzh.goodshare/<path>`（严禁 `$ref://`），宿主经 content URI / `ParcelFileDescriptor` 取字节；建议给 `resources/read` 文本加阈值帽 |
+| 3 | 大结果是否触发 1MB 事务上限、需 URI 降级 | **是（确定性触发，必须改）** | 小~中 S~M（约 0.5 周） | 硬爆点=`get_item` 图片内联 512KB 帽（`tools.dart` `_kInlineMaxBytes`）→ 改 `mcp-blob://com.zzh.goodshare/<path>`（严禁 `$ref://`），宿主经 content URI / `ParcelFileDescriptor` 取字节；建议给 `resources/read` 文本加阈值帽 |
 | 4 | 长任务 `_async` 改造范围 | **极小（仅 `ai_suggest_tags`）** | 小 S（约 0.5 周） | 重活早已是入队轮询异步；仅 `ai_suggest_tags` 同步采样 90s 须改 `_async`。SSE 帧流平移为 `onEvent` 帧 |
 | 5 | 采样反向请求闭环迁移量 | **小（仅 1 个消费点）** | 小 S（与 #4 合并约 0.5~1 周） | 全仓唯一 sampling 消费=`ai_suggest_tags`（`tools.dart:1316`）。现夹带 SSE 流（`mcp_server.dart:271-292`），Binder 下改 `IMcpCallback.onEvent` 推 + `answerReverse` 回，completer 注册表复用 |
 | 6 | 任务源协议（claim/apply）是否保留 | **是（零改动复用）** | 0 | `claim_ai_task`/`touch_ai_task`/`apply_ai_result`（`tools.dart:1367/1417/1424`）纯 JSON-RPC、与传输无关；`$ref` 由 goodhub `ToolRouter.serverFor` 解析，goodshare 不关心前缀 |

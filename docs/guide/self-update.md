@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-09-29
+updated: 2026-10-15
 ---
 
 # 自更新与热更指南
@@ -27,13 +27,15 @@ updated: 2026-09-29
 
 适合作为常驻更新源。前置：Cloudflare 后台对该 bucket 开启「公开访问」并绑定自定义域（如 `update.example.com`），确保 `https://<域>/updates/...` 可公开 GET。
 
-1. 准备仓库根 `.env`（参考 `.env.example`）：填 `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET` / `R2_PUBLIC_DOMAIN`。无需额外 CLI（上传由 `scripts/upload-r2.mjs` 用 Node 内置模块完成；脚本读取优先级：根 `.env` > `scripts/.env`）。
+1. 准备仓库根 `.env`（参考 `.env.example`）：填 `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET` / `R2_PUBLIC_DOMAIN` / `REMOTE_PREFIX`（多 app 共用同一 bucket 时必须按 app 隔离，如 `updates/goodshare`，见文末注意事项）。无需额外 CLI（上传由 `scripts/upload-r2.mjs` 用 Node 内置模块完成；脚本读取优先级：根 `.env` > `scripts/.env`）。
 2. 仓库根执行：`bash scripts/release-r2.sh`（可选 `--commit` 把清单纳入版本管理）。
    脚本自动：读取 `pubspec.yaml` 版本 → `flutter build apk --release`（整包，跨 ABI 兜底）→ 算 sha256 → 生成 `updates/goodshare-update.json` → 用 `aws s3 cp`（R2 endpoint）上传 apk + json。
 3. 脚本末尾打印「更新源 URL」，形如 `https://update.example.com/updates`，填进 App「更新」页。
    - `release-r2.sh` 已在 `flutter build` 时通过 `--dart-define=UPDATE_SOURCE_URL=...` 把该源编进 APK，因此**装上即自带默认更新源，首次无需手动填**；App「更新」页仍可手动改源覆盖。
 
 > `r2.dev` 默认公开域有限速，不建议作生产更新源；生产请绑定自定义域（自定义域免 egress 流量费）。`R2_PUBLIC_DOMAIN` 与 `REMOTE_PREFIX` 共同决定最终 URL 与 App 端源地址，务必一致。
+>
+> **多 app 共用同一 bucket 时，`REMOTE_PREFIX` 必须按 app 隔离**（如 `updates/goodshare`、`updates/shiguang`）：各 app 的 APK 与清单对象路径完全相同（`app-release.apk`），后发覆盖先发；且源地址指错即「串包」——A 拉到 B 的清单与安装包。防御两层：**发布侧** `REMOTE_PREFIX` 按 app 隔离 + **客户端**清单 `applicationId` 与当前包名比对，不一致拒装拒用。
 
 ### 清单格式 goodshare-update.json
 
@@ -41,6 +43,7 @@ updated: 2026-09-29
 {
   "versionCode": 3,
   "versionName": "1.1.0",
+  "applicationId": "com.zzh.goodshare",
   "apkUrl": "https://gitee.com/<user>/<repo>/raw/master/updates/app-release.apk",
   "sha256": "<apk 的 sha256，建议必填>",
   "changelog": "修复文本分享丢失；新增热更体系",
@@ -61,6 +64,7 @@ updated: 2026-09-29
 
 - `versionCode` 与 `pubspec.yaml` 的 `+N` 比较，**大于**才提示更新
 - `sha256` 生成：`sha256sum app-release.apk`
+- `applicationId`：清单声明归属的应用（`release-r2.sh` 发布时自动写入）。客户端拉取清单与下载前都会与当前应用包名比对，**不一致直接拒用**（连 `config` 段也不应用）——多 app 共用同一更新托管（如同一个 R2 桶）时防「串包」：装到来路不明的 app、或把别人的公告/MCP 指令/功能开关当成自己的配置。旧格式清单无此字段时放行（向后兼容），完整性仍由 `sha256` 兜底
 - `config.mcpInstructions` 非空时会覆盖 MCP `initialize` 返回的服务说明（下次客户端连接生效）
 - 公告随「检查更新」刷新并缓存，更新页展示
 
@@ -77,9 +81,9 @@ updated: 2026-09-29
 - **缺失该段或某 key 为空**：回退本地默认口号，不会空白。
 - 与公告同理，随「检查更新」刷新并缓存（`RemoteConfigStore` 持久化）。
 
-### flags.llmManifestUrl（端侧大模型目录热更）
+### flags.llmManifestUrl（端侧大模型目录热更）——**已退役**
 
-`config.flags` 加一键即可把 LLM 模型目录云端化（`lib/ai/llm_model_manager.dart` 消费）：
+> [已退役 2026-10-14] 端侧 LLM 随 ai-app-split M2 整体迁出（`lib/ai/llm_model_manager.dart` 已删，`RemoteConfigStore` 不再消费该 key），模型目录热更改由 AI 宿主 App 自管。以下 manifest 格式仅存史备查；仓库样例 `updates/llm-manifest.json` 为遗留孤儿文件（无代码消费，清理登记见 context/todos.md）。继任文档：`docs/design/ai-app-split.md`。
 
 ```json
 "flags": {
@@ -87,7 +91,7 @@ updated: 2026-09-29
 }
 ```
 
-manifest 格式（仓库内默认样例见 `updates/llm-manifest.json`）：
+manifest 格式（原仓库内样例 `updates/llm-manifest.json`，已无消费方）：
 
 ```json
 {

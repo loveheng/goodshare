@@ -1,6 +1,6 @@
 ---
 status: draft
-updated: 2026-09-30
+updated: 2026-10-15
 ---
 
 # 任务编排与调度（scheduling-tasks）设计
@@ -112,7 +112,7 @@ flowchart TD
 
 ## 6. 关联文档
 
-- 队列与消费：`lib/ai/ai_queue_service.dart`、`lib/ai/queue_consumer.dart`、docs/product/v2-requirements.md §3.7/§3.8
+- 队列与消费：`lib/ai/ai_queue_service.dart`、`lib/ai/queue_consumer.dart`；写路径与并发见 docs/architecture/human-ai-parity.md，队列行为见 docs/product/product-requirements.md §6 模块二
 - 多步链现状（唯一参照）：[video-clips.md](video-clips.md)
 - 备份对产物/中间文件的取舍：[s3-backup.md](s3-backup.md)
 - 分层与写路径约束：项目 skill `goodshare-arch`（Human-AI 对称性 SSOT：docs/architecture/human-ai-parity.md）

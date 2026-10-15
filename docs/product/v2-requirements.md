@@ -1,23 +1,23 @@
 ---
 status: active
-updated: 2026-10-09
+updated: 2026-10-15
 ---
 
 # 拾贝（goodshare）V2 需求文档：离线双态 AI 管线（收敛版）
 
-> 版本：V2.1（2026-10-02 收敛重写，承接 `product-requirements.md`）
-> 本版只记录**未完成**的 V2 需求；已落地部分收敛为 §1.2 基线清单备查，不再展开设计。技术路线已对齐 2026-09-28 拍板的端侧 LLM 方案，**推翻**上一版「仅调用系统模型、零下载」路线（见 §2）。
-> 关联文档：`../product/product-requirements.md`（全局 PRD）、`../design/on-device-llm.md`（端侧 LLM SSOT）、`../architecture/human-ai-parity.md`（无头架构）、`../guide/mcp-integration.md`（MCP 接入）。
+> 版本：V2.2（2026-10-02 收敛重写，承接 `product-requirements.md`；2026-10-14 ai-app-split M2 后修订）
+> 本版只记录**未完成**的 V2 需求；已落地部分收敛为 §1.2 基线清单备查，不再展开设计。**端侧 LLM 已于 2026-10-14 整体迁出至 AI 宿主 App**（ai-app-split M2）：本文原「端侧 1.5B」口径作废，LLM 推理（摘要/打标/块摘要/模板处理）改由宿主经 MCP `claim/touch/apply_ai_task` 远程完成，相关设计随迁宿主仓。
+> 关联文档：`../product/product-requirements.md`（全局 PRD）、`../design/ai-app-split.md`（LLM 拆分接缝 SSOT，取代已墓碑化的 on-device-llm.md）、`../architecture/human-ai-parity.md`（无头架构）、`../guide/mcp-integration.md`（MCP 接入）。
 
 ## 1. 目的与范围
 
 ### 1.1 本期目标（剩余范围）——**2026-10-09 收敛减法版**
 
-上一版 V2 的基础设施（AI 接口抽象、队列调度门控、能力探测、端侧 LLM 引擎）已全部落地。本期把 LLM 接进管线——但**严格遵循 §1.3 加工主体拍板**（人类端只做即时轻量操作，繁重加工交桌面 AI 客户端经 MCP 驱动）：端侧 1.5B 只干「小而稳」的活，重活一律不上端。
+上一版 V2 的基础设施（AI 接口抽象、队列调度门控、能力探测）已全部落地；端侧 LLM 引擎曾一度落地后又于 2026-10-14 随 ai-app-split M2 整体迁出（见文首口径）。本期剩余范围严格遵循 §1.3 加工主体拍板（人类端只做即时轻量操作，繁重加工交桌面 AI 客户端经 MCP 驱动）。
 
 | 编号 | 需求 | 一句话 | 状态 |
 |---|---|---|---|
-| R1 | 摄入自动重构（**串联式单任务**） | URL 抓取正文后**同任务内**头部 1500 字符截断直出 TL;DR + 2–3 标签；~~chatlog~~砍除；~~跨任务链+防环闸~~删（分布式思维过度设计） | 已落码 |
+| R1 | 摄入自动重构（**串联式单任务**） | URL 抓取正文后~~同任务内头部 1500 字符截断直出 TL;DR + 2–3 标签~~（LLM 摘要步已于 2026-10-14 随 M2 迁出宿主，见 §3.2）；~~chatlog~~砍除；~~跨任务链+防环闸~~删（分布式思维过度设计） | 抓取已落地；摘要迁宿主 |
 | R2 | 隐私打码层（**硬编码恒开**） | AI 产出必经本地规则层打码；~~开关~~删（核心隐私防御，正常用户不会要求保留明文卡号） | 已落码 |
 | R3 | ~~通用截图解析~~ | **整条砍除**——OCR 文本可搜可复制已足够；结构化提取归桌面 MCP 批处理 | 砍除（零返工） |
 | R4 | ~~便签编辑器 AI 增强~~ | **整条砍除**——1.5B 干不了精细中文校对/重写，Diff+CAS 管线过度工程 | 砍除（零返工） |
@@ -40,9 +40,9 @@ updated: 2026-10-09
 7. **开关收敛**：自动摘要开关删（下载 1.5GB 模型本身即强意图，模型在位即生效）；打码开关删（核心隐私防御硬编码，无人会主动要求保留明文卡号）。
 8. **配套收敛**：仅保留配套①④（均已完成）；配套② 预置链彻底删除、配套③ 图文修复延后出 V2。
 
-收敛后本期范围 = **R1(URL 摘要+打标) + R2(打码)**，两者均已落码；真机验证后本期即收官。
+收敛后本期范围 = **R1(URL 抓取+摘要) + R2(打码)**。R2 已收官；R1 的抓取半环已落地，**摘要半环随 2026-10-14 ai-app-split M2 迁至宿主 App**——URL 分享照常抓取落库，TL;DR/标签由宿主经 `summarize_item`/`extract_tags` 认领完成；**宿主闭环已于 2026-10-15 跑通**（ai-app-split 账本），V2 本期实际收官。
 
-多源健康数据接入与 `health_record.v1` 仍推迟 V3（2026-09-27 决策），本文不再覆盖。
+多源健康数据接入与 `health_record.v1` 已砍除（2026-10-15，用户拍板「发展方向已变、放弃不做」，见 context/decisions.md），本文不再覆盖。
 
 ### 1.2 已完成基线（不在本期范围，简列备查）
 
@@ -50,10 +50,10 @@ updated: 2026-10-09
 
 - **AI 接口抽象与可插拔**（原 §3.8）：`AiReconstructor` 接口 + `ReconstructorRegistry.resolve()` + `PlaceholderReconstructor` 占位回退；写路径全部收口 `ItemActionHandler` 命令化（SSOT：`../architecture/human-ai-parity.md`）。
 - **设备状态感知调度**（原 §3.6 大部分）：`AiQueueService`——电量/充电门控（`canProcess`）、内存压力暂停 + processing 回滚 pending、前台服务保活、通知栏进度。
-- **能力探测与门控**（原 §3.7）：OCR/转写一次性检测持久化；LLM 引擎动态探测（`isAvailable` 不持久化）+ 入队前预检；不可用回退占位、UI 明示。
-- **端侧 LLM 引擎**：LiteRT-LM Kotlin 真推理（Android）/ FoundationModels 骨架（iOS），Qwen2.5-1.5B 模型下载管理，手动摘要/关键词/图片描述已可用（SSOT：`../design/on-device-llm.md`）。
-- **OCR / STT**：ML Kit 中文 OCR（v1 分期调整提前）、sherpa 端侧转写 + 手动触发链路。
-- **MCP `reparse_item`**（原 §6）：以 `reprocess_item` 语义落地，工具族已 16+。
+- **能力探测与门控**（原 §3.7）：OCR/转写一次性检测持久化；LLM 引擎动态探测已随 M2 移除（本地无 LLM）；不可用回退占位、UI 明示。
+- ~~**端侧 LLM 引擎**~~：LiteRT-LM Kotlin 真推理（Android）/ FoundationModels 骨架（iOS）曾一度可用，**2026-10-14 随 ai-app-split M2 整体拆除**（`lib/ai/llm*.dart` 五件套 + 双端 `LlmBridge.*` + `litertlm-android` 依赖 + 设置页模型区）；on-device-llm.md 已墓碑化，设计随迁宿主仓。任务契约（`taskLlmSummarize`/`taskLlmTags`/`block_summarize`/`summarize_item` 等）作为远程集合保留。
+- **OCR / STT**：ML Kit 中文 OCR（bundled 库，无 GMS 依赖）、sherpa 端侧转写 + 手动触发链路。
+- **MCP `reparse_item`**（原 §6）：以 `reprocess_item` 语义落地；工具族已扩至 **42 个**（2026-10-15 对数，含媒体加工、块能力、工作区、模板、claim/touch/apply 接缝）。
 - **便签编辑器非 AI 部分**（原 §5 底座）：块编辑器、块↔文本映射、行内媒体块均已落地。
 - **Schema 增量登记**（原 §7 占位）：`invoice.v1` / `contact.v1` / `event.v1` 已在 `machine_json_validator` 登记必填字段。
 
@@ -67,54 +67,53 @@ updated: 2026-10-09
 
 | 分享内容 | 理解层现状 | 对应需求 |
 |---|---|---|
-| 视频/音频（转写=文本大头） | 链路全通但 UI 手动；**MCP 无 transcribe 工具** | 配套④ + R1 |
-| 图片/截图（OCR 次大头） | OCR 仅 UI 手动；**MCP 无 ocr 工具** | 配套④ + R3 |
-| 聊天截图（→chatlog） | `parse_chatlog` 落占位 | R1 |
-| PDF/文档 | 抽取器已建、未接队列 | 配套① |
-| 公众号等真网页链接 | 离线抓取正文有效 | R1（叠加摘要） |
+| 视频/音频（转写=文本大头） | 链路全通，UI 手动 + MCP `transcribe_item` 异步入队（2026-10-02 已补齐） | 配套④ ✅ + R1 |
+| 图片/截图（OCR 次大头） | UI 手动 + MCP `ocr_item` 异步入队（2026-10-02 已补齐） | 配套④ ✅ + R3 |
+| 聊天截图（→chatlog） | `parse_chatlog` 落占位（LLM 整理已砍） | R1（已收敛） |
+| PDF/文档 | 归一化接线已入队（2026-10-06），自动出可读正文 | 配套① ✅ |
+| 公众号等真网页链接 | 离线抓取正文有效；**摘要随 LLM 迁出改由宿主触发**（2026-10-14） | R1 |
 
 **配套销项**（2026-10-09 二次收敛：仅保留配套①④，②③移出 V2）：
 
 1. ✅ **document 归一化接线**（已完成 2026-10-06）：`taskActionFor(document)` 接上队列，文件类分享自动出可读正文。
-4. ✅ **MCP 媒体加工工具补齐**（已完成 2026-10-02）：`transcribe_item` / `ocr_item` 落地，工具族 34 个——唯一关键配套（成本几十行、直接盘活桌面端加工能力）。
+4. ✅ **MCP 媒体加工工具补齐**（已完成 2026-10-02）：`transcribe_item` / `ocr_item` 落地，工具族由 34 扩至 42（后续增量：块能力五工具、claim/touch/apply 三工具、模板四工具、set_pin/ai_suggest_tags 等）——唯一关键配套（成本几十行、直接盘活桌面端加工能力）。
 
 **移出 V2**：~~配套② 预置链实施~~（已降级殿后，彻底删除避免认知干扰）；~~配套③ 图文同分享文案修复~~（fork 插件维护成本极高，延后；登记 context/todos.md misc 池）。
 
-**实施排序（收敛后）**：~~全部完成~~——本期范围 R1(URL 串联摘要)+R2(打码) 已落码，真机验证后收官。
+**实施排序（收敛后）**：本期范围 R1(URL 抓取) + R2(打码) 已落地；R1 摘要半环的宿主闭环（goodhub 接入 claim/apply）归 ai-app-split 账本推进中。
 
-## 2. 技术路线（现行口径）
+## 2. 技术路线（现行口径，2026-10-14 M2 后）
 
-**上一版「不下载、不内置任何大模型，仅调用系统级 on-device 模型」的硬约束已废止**（2026-09-28 拍板）。现行路线：
+**端侧 LLM 路线已终结**：2026-09-28 曾拍板「LiteRT-LM + Qwen2.5-1.5B 下载」路线（Android）/「FoundationModels 系统模型」（iOS），2026-10-14 ai-app-split M2 将整套引擎**迁出本仓**。现行路线：
 
-- **Android**：LiteRT-LM Kotlin 运行时 + Qwen2.5-1.5B（q8，~1.5GB）模型包，设置页按需下载；SoC 感知 NPU/GPU/CPU 降级为二阶段目标。
-- **iOS**：FoundationModels framework（iOS 26+ / A17+）系统模型，零下载；不可用降级。
-- 双端接口契约、模型目录、下载管理、推理桥细节以 `../design/on-device-llm.md` 为唯一事实源，本文不重复。
+- **goodshare（本仓）**：不持有任何大模型。保留 ML Kit 全族（OCR/分类/条码/实体/翻译）、Sherpa 端侧转写、非模型任务（URL 抓取/文档归一化/主色提取）；LLM 类任务（`llm_summarize`/`llm_tags`/`block_summarize`/`template_apply`）入队后滞留 pending，由 AI 宿主 App 经 `claim_ai_task` 认领、`apply_ai_result` 回写（占位守卫保证本机管线不吞远程任务）。
+- **AI 宿主 App（goodhub，独立仓）**：自有引擎（端侧 LiteRT-LM 或云端 LLM，BYOK），模型目录/下载管理/推理桥细节随迁，SSOT 在宿主仓。
+- 接缝契约（三工具 + 乐观锁 + 打码同出口 + 心跳回收）以 `../design/ai-app-split.md` 为唯一事实源，本文不重复。
 
-由此派生的口径修正（覆盖上一版对应条目）：
+由此派生的口径修正（覆盖本文所有历史条目）：
 
-- 「断网验收」= **模型包在位后**断网完成全部管线（下载是一次性设置动作，不参与验收断言）。
-- 「不触发任何大模型下载」验收项作废，替换为「模型未在位时全链路回退占位、不卡队列、UI 明示」。
-- 系统模型碎片化风险（原 §8）随 LiteRT-LM 路线消解：Android 不再依赖 AICore/Gemini Nano。
+- 所有「模型包在位/未在位」验收项作废，替换为「宿主未就绪时 URL 照常抓取落库、队列不卡、无噪音 note」。
+- 「全流程端侧完成，无云端推理请求」的断网验收改由宿主侧口径承接（goodshare 侧只保证数据出口打码与 Vault 隔离）。
+- 端侧 1.5B 质量/上下文上限（§9 风险表前两行）随引擎迁出，改由宿主按自身引擎处理（正文不预截断，全文传宿主）。
 
 ## 3. R1 · 摄入自动双态重构管线
 
 ### 3.1 现状与缺口（已落地）
 
-摄入链路按类型自动入队（`Repository.taskActionFor`）：url → `summarize_url`。chatlog 经 2026-10-09 收敛拍板（§1.1a）**不再入队**（`taskActionFor` 回归 null，占位消化）。
+摄入链路按类型自动入队（`Repository.taskActionFor`）：url → 抓取任务（`summarize_url` 常量 2026-10-09 起不再作为独立动作入队，历史任务行兼容）。chatlog 经 2026-10-09 收敛拍板（§1.1a）**不再入队**（`taskActionFor` 回归 null，占位消化）。
 
-- **url**：`OcrReconstructor` 自动离线抓取网页正文写入 `human_md`（保结构 Markdown）——事实源。
+- **url**：`OcrReconstructor` 自动离线抓取网页正文写入 `human_md`（保结构 Markdown）+ OG 元数据富化——事实源。
 - **chatlog**：~~LLM 议题整理~~已砍——1.5B 理不清长 OCR 碎片的逻辑，整理产出不可信。
 
-### 3.2 需求（已落码，2026-10-09 二次收敛：串联式单任务）
+### 3.2 需求（抓取半环已落地；摘要半环 2026-10-14 迁出宿主）
 
-**Composite Pipeline**：`OcrReconstructor` 抓取正文后**原地**调 `LlmReconstructor.summarizeUrlHead`（组装点回调注入）——同一任务、一次落库：
+**原设计（已退役）**：Composite Pipeline——`OcrReconstructor` 抓取正文后**原地**调 `LlmReconstructor.summarizeUrlHead`（组装点回调注入）产 TL;DR+标签，同一任务一次落库。**2026-10-14 ai-app-split M2 拆除端侧 LLM 后，`summarizeHead` 注入点改 null**（main.dart 装配移除），走既有「模型不在位静默跳过」路径，零新逻辑。
 
-$$\text{抓取正文} \longrightarrow \text{模型在位则头部 1500 字符产 TL;DR+标签} \longrightarrow \text{一次事务写入 DB}$$
+**现行口径**：
 
-- **头部 1500 截断直出**（二次收敛拍板）：真实长文 3000-8000 字不一刀切回退（防 70%+ 哑火）；核心论点集中前 2-3 段，极低成本覆盖绝大多数场景。
-- **模型不在位 = 静默跳过摘要**：正文照常落库，不占 note（「模型没下」不是抓取任务的失败）；摘要步异常 DEGRADE 降级不拖垮抓取。
-- **无链、无闸、无开关**：跨任务链与防环闸已删（物理归零死循环）；自动摘要随模型在位生效。
-- **可观测**：摘要产出经 `get_item`（summary_md 字段）可读。
+- **URL 摄入**：抓取正文照常落库（含 OG 富化）；无自动摘要、无噪音 note；URL 不再自动入队任何 LLM 任务。
+- **摘要/打标**：由 AI 宿主 App 经 MCP `summarize_item`（入队 `llm_summarize` → claim → apply 回写 `summary_md`）或 `extract_tags` 手动触发；产出经 `get_item`（`summary`/`summary_stale` 字段）可读，与原文并列不覆盖。
+- **头部 1500 截断、模型在位静默跳过、无链无闸无开关**等原二次收敛结论随引擎迁出失效（截断/超限处理归宿主按自身 ctx 决定，goodshare 传全文）。
 - taskParseChatlog / taskSummarizeUrl 常量保留（历史任务行兼容，占位消化）。
 
 ## 4. R2 · 隐私打码层（已落码）
@@ -147,19 +146,19 @@ AI 产出**必经本地规则层**（端侧，不外传），已按 D1 拍板挂
 
 | 项 | 风险 | 缓解 |
 |---|---|---|
-| 端侧 1.5B 模型质量 | URL 摘要准确率弱于云端 | 提示词约束 + 失败回退占位；`reprocess_item` 手动兜底；note 明示原因 |
-| 上下文上限 | Qwen 档 4096 token，超长正文放不下 | D3（二次收敛改判）：头部 1500 字符截断直出——核心论点集中前 2-3 段，极低成本覆盖绝大多数场景，不做分块/回退 |
+| 宿主引擎质量/选择 | 端侧 1.5B 或云端（BYOK）质量参差，用户无感差异 | 宿主侧自负提示词与降级 + note 明因；goodshare 只保打码出口 + `reprocess_item` 重放入队；`get_job_status` note 可观测 |
+| 宿主不在线 | 桌面/宿主 App 未运行时 LLM 任务滞留 | 任务滞留 pending 可观测（`list_jobs`/`get_job_status`）；宿主恢复后继续认领，不丢任务 |
 | 结构化提取需求复燃 | 用户真要发票/名片结构化 | 归桌面 MCP 批处理（§5 砍除口径），端侧不接 |
 
 **开放问题（待决策）**：~~① 标签词表~~（D2 已收窄为 prompt 约束）~~② chatlog Schema~~（chatlog 已砍）~~③ 文风预设清单~~（R4 已砍）~~④ URL 自动摘要~~（D4 已拍板）——**全部关闭（2026-10-09）**。
 
-**前置决策四项已拍板（2026-10-09，台账清账）**：D1 打码=通用出口+**硬编码恒开**（二次收敛）/ D2 打标=直接进 tags（并集只增不删，prompt 限 2–3）/ D3 超长=~~回退占位~~**头部 1500 截断直出**（二次收敛改判）/ D4 URL 自动摘要=成立且**随模型在位自动生效**（开关删）。
+**前置决策四项（2026-10-09 拍板，其中 D3/D4 随 2026-10-14 M2 迁出失效，仅存史）**：D1 打码=通用出口+**硬编码恒开**（二次收敛，仍现行）/ D2 打标=直接进 tags（并集只增不删，仍现行）/ D3 超长=~~头部 1500 截断直出~~（迁宿主）/ D4 URL 自动摘要=~~随模型在位自动生效~~（迁宿主，改手动触发）。
 
-## 10. 验收标准（收敛版）
+## 10. 验收标准（2026-10-15 对账修订）
 
-- [ ] 模型包在位 + 断网：分享一条 URL → 抓取正文后**同一任务内**产出 TL;DR 摘要（`summary_md`，正文不改写）+ 2–3 标签，`is_processed=1`。
-- [ ] 长文（3000–8000 字，如公众号文章）：头部 1500 字符截断直出摘要——**不哑火**。
-- [ ] 模型未下载/引擎不可用：URL 照常抓取落库（无摘要、无噪音 note），队列不卡。
-- [ ] 身份证/银行卡号出现在 AI 产出中 → `human_md`/`machine_json` 默认打码（硬编码恒开，含占位回退路径），`raw_content` 不动。
-- [ ] chatlog 条目摄入：不再自动入队 LLM 整理（占位消化），OCR 文本照常入库可搜可复制。
-- [ ] 全流程端侧完成，无任何云端推理请求。
+- [x] 分享一条 URL → 抓取正文落库（`human_md` 保结构 Markdown + OG 富化），`is_processed=1`；失败回退原文 + note 明因。
+- [x] 长文（3000–8000 字，如公众号文章）：抓取不受长度影响，不哑火（摘要属宿主，不在本仓断言）。
+- [x] 宿主未就绪/无 LLM：URL 照常抓取落库（无摘要、无噪音 note），队列不卡；LLM 任务滞留 pending 不被占位吞。
+- [x] 身份证/银行卡号出现在 AI 产出中 → `human_md`/`machine_json`/`summary_md`/`template_output` 默认打码（硬编码恒开，含占位回退路径），`raw_content` 不动。
+- [x] chatlog 条目摄入：不再自动入队 LLM 整理（占位消化），OCR 文本照常入库可搜可复制。
+- [x] 宿主闭环（claim → touch → apply 回写 + 打码/乐观锁同出口）：✅ 2026-10-15 跑通（goodhub 侧 `goodshare_task_api.dart` + `task_loop_service`，BYOK 云端/Binder 双通道验证；证据归 ai-app-split 账本）。

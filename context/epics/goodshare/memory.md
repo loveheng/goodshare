@@ -187,6 +187,7 @@ last-merge: 2026-10-09
 - [2026-10-08] **离线转写「零文本」根因可辨 + 兜底**：`AsrCueResult{cues,error,diag}` 音频体检（时长/峰值/RMS/VAD 段数）三档根因一眼可辨；整段兜底识别（峰值≥0.01 且 ≤300s）；VAD 逐窗喂入（修 100s 环形缓冲顶爆零分段）；修 VAD 资产 ByteData 偏移写坏 .onnx 隐患。
 - [2026-10-08] 块转写「重跑即重算」：空载荷清该块旧 transcript+subtitle（行+盘，`ReconstructResult.blockResetKinds` + `BlockArtifactStore.deleteKinds`），audio_file 不连坐。
 - [2026-10-09] **一期收官清债**：`.mcp.json`（含 token）入 .gitignore；arch-guard R2 清偿——数据层新增 `BlockArtifactMeta` 编解码出口（详情页三处内联 json 改走出口），`mermaid_view`（在线渲染请求载荷）/`item_view_template`（machine_json 渲染出口）按「规则不适用」入白名单。提交 846f895（46 文件），全量 755 绿。
+- [2026-10-14] **自更新防串包双层落地**（R2 桶 `model` 多 app 共用，APK/清单同路径 `updates/app-release.apk` 互相覆盖、源指错即串）：①发布侧 `.env` `REMOTE_PREFIX=updates/goodshare` 按 app 隔离，重发 v1.3.0(8067)（源 `https://r2.oklhj.eu.org/updates/goodshare`）；②`release-r2.sh` 从 `android/app/build.gradle.kts` 解析 `applicationId` 写入清单；③客户端 `UpdateManifest.applicationId` + `matchesApplication`，`UpdateService` 构造注入 `PackageInfo.packageName`，`check()` 与 `downloadApk()`（`expectedApplicationId`）双重校验，不一致拒检/拒下——配置热更链路同受保护（`check()` 抛错即不会 `RemoteConfigStore.save`，公告/MCP 指令/flag 不串）。旧清单无该字段放行（向后兼容，sha256 兜底）。已装机 8031 旧包内置源仍指根 `updates/`，需在更新页手工改源一次到新地址；新包装机即自带新源。全量 806 绿。
 
 ## 断点
 - [断点] **一期（V1+全链路增量大块）收官**：工作树已全部提交（846f895）；V2 两个前置配套（document 归一化接线、MCP 媒体加工工具补齐）已提前落地。**下一步=二期 V2 R1（摄入自动双态重构管线，R2 打码随上）**，动工前置：pending-confirm 台账 D1-D4 拍板（打码作用面/自动打标落点/超长截断/URL 自动摘要）。真机待验族沿用：下划线端到端、块产物卡头耗时、Toast 三档观感、长文分段截图拼接、mermaid 在线渲染（已停用待复用）。

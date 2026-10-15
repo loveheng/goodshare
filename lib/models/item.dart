@@ -237,6 +237,18 @@ class InboxItem {
     return anchor != md5.convert(utf8.encode(humanMd ?? '')).toString();
   }
 
+  /// 机器态美化 JSON（P1-5 机器态二级页展示源）：`machine_json` 空/缺为 null；
+  /// 坏 JSON 原样透出不抛错（展示层禁内联编解码，R2-ui-json-codec，收口模型层）。
+  String? get machineJsonPretty {
+    final raw = machineJson;
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      return const JsonEncoder.withIndent('  ').convert(jsonDecode(raw));
+    } catch (_) {
+      return raw;
+    }
+  }
+
   Map<String, Object?> toMap() => {
         if (id != null) 'id': id,
         'item_type': itemType,
