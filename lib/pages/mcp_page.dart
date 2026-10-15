@@ -79,25 +79,10 @@ class _McpPageState extends State<McpPage> {
               child: Text(c.lastError!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
             ),
           const Divider(height: 24),
-          FutureBuilder<String>(
-            future: c.endpoint(),
-            builder: (context, snap) {
-              final url = snap.data ?? '…';
-              return ListTile(
-                leading: const Icon(Icons.lan_outlined),
-                title: const Text('局域网端点'),
-                subtitle: Text(url),
-                trailing: IconButton(
-                  icon: const Icon(Icons.copy),
-                  onPressed: () => _copy(url, '端点'),
-                ),
-              );
-            },
-          ),
           ListTile(
             leading: const Icon(Icons.usb),
-            title: const Text('USB 端点（adb reverse）'),
-            subtitle: const Text('http://127.0.0.1:8765/mcp\n手机连电脑后执行：adb reverse tcp:8765 tcp:8765'),
+            title: const Text('调试端点（仅 loopback，不对外暴露）'),
+            subtitle: Text('${c.endpoint}\n手机连电脑后执行：adb reverse tcp:8765 tcp:8765'),
             isThreeLine: true,
             trailing: IconButton(
               icon: const Icon(Icons.copy),
@@ -143,19 +128,14 @@ class _McpPageState extends State<McpPage> {
             initiallyExpanded: true,
             children: [
               const _GuideSection(
-                title: '1. USB 方式（推荐，无需同一 Wi-Fi）',
-                body: '手机开启 USB 调试并连接电脑，执行：\n'
+                title: '1. USB 方式（唯一接入途径，仅内部调试用）',
+                body: '服务仅绑定 loopback（127.0.0.1），局域网不可达。\n'
+                    '手机开启 USB 调试并连接电脑，执行：\n'
                     'adb reverse tcp:8765 tcp:8765\n'
                     '桌面端即可访问 http://127.0.0.1:8765/mcp',
               ),
               _GuideSection(
-                title: '2. 局域网方式（同一 Wi-Fi）',
-                body: '直接使用上方「局域网端点」地址。\n'
-                    '电脑无法连通时，检查手机与电脑是否同一网段、'
-                    '路由器是否开启了 AP 隔离。',
-              ),
-              _GuideSection(
-                title: '3. stdio 型客户端（Claude Desktop / ZCode 等）',
+                title: '2. stdio 型客户端（Claude Desktop / ZCode 等）',
                 body: '使用仓库自带桥接脚本 mcp-bridge/stdio-bridge.mjs，配置示例：\n\n'
                     '{\n'
                     '  "mcpServers": {\n'

@@ -6,7 +6,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../data/repository.dart';
 import '../mcp/mcp_server.dart';
 import '../update/remote_config_store.dart';
-import '../util/lan_ip.dart';
 import 'foreground_task_init.dart';
 
 /// MCP 服务总控：token 与开关持久化 + 内嵌 HTTP server + 前台服务保活。
@@ -49,11 +48,9 @@ class McpController extends ChangeNotifier {
     return List.generate(24, (_) => rnd.nextInt(16).toRadixString(16)).join();
   }
 
-  /// 当前 LAN 端点；无 Wi-Fi 时回退 127.0.0.1（仅 adb reverse 场景可用）。
-  Future<String> endpoint() async {
-    final ip = await lanIpv4();
-    return 'http://${ip ?? '127.0.0.1'}:$defaultPort/mcp';
-  }
+  /// 调试端点：服务仅绑定 loopback（127.0.0.1），局域网不可达；
+  /// 桌面端经 USB + `adb reverse tcp:8765 tcp:8765` 后访问该地址（内部调试用）。
+  String get endpoint => 'http://127.0.0.1:$defaultPort/mcp';
 
   /// 打开 MCP 服务：前台服务保活（经统一协调器，与 AI 队列解绑）+ 启动内嵌 HTTP server。
   /// 返回 null 表示成功，否则为错误信息。
@@ -62,12 +59,11 @@ class McpController extends ChangeNotifier {
     try {
       // Binder 插件路径由 goodhub 随调随起、不依赖本前台服务；此处仅 HTTP 回退
       // （用户手动开启）需要保活，交由协调器与 AI 队列共享单实例、互不误杀。
-      final addr = await lanIpv4();
       await ForegroundServiceCoordinator.instance.acquire(
         ForegroundServiceCoordinator.mcpTag,
         channelId: mcpFgChannelId,
         title: '拾贝 · MCP 服务运行中',
-        text: 'http://${addr ?? '127.0.0.1'}:$defaultPort/mcp（地址见 app 内 MCP 页）',
+        text: '仅绑定 loopback（桌面端经 adb reverse 接入，见 app 内 MCP 页）',
       );
       _server ??= McpServer(
         repo: repo,

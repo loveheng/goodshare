@@ -53,7 +53,9 @@ class McpServer {
 
   Future<void> start({int port = 8765}) async {
     if (running) return;
-    final server = await HttpServer.bind(InternetAddress.anyIPv4, port);
+    // 仅绑定 loopback：服务不对外（局域网）暴露，桌面端经 USB + adb reverse
+    // tcp:8765 接入，作内部调试通道（2026-10-15 拍板；MCP 主机制走 goodhub Binder 插件）。
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, port);
     _server = server;
     // 条目变更 → 订阅推送（§3.10）：Repository 唯一写入口的变更事件流，
     // UI 写与 MCP 工具写统一覆盖。

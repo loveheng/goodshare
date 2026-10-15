@@ -185,6 +185,41 @@ class _SettingsPageState extends State<SettingsPage> {
     await widget.handler.requeueUnprocessedAudio();
   }
 
+  /// 调试菜单（长按「关于」唤出）：收纳不进常规设置树的内部调试入口。
+  Future<void> _showDebugSheet(BuildContext context) {
+    final c = widget.mcp;
+    return showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text('调试菜单', style: TextStyle(fontWeight: FontWeight.w600)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.developer_mode),
+              title: const Text('MCP 调试服务'),
+              subtitle: Text(
+                c.running ? '运行中 · 端口 ${c.port}' : '未运行（仅 loopback，内部调试用）',
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                Navigator.push(
+                  ctx,
+                  MaterialPageRoute<void>(
+                    builder: (_) => McpPage(controller: c),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final caps = widget.caps;
@@ -194,26 +229,6 @@ class _SettingsPageState extends State<SettingsPage> {
       appBar: AppBar(title: const Text('设置')),
       body: ListView(
         children: [
-          const _SectionHeader('MCP 网关'),
-          ListTile(
-            leading: Icon(
-              Icons.cloud_sync_outlined,
-              color: widget.mcp.running
-                  ? Theme.of(context).colorScheme.primary
-                  : null,
-            ),
-            title: const Text('服务与连接'),
-            subtitle: Text(
-              widget.mcp.running ? '运行中 · 端口 ${widget.mcp.port}' : '未运行',
-            ),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute<void>(
-                builder: (_) => McpPage(controller: widget.mcp),
-              ),
-            ),
-          ),
           const _SectionHeader('AI 模式'),
           SwitchListTile(
             secondary: const Icon(Icons.document_scanner_outlined),
@@ -423,7 +438,13 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
           const _SectionHeader('S3 备份'),
           _S3BackupSection(backup: widget.backup),
-          const _SectionHeader('关于'),
+          // 调试手势（2026-10-15）：长按「关于」标题唤出调试菜单。
+          // MCP 调试服务不进常规设置树，开发者由此进入（见 docs/guide/mcp-integration.md）。
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onLongPress: () => _showDebugSheet(context),
+            child: const _SectionHeader('关于'),
+          ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
             child: PoeticText(sloganFor(SloganKeys.about), large: false),
