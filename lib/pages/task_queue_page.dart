@@ -7,6 +7,8 @@ import '../ui/confirm_dialog.dart';
 import '../ui/feedback_views.dart';
 import '../ui/toast.dart';
 
+import 'item_detail_page.dart' show aiTaskActionLabel;
+
 /// AI 任务队列：查看端侧 AI 处理任务（OCR / 转写 / 链接抓取）的状态**并管理**。
 ///
 /// - 状态可见：一眼分清「没入队 / 卡在 processing / 已完成但产出为空 / 失败」；
@@ -169,7 +171,9 @@ class _TaskTile extends StatelessWidget {
     final note = task['last_note'] as String?;
 
     final parts = <String>[
-      ...[itemType, action].whereType<String>(),
+      ?itemType,
+      // 人类可读任务名（不把 template_apply:<uuid> 裸串丢给用户）
+      aiTaskActionLabel(action),
       if (time != null)
         '${time.month}-${time.day.toString().padLeft(2, '0')} '
             '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}',

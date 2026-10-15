@@ -19,7 +19,6 @@ class ItemActionContext {
     this.inVaultView = false,
     this.vaultContext = false,
     this.machineModeEnabled = false,
-    this.machineMode = false,
   });
 
   final InboxItem item;
@@ -31,7 +30,6 @@ class ItemActionContext {
   final bool vaultContext;
 
   final bool machineModeEnabled;
-  final bool machineMode;
 }
 
 /// 词汇表条目：声明 + 规则判定结果 + 场景注入的执行闭包。
@@ -140,19 +138,20 @@ abstract final class ItemActions {
         grouped: grouped,
       );
 
-  /// 机器态开关：仅调试开关开启时收录（条件收录规则收口于此）。
+  /// 机器态查看入口：仅调试开关开启时收录（条件收录规则收口于此）。
+  /// P1-5 降级拍板（2026-10-15）：机器态不再是读态正文的切换态，改为独立
+  /// 二级页（`MachineViewPage`），本动作即导航入口（无勾选态）。
   static ItemAction? machineMode(
     ItemActionContext ctx, {
-    required VoidCallback onToggle,
+    required VoidCallback onOpen,
     bool grouped = false,
   }) {
     if (!ctx.machineModeEnabled) return null;
     return ItemAction(
       id: 'machine_mode',
       icon: Icons.terminal_outlined,
-      label: '机器码',
-      checked: ctx.machineMode,
-      onInvoke: () async => onToggle(),
+      label: '机器态',
+      onInvoke: () async => onOpen(),
       grouped: grouped,
     );
   }
@@ -222,11 +221,12 @@ abstract final class ItemActions {
     );
   }
 
-  /// `⋯` 功能面板的动作序列：权限开关类（保险箱 / 对AI可见 / 允许AI编辑 /
-  /// 机器码）连成连接按钮组；纠错类（重新处理）条件收录为独立项
-  /// （2026-10-05 转正——AI 误判需要人类干预出口）。
+  /// `⋯` 功能面板的动作序列（2026-10-15 底栏单行化拍板，detail-page-visual-audit.md
+  /// §6 盲点 A）：底栏常驻裁到 3 项（编辑/分享/⋯），**删除与工作区从底栏移入本面板**——
+  /// 331dp 逻辑屏 5 格横溢，3 格才够（每格 ~105dp）。
+  /// 面板序列：**删除（首位红字）→ 工作区 → 重新处理（条件收录）→ 权限开关组**
+  /// （保险箱 / 对AI可见 / 允许AI编辑 / 机器码，连成连接按钮组）。
   /// 重分类已退役（2026-10-09 拍板：被图片分类/保险箱/便签覆盖，见 ui-spec §4.6）。
-  /// 分享、删除仍在详情页底栏常驻连接按钮组，不在此重复。
   /// 「允许 AI 处理」已删除（2026-10-05 拍板：管线回写授权不再要独立开关，
   /// 与 ai_editable 双开关冗余）。
   static List<ItemAction> overflowSheet(
@@ -234,15 +234,19 @@ abstract final class ItemActions {
     required Future<void> Function(bool on) onVault,
     required Future<void> Function(bool on) onAiVisible,
     required Future<void> Function(bool on) onAiEditable,
-    required VoidCallback onMachineToggle,
+    required VoidCallback onMachineOpen,
     required Future<void> Function() onReprocess,
+    required Future<void> Function() onDelete,
+    required Future<void> Function() onOpenWorkspace,
   }) =>
       [
+        delete(ctx, onConfirm: onDelete),
+        workspace(ctx, onOpen: onOpenWorkspace),
+        reprocess(ctx, run: onReprocess),
         vault(ctx, run: onVault, grouped: true),
         aiVisible(ctx, run: onAiVisible, grouped: true),
         aiEditable(ctx, run: onAiEditable, grouped: true),
-        machineMode(ctx, onToggle: onMachineToggle, grouped: true),
-        reprocess(ctx, run: onReprocess),
+        machineMode(ctx, onOpen: onMachineOpen, grouped: true),
       ].whereType<ItemAction>().toList();
 
   /// 列表批量操作栏动作集（§3.2 页面配置收敛于此，组合E 三页共用）：

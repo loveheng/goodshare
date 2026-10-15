@@ -14,8 +14,9 @@ import 'package:goodshare/ui/toast.dart';
 
 /// 真机自动化测试（ai-template P2）：详情页「按模板处理」UI 流程端到端。
 ///
-/// 覆盖：模板产出区「按模板处理」按钮 → 选模板弹窗 → 提交入队
-/// template_apply 远程任务 → 详情页 AI 任务状态条显示「处理中」。
+/// 覆盖（2026-10-15 呈现规约改版后）：无产出态轻入口行（InkWell，渐进披露）→
+/// 定制 BottomSheet 选择器（名称 + origin 徽标 + 「原文不会被修改」页脚明示）→
+/// 提交入队 template_apply 远程任务 → 详情页 AI 任务状态条显示「处理中」。
 ///
 /// 与 VM 单测（template_test.dart）互补：单测锁数据层/命令层/回写，
 /// 本用例在真机真实 sqlite + 真实渲染下验证 Human-AI 对称性的人侧入口。
@@ -27,9 +28,9 @@ void main() {
   testWidgets(
     'P2 详情页「按模板处理」：选模板→入队 template_apply 远程任务→状态条显示处理中',
     (tester) async {
-      // 详情页动作按钮行存在 1.4px 的 RenderFlex 溢出（既有视觉细节，与 P2 无关）；
-      // 集成测试聚焦「按模板处理」交互逻辑，将 overflow 类渲染告警视为非致命，
-      // 其余 FlutterError 仍经原 handler 上报，确保真实功能异常不被掩盖。
+      // 底栏 5 格横溢（1.4px RenderFlex）已随 2026-10-15 底栏单行化修复
+      // （detail-page-visual-audit.md §6 盲点 A：常驻裁 3 项）；overflow 过滤
+      // 保留为回归容忍兜底——若再现溢出告警仍会被静默，真机验收须人工留意。
       // 注意：须在 testWidgets 体内设置——testWidgets 运行时会将 FlutterError.onError
       // 重置为 binding 自己的 handler，覆盖 main 顶层设置。
       final prevOnError = FlutterError.onError;
@@ -74,18 +75,23 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // 1) 模板产出区「按模板处理」按钮存在（弹窗未开，仅此一处文本）。
+      // 1) 无产出态 = 轻入口行（渐进披露：不挂骑框签空卡，呈现规约 2）。
       expect(find.text('按模板处理'), findsOneWidget);
       final applyBtn = find.ancestor(
         of: find.text('按模板处理'),
-        matching: find.byType(TextButton),
+        matching: find.byType(InkWell),
       );
       expect(applyBtn, findsOneWidget);
 
-      // 2) 点击 → 弹出模板选择（SimpleDialog），列出模板名。
+      // 2) 点击 → 定制 BottomSheet 选择器（呈现规约 3）：模板名 + 页脚明示。
       await tester.tap(applyBtn);
       await tester.pumpAndSettle();
-      expect(find.text('周报模板'), findsOneWidget); // 弹窗选项
+      expect(find.text('周报模板'), findsOneWidget); // 选择器选项
+      expect(
+        find.textContaining('你的原文不会被修改'),
+        findsOneWidget,
+        reason: '页脚固定明示只追加语义（用户核心顾虑在决策点告知）',
+      );
 
       // 3) 选择模板 → 提交（入队 template_apply 远程任务）。
       await tester.tap(find.text('周报模板'));

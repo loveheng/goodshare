@@ -953,4 +953,55 @@ void main() {
     // 参数被拒不改变任务状态（未动过它）
     expect((await repo.taskById(ev))!['status'], 'pending');
   });
+
+  // ────────────────────────────────────────────────────────────────────
+  // ai-template P2（docs/design/ai-template.md）：模板任务接缝 +
+  // 只追加回写 + 授权断点（人类显式触发=一次性授权；MCP 发起守 ai_visible）。
+  // ────────────────────────────────────────────────────────────────────
+
+  test('ai-template P2：claim 回 template_id + apply 只追加回写 + MCP 发起守 ai_visible', () async {
+    // 人类笔记（默认 ai_visible=0）：UI 显式触发 = 一次性授权，宿主读得到
+    final it = await repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      rawContent: '本周进展：完成了 X',
+      humanMd: '本周进展：完成了 X',
+      createdAt: 1,
+    ));
+    final ws = await repo.createWorkspace('测试工作区');
+    final tpl =
+        await repo.createTemplate(workspaceId: ws.id, name: '周报', bodyMd: '# 周报');
+
+    // UI 触发入队（人类显式授权，ai-template.md §4）
+    await handler.execute(TemplateApplyCommand(it.id!, tpl.id), actor: CommandActor.ui);
+
+    // claim：模板任务显式回 template_id（宿主免解析动作串）+ text = 条目正文
+    final claimed =
+        jsonDecode(textOf(await callTool('claim_ai_task', {}, repo))) as Map<String, Object?>;
+    expect(claimed['status'], 'claimed');
+    expect(claimed['template_id'], tpl.id);
+    expect(claimed['text'], '本周进展：完成了 X');
+    final taskId = claimed['task_id'] as String;
+    final version = claimed['version'] as int;
+
+    // apply：只追加——template_output 落库，human_md/raw_content 零触碰
+    final applied = jsonDecode(textOf(await callTool('apply_ai_result', {
+      'task_id': taskId,
+      'id': it.id,
+      'template_output': '# 周报\n本周完成 X',
+      'template_id': tpl.id,
+      'expected_version': version,
+    }, repo))) as Map<String, Object?>;
+    expect(applied['task_status'], 'completed');
+    final after = (await repo.byId(it.id!))!;
+    expect(after.templateOutput, '# 周报\n本周完成 X');
+    expect(after.humanMd, '本周进展：完成了 X', reason: '只追加：human_md 零触碰');
+    expect(after.rawContent, '本周进展：完成了 X');
+
+    // MCP 发起对不可见条目拒写（v20 读门禁下沉入队口）：summarize_item 被拒
+    expect(
+      () => callTool('summarize_item', {'id': it.id}, repo),
+      throwsA(isA<McpRpcError>()),
+      reason: '人类笔记默认对 AI 不可见；AI 发起入队即被门禁拦下',
+    );
+  });
 }

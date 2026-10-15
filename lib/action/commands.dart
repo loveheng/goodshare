@@ -351,8 +351,11 @@ sealed class ItemCommand {
             translatedMd: _str(json['translated_md']),
             translateLang: _str(json['translate_lang']),
             summaryMd: _str(json['summary_md']),
+            templateOutput: _str(json['template_output']),
+            templateId: _str(json['template_id']),
             clip: _clipSeg(json['clip']),
           ),
+          taskAction: _str(json['task_action']),
         );
       case 'classify':
         return ClassifyCommand(id, blockKey: _str(json['block_key']), expectedVersion: ev);
@@ -1166,10 +1169,17 @@ final class ApplyAiResultCommand extends ItemCommand {
   // expectedVersion 供 MCP apply_ai_result 宿主回写带乐观锁（ai-app-split.md
   // §3.4：推理期数十秒，人类慢速编辑可能已改条目，CAS 防静默覆盖）；进程内
   // 管线回写不传 = 不校验，既有调用零改动。
-  const ApplyAiResultCommand(this.id, this.result, {super.expectedVersion});
+  //
+  // taskAction = 回写对应的队列任务动作串（如 `template_apply:<id>`）：
+  // 动作层据此识别「模板任务」走只追加分支（ai-template.md §3：只写模板三列、
+  // human_md 等条目级字段零触碰）——与 clip/块任务「独立通道早退」同构。
+  // 进程内管线与 MCP 回写都由传输层注入，命令载荷不可伪造。
+  const ApplyAiResultCommand(this.id, this.result,
+      {this.taskAction, super.expectedVersion});
 
   final String id;
   final ReconstructResult result;
+  final String? taskAction;
 
   @override
   String get op => 'apply_ai_result';
@@ -1189,7 +1199,10 @@ final class ApplyAiResultCommand extends ItemCommand {
         if (result.translatedMd != null) 'translated_md': result.translatedMd,
         if (result.translateLang != null) 'translate_lang': result.translateLang,
         if (result.summaryMd != null) 'summary_md': result.summaryMd,
+        if (result.templateOutput != null) 'template_output': result.templateOutput,
+        if (result.templateId != null) 'template_id': result.templateId,
         if (result.clip != null) 'clip': result.clip!.toJson(),
+        if (taskAction != null) 'task_action': taskAction,
       };
 }
 

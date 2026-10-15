@@ -217,8 +217,11 @@ class QueueConsumer {
       }
       // 经 Handler 特权入口回写（machine_json 过 Schema、item_type 变更受 AI 特权约束），
       // 与 UI / MCP 共用同一落库出口；落库复用 repo 通知驱动前台刷新。
-      // actor=pipeline 由本文件（管线传输层）指定，命令载荷本身无法伪造。
-      await _handler.execute(ApplyAiResultCommand(item.id!, result), actor: CommandActor.pipeline);
+      // actor=pipeline 由本文件（管线传输层）指定，命令载荷本身无法伪造；
+      // taskAction 透传供动作层识别模板任务走只追加分支（ai-template.md §3）。
+      await _handler.execute(
+          ApplyAiResultCommand(item.id!, result, taskAction: taskAction),
+          actor: CommandActor.pipeline);
       // 完成也带 note：「跑完了但没产出」必须有原因，否则用户分不清成功与失败
       await _repo.finishTask(taskId, 'completed', note: result.note);
       // R1 URL 摘要已改串联式单任务（2026-10-09 二次收敛）：抓取与摘要在同一

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -21,7 +20,6 @@ import 'content_body.dart';
 import 'annotated_image.dart';
 import 'image_viewer.dart';
 import 'media_blocks.dart';
-import 'section_legend.dart';
 import 'tokens.dart';
 
 /// 详情查看模板 + 按类型注册表（设计 §4.3/§6）。
@@ -59,83 +57,39 @@ class ItemViewRegistry {
 
 /// 详情页模板：**文档形态**（SSOT ui-spec §4.3）。
 ///
-/// 结构：标题（`headlineSmall` w600）→ 导语块（原 TL;DR）→ 正文 / 类型专属区。
-/// 机器态改为**受控**（由页面 AppBar `⋯` 菜单切换），不再在正文流里常驻开关——
-/// 双态是架构灵魂，入口保留但降权，不占正文的视觉主线。
+/// 结构：类型专属区（=正文本体，按 item_type 分派）。标题在页面 AppBar
+/// （2026-10-02 拍板）；「摘要」在灵感区摘要卡（2026-10-15 P0-3 收敛拍板：
+/// TLDR 导语卡折入摘要卡——summary_md 非空优先展示深度摘要，未生成时回退
+/// 展示摄入期 human_tldr，卡名统一「摘要」，正文流不再有独立 TLDR 卡）。
+/// 机器态已降级为独立二级页 `MachineViewPage`（2026-10-15 P1-5 拍板：极低频
+/// 调试特性不整页替换读态正文，原 `machineMode` 正文流内对切撤除）。
 class ItemViewTemplate extends StatelessWidget {
-  const ItemViewTemplate({
-    super.key,
-    required this.item,
-    this.machineMode = false,
-  });
+  const ItemViewTemplate({super.key, required this.item});
 
   final InboxItem item;
-
-  /// 机器态开关（双态呈现：需显式切换）。由页面控制。
-  final bool machineMode;
 
   @override
   Widget build(BuildContext context) =>
       CustomScrollView(slivers: bodySlivers(context));
 
-  /// 详情页主体 slivers：标题 / 导语 / 正文区（类型专属）。
+  /// 详情页主体 slivers：正文区（类型专属）。
   ///
   /// 正文文本经 [SliverList] 虚拟化（Phase 1）；媒体类型仍走普通 widget 包进
   /// [SliverToBoxAdapter]。由 `item_detail_page` 的 `CustomScrollView` 组合。
+  /// 原 TLDR 导语卡已折入灵感区摘要卡（2026-10-15 P0-3 收敛拍板，见类注释）。
   List<Widget> bodySlivers(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
     final out = <Widget>[];
-    // ① 标题已上移至页面 AppBar 最顶部（2026-10-02 拍板：内容区只留导语 + 正文，
-    // 版式更干净；标题长按 = 编辑，由 AppBar 承载），此处不再渲染。
-    // ② 导语块（原 TL;DR）：骑框 legend 描边卡（ui-spec §2.3，mymind TLDR
-    // 形态——小签嵌框顶边 + 延长线，共享组件 SectionLegendCard）。
-    if (item.humanTldr?.isNotEmpty ?? false) {
-      out.add(
-        SliverToBoxAdapter(
-          child: SectionLegendCard(
-            legend: 'TLDR',
-            child: Text(
-              item.humanTldr!,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-    // ③ 正文：机器态 / 人类态（类型专属区）
-    if (machineMode) {
-      out.add(SliverToBoxAdapter(child: _machineView(context, item)));
-    } else {
-      out.addAll(ItemViewRegistry.resolve(item.itemType)(context, item));
-    }
+    // ① 标题已上移至页面 AppBar 最顶部（2026-10-02 拍板），此处不再渲染。
+    // ② TLDR 导语卡已撤（2026-10-15 P0-3 收敛拍板）：摄入期 human_tldr 由
+    //    `item_detail_page._aiOutputSection` 摘要卡回退展示，正文流不再有
+    //    独立 TLDR 卡——消除「被分析两次」的双卡心智。
+    // ③ 正文（类型专属区）；机器态已迁独立二级页 MachineViewPage（P1-5）。
+    out.addAll(ItemViewRegistry.resolve(item.itemType)(context, item));
     // ④ 标签展示区已撤（2026-10-05 修重复渲染）：标签只读区是两区改版前的
     // 遗留（当时操作归「标签」底栏项，该底栏项已随 detail-two-zone.md §3
     // 移入灵感区）——详情页标签统一由 `item_detail_page._aiOutputSection`
     // 的可编辑「标签」卡承载（刷新/手动增删），此处再渲染即出现两条标签栏。
     return out;
-  }
-
-  Widget _machineView(BuildContext context, InboxItem item) {
-    final theme = Theme.of(context);
-    if (item.machineJson == null || item.machineJson!.isEmpty) {
-      return Text('暂无机器态（基础模式）', style: theme.textTheme.bodySmall);
-    }
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(Insets.md),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(Radii.md),
-      ),
-      child: SelectableText(
-        const JsonEncoder.withIndent('  ')
-            .convert(jsonDecode(item.machineJson!)),
-        style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
-      ),
-    );
   }
 }
 
@@ -321,12 +275,9 @@ List<Widget> _audioView(BuildContext context, InboxItem item) {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (item.bodyText.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(bottom: Insets.sm),
-              child: ContentBody(markdown: item.bodyText),
-            ),
-          // 走页面级播放服务单例（rich-text-media.md §6：行内块与顶级区共用唯一播放器）
+          // 媒体前置（detail-page-visual-audit.md §6 盲点 C，2026-10-15 拍板）：
+          // 播放器是第一视觉预期，长转写文本（1h≈45KB）不再把它沉底——与图片
+          // 条目 media-first 口径对齐。
           wrapWithCapabilityHost(
             _AudioPlayer(
               path: item.rawFilePath!,
@@ -339,6 +290,11 @@ List<Widget> _audioView(BuildContext context, InboxItem item) {
             // 顶级条目统一（§2.7）：同视频区，长按进工作流页
             blockKey: BlockArtifactKind.topLevelKey,
           ),
+          if (item.bodyText.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: Insets.sm),
+              child: ContentBody(markdown: item.bodyText),
+            ),
         ],
       ),
     ),
@@ -355,11 +311,7 @@ List<Widget> _videoView(BuildContext context, InboxItem item) {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (item.bodyText.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(bottom: Insets.sm),
-              child: ContentBody(markdown: item.bodyText),
-            ),
+          // 媒体前置（盲点 C 同口径）：播放器第一视觉预期，转写文本随后
           wrapWithCapabilityHost(
             _VideoPlayer(
               path: item.rawFilePath!,
@@ -376,6 +328,11 @@ List<Widget> _videoView(BuildContext context, InboxItem item) {
             // 块同通道，产物落 block_artifacts 的 item 分组）
             blockKey: BlockArtifactKind.topLevelKey,
           ),
+          if (item.bodyText.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: Insets.sm),
+              child: ContentBody(markdown: item.bodyText),
+            ),
           if (parseClipsJson(item.clipsJson).isNotEmpty) _ClipsList(item: item),
         ],
       ),

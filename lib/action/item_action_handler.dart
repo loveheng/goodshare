@@ -106,7 +106,7 @@ class ItemActionHandler {
       final AiSessionCommand c => _aiSession(c, seeVault, txn),
       final TranscribeCommand c => _transcribe(c, actor, seeVault, txn),
       final SummarizeCommand c => _summarize(c, actor, seeVault, txn),
-      final ExtractTagsCommand c => _extractTags(c, seeVault, txn),
+      final ExtractTagsCommand c => _extractTags(c, actor, seeVault, txn),
       final OcrCommand c => _ocr(c, actor, seeVault, txn),
       final ClassifyCommand c => _classify(c, seeVault, txn),
       final ScanBarcodeCommand c => _scanBarcode(c, seeVault, txn),
@@ -832,10 +832,27 @@ class ItemActionHandler {
         note: await _queuedNote('已开始翻译'));
   }
 
-  /// 端侧 LLM 摘要：显式入队 llm_summarize（2026-09-28，设计见 docs/design/on-device-llm.md）。
+  /// 远程 LLM 任务入队门禁（ai-template.md §4，v20 读门禁的落点校正）：
+  /// 宿主 claim 时要读条目全文——`actor==ai`（MCP 发起）且条目对 AI 不可见
+  /// （人类笔记默认）即拒；`actor==ui`（人类在手机端显式触发）= 对该任务的
+  /// **一次性授权**，不设限。防呆下沉：授权判定在写入口（入队），不放读取侧
+  /// （claim 信任已入队任务）——放读取侧则门禁形同虚设（见 decisions.md
+  /// ai-template-p2）。
+  void _requireAiReadable(InboxItem item, CommandActor actor) {
+    if (actor == CommandActor.ai && !item.aiVisible) {
+      throw ActionException(
+        '该条目对 AI 不可见',
+        code: ActionErrorCode.forbidden,
+        hint: '人类笔记默认对 AI 只读：在手机端详情页开启「对 AI 可见」后再让 AI 处理',
+      );
+    }
+  }
+
+  /// 端侧 LLM 摘要：显式入队 llm_summarize（2026-09-28；LLM 已迁宿主，本地无引擎）。
   ///
-  /// 与 OCR / 转写 / 翻译同构——端侧重资源动作一律手动 / 显式触发。
+  /// 与 OCR / 转写 / 翻译同构——重资源动作一律手动 / 显式触发。
   /// 「文本类条目且正文非空」校验下沉在动作层：AI / MCP 换个入口也绕不过。
+  /// 入队即过 ai_visible 主体门禁（[_requireAiReadable]）——宿主 claim 读全文的依据。
   Future<CommandResult> _summarize(
     SummarizeCommand cmd,
     CommandActor actor,
@@ -843,6 +860,7 @@ class ItemActionHandler {
     Transaction? txn,
   ) async {
     final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    _requireAiReadable(item, actor);
     final isBlock = cmd.blockKey != null;
     if (isBlock) {
       final key = cmd.blockKey!;
@@ -884,12 +902,15 @@ class ItemActionHandler {
   }
 
   /// 端侧 LLM 关键词提取：显式入队 llm_tags，产出并入既有标签体系。
+  /// 同样过 ai_visible 主体门禁（[_requireAiReadable]）——宿主要读全文提词。
   Future<CommandResult> _extractTags(
     ExtractTagsCommand cmd,
+    CommandActor actor,
     bool seeVault,
     Transaction? txn,
   ) async {
     final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    _requireAiReadable(item, actor);
     if (item.bodyText.trim().isEmpty) {
       throw ActionException(
         '该条目没有可提取关键词的正文',
@@ -1148,6 +1169,33 @@ class ItemActionHandler {
   ) async {
     final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
     final r = cmd.result;
+    // 模板任务（ai-template.md §3 只追加硬约束）：`template_apply:<id>` 的回写
+    // **只写模板三列**（打码 + 版本锚），human_md / is_processed / tags /
+    // machine_json / facets / translated_md **零触碰**——用户文本一个字不动。
+    // 不用通用路径的 rawEcho 间接保护：human_md 为空的条目会被填入 rawContent
+    // （=改了用户文本），只追加语义必须结构上保证。无产出（宿主带 note 收尾）
+    // 时连模板列也不写——失败重跑不清空上次产出。
+    if (cmd.taskAction != null &&
+        cmd.taskAction!.startsWith('${Repository.taskTemplateApply}:')) {
+      final maskOn = isMaskEnabled?.call() ?? true;
+      final values = <String, Object?>{};
+      final output = r.templateOutput?.trim() ?? '';
+      if (output.isNotEmpty) {
+        values['template_output'] = maskSensitiveText(output, enabled: maskOn);
+        if (r.templateId != null) values['template_id'] = r.templateId!;
+        // 版本锚取「写入时」的 human_md 指纹（镜像 summary_anchor 口径）：
+        // 用户此后改正文 → 锚失配 → template_output_stale，UI 明示过期。
+        values['template_output_anchor'] =
+            md5.convert(utf8.encode(item.humanMd ?? '')).toString();
+      }
+      if (values.isNotEmpty) {
+        await _write('apply_ai_result', cmd.id, values,
+            expectedVersion: cmd.expectedVersion, txn: txn);
+      }
+      return _result('apply_ai_result', cmd.id, seeVault: seeVault, txn: txn,
+          note: r.note ??
+              (values.isNotEmpty ? '已回写模板产出（原文未改动）' : '模板任务完成但无产出'));
+    }
     // 视频切片产出走独立通道：只合并进 clips_json（派生附属记录），**不触碰**
     // human_md / summary_md 等条目级字段——区间结果不得覆盖整片产物。
     if (r.clip != null) {
@@ -1259,6 +1307,9 @@ class ItemActionHandler {
     // 内容生产模板产出（ai-template P2）：按模板 skill 处理条目的结果，落
     // template_output（独立字段，与 summary_md 语义分离）；同样过打码 + 版本锚
     //（锚取「写入后正文」指纹，镜像 summary 分支，防止新产出对着旧正文失配）。
+    // 注：正规 template_apply 任务已在方法开头分支早退（只写三列、human_md 零
+    // 触碰）；此处仅兜底「非模板任务载荷里夹带 template_output」的误路由，
+    // 走通用路径（rawEcho 保护正文）照常落列，不静默丢弃宿主产出。
     if (r.templateOutput != null) {
       values['template_output'] = maskSensitiveText(r.templateOutput!, enabled: maskOn);
       if (r.templateId != null) values['template_id'] = r.templateId;
@@ -1509,7 +1560,10 @@ class ItemActionHandler {
   /// `template_apply:<templateId>`，交 AI 宿主按模板 skill 处理。
   ///
   /// 校验条目与模板均存在 + 正文非空（与摘要同构，确保 AI 有可处理文本）；
-  /// 入远程集合后由 claim_ai_task 认领 → resources/read skill → apply_ai_result 回写。
+  /// 入队即过 ai_visible 主体门禁（[_requireAiReadable]：宿主 claim 读全文的
+  /// 依据）；同条目同模板 active 任务在队即拒（防连点重复烧宿主推理额度）。
+  /// 入远程集合后由 claim_ai_task 认领 → resources/read skill → apply_ai_result
+  /// 回写——**只追加**（模板三列，human_md 零触碰，见 [_applyAiResult] 分支）。
   Future<CommandResult> _templateApply(
     TemplateApplyCommand cmd,
     CommandActor actor,
@@ -1517,6 +1571,7 @@ class ItemActionHandler {
     Transaction? txn,
   ) async {
     final item = await _require(cmd.id, seeVault: seeVault, txn: txn);
+    _requireAiReadable(item, actor);
     final tpl = await _repo.byIdTemplate(cmd.templateId);
     if (tpl == null) {
       throw ActionException(
@@ -1532,11 +1587,15 @@ class ItemActionHandler {
         hint: '图片 / 音视频请先「识别文字」或「转写」出文本，再按模板处理',
       );
     }
-    final jobId = await _repo.enqueueTask(
-      cmd.id,
-      '${Repository.taskTemplateApply}:${cmd.templateId}',
-      txn: txn,
-    );
+    final action = '${Repository.taskTemplateApply}:${cmd.templateId}';
+    if (await _repo.hasActiveTaskAction(cmd.id, action)) {
+      throw ActionException(
+        '该条目已有一个进行中的同名模板任务',
+        code: ActionErrorCode.invalidRequest,
+        hint: '等当前任务完成后再重试，或在「AI 任务队列」查看进度',
+      );
+    }
+    final jobId = await _repo.enqueueTask(cmd.id, action, txn: txn);
     onEnqueued?.call();
     return _result('apply_template', cmd.id, seeVault: seeVault, txn: txn, jobId: jobId,
         note: await _queuedNote('已按模板「${tpl.name}」提交处理'));

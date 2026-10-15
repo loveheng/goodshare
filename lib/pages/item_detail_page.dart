@@ -30,6 +30,7 @@ import '../ui/tag_editor_sheet.dart';
 import '../models/item.dart';
 import '../media/block_media.dart';
 import '../models/annotation.dart';
+import '../models/template.dart';
 import '../service/settings_store.dart';
 import '../ui/actions/item_actions.dart';
 import '../ui/ai_diff.dart';
@@ -42,6 +43,7 @@ import '../ui/audio_playback_service.dart';
 import '../ui/body_screenshot.dart';
 import '../ui/block_capability_host.dart';
 import '../ui/media_blocks.dart' show SubtitleScope, showInlineVideoPlayer;
+import '../ui/machine_view_page.dart';
 import '../ui/workflow_track.dart' show BlockArtifactsView;
 
 import '../ui/block_text_page.dart';
@@ -54,6 +56,8 @@ import '../ui/section_legend.dart';
 import '../ui/rich_text_view.dart';
 import '../ui/share_scope_sheet.dart';
 import '../ui/tokens.dart';
+
+import 'template_preview_page.dart';
 
 import 'package:file_picker/file_picker.dart';
 
@@ -82,6 +86,10 @@ String aiTaskStatusText(
   String? note,
 }) {
   if (status == 'pending' || status == 'processing') {
+    // 模板任务明示「原文不会被修改」（ai-template.md §5 规约 4：等待期就给确定感）
+    if (action.startsWith('${Repository.taskTemplateApply}:')) {
+      return '模板处理中… 交由 AI 按模板生成，完成后自动出现在下方（原文不会被修改）';
+    }
     return '处理中… 完成后结果会自动出现在这里';
   }
   final reason = note?.trim() ?? '';
@@ -106,7 +114,34 @@ String aiTaskStatusText(
     _ when action.startsWith('${Repository.taskTranscribeAudio}:') =>
       '转写已结束，但没有识别出任何文本。常见原因：音频不是中文（请在「设置 → 语音转写模型」'
           '换到「全能 · 多语种」或「全球 · Whisper」）、模型未下载、音频无语音',
+    // 模板任务完成但无产出（ai-template.md §5 规约 4）：给可行动下一步
+    _ when action.startsWith('${Repository.taskTemplateApply}:') =>
+      '模板处理已结束但没有产出：可重新「按模板处理」，或换个模板试试',
     _ => '处理已结束但未产出内容，可在「AI 任务队列」查看',
+  };
+}
+
+/// 队列任务动作 → 人类可读名（任务队列页 / 待办条共用，ai-template.md §5 规约 4：
+/// 不把 `template_apply:<uuid>` 裸串丢给用户）。未知动作原样返回（不造词）。
+String aiTaskActionLabel(String? action) {
+  final a = action;
+  if (a == null || a.isEmpty) return '处理';
+  if (a.startsWith('${Repository.taskTemplateApply}:')) return '模板处理';
+  if (Repository.isTranscribeAction(a)) return '转写';
+  if (a.startsWith(Repository.taskClipPrefix)) return '视频切片';
+  return switch (a) {
+    Repository.taskOcrAndExtract => '识别文字',
+    Repository.taskClassifyImage => '识别分类',
+    Repository.taskScanBarcode => '识别条码',
+    Repository.taskAnalyzeText => '分析文本',
+    Repository.taskTranslate => '翻译',
+    Repository.taskLlmSummarize => '摘要',
+    Repository.taskLlmTags => '提取关键词',
+    Repository.taskExtractPalette => '主色提取',
+    Repository.taskNormalizeDocument => '文档归一化',
+    _ when a.startsWith('${Repository.taskTranslate}:') => '翻译',
+    _ when a.startsWith('block_') => '块能力',
+    _ => a,
   };
 }
 
@@ -141,6 +176,12 @@ class _AiTaskStatusLine extends StatelessWidget {
         final status = mine.first['status'] as String? ?? '';
         final action = mine.first['task_action'] as String? ?? '';
         final note = mine.first['last_note'] as String?;
+        // P0-2（detail-page-visual-audit.md §6）：进行中不再走全局条——
+        // 进度由卡内 spinner（摘要/标签/模板卡）+ AppBar 下 2dp 线性进度承接；
+        // 本行只承载**终态**（失败/暂停/取消/完成但无产出的原因，R1 可观测）。
+        if (status == 'pending' || status == 'processing') {
+          return const SizedBox.shrink();
+        }
         final text = aiTaskStatusText(
           status,
           action,
@@ -207,6 +248,16 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   late InboxItem _item = widget.item;
   StreamSubscription<AppLifecycleState>? _lifecycleSub;
 
+  /// 模板 id → 名称（ai-template.md §5 呈现规约 4：模板产出卡显示所用模板名）。
+  /// 异步加载、失败静默（无模板时产出卡不显示名字，不挡页面）。
+  Map<String, String> _templateNames = const {};
+
+  /// 本条目 active（pending/processing）任务动作集（P0-2 卡内微观态 +
+  /// 顶栏微进度，detail-page-visual-audit.md §6：摘要/标签/模板卡在对应任务
+  /// 进行中时卡内转 spinner；任一 active 任务存在时 AppBar 下 2dp 线性进度
+  /// 长文任意滚动位置恒可见）。刷新时机：入队/落库后 [_reload] 与 repo 通知。
+  Set<String> _activeActions = const {};
+
   /// AI 写回会话状态机（ai-writeback-revert §4/§5）：悬浮条显隐、还原 /
   /// 恢复 AI 改动、以及「用户手改即接管」的 settle 判定都归它。
   /// 读态也持有——AI 写完回后用户打开详情页就应看到待决提示。
@@ -220,17 +271,13 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// AudioPlayer 实例，行内 AudioBlock 与顶级音频区共用；离开页面即释放。
   final _audioPlayback = AudioPlaybackController();
 
-  /// 机器态开关：由 AppBar `⋯` 菜单控制（双态入口保留但降权，不在正文流里常驻）。
-  bool _machineMode = false;
-
-  /// 机器码全局开关（设置页，默认关闭，2026-10-02 拍板）：关闭时 `⋯` 菜单
-  /// 不出现「机器码」项——普通人无入口，但双态呈现能力仍可被 AI/MCP 产出。
+  /// 机器态入口开关（设置页，默认关闭，2026-10-02 拍板）：关闭时 `⋯` 面板
+  /// 不出现「机器态」项——普通人无入口；P1-5 降级后入口直达二级页
+  /// `MachineViewPage`（不再切换读态正文）。
   bool _machineModeEnabled = false;
 
   /// 灵感区 AI 产出区已改平行并置（见 _aiOutputSection），无页签状态。
-
-  /// 灵感区文本编辑控制器（用户私密碎片，失焦即存——速记条同款语义）。
-  final _inspirationCtrl = TextEditingController();
+  /// 灵感输入已迁移 BottomSheet（P1-6 修订拍板），页内不再持有编辑控制器。
 
   /// 分享截图渲染边界（detail-two-zone.md §6：复用页面既有 RepaintBoundary）。
   final _bodyBoundaryKey = GlobalKey();
@@ -288,6 +335,14 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     getMachineModeEnabled().then((v) {
       if (mounted) setState(() => _machineModeEnabled = v);
     });
+    // 卡内微观态 + 顶栏微进度的初始态（打开页面即有进行中任务时 spinner 立现）
+    unawaited(_loadActiveActions());
+    // 模板名映射（模板产出卡展示用）；加载失败不挡页面（规约 4 的显示降级）。
+    widget.repo.listTemplates().then((list) {
+      if (!mounted) return;
+      setState(() =>
+          _templateNames = {for (final t in list) t.id: t.name});
+    });
     // §8.3：切后台（App 被杀/退后台）必须强制 flush settle，否则状态/文本
     // mismatch——DB 停在旧会话态，重开时文本已是手改版却仍挂悬浮条。
     // 退后台一律订阅 AppLifecycleManager（arch-guard R6：不得裸用
@@ -320,28 +375,15 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     final ai = _aiSession;
     if (ai != null) unawaited(ai.flush().whenComplete(ai.dispose));
     _audioPlayback.dispose();
-    // 灵感区失焦即存，dispose 兜底最后一笔（速记条同款语义）
-    _saveInspiration();
-    _inspirationCtrl.dispose();
+    // 灵感输入已迁 BottomSheet（P1-6）：浮层自带控制器生命周期，页内无兜底笔
     _titleCtrl.dispose();
     _titleFocus.dispose();
     _shareScrollCtrl.dispose();
     super.dispose();
   }
 
-  /// 灵感区落库：失焦即存，走 UpdateItemCommand（唯一写入口，R2）。
-  Future<void> _saveInspiration() async {
-    final text = _inspirationCtrl.text.trim();
-    if (text == _item.inspirationMd?.trim()) return;
-    try {
-      await widget.handler.execute(
-        UpdateItemCommand(id: _item.id!, inspirationMd: text),
-        vaultContext: widget.vaultContext,
-      );
-    } on ActionException catch (e) {
-      _snack(e.message);
-    }
-  }
+  /// 灵感区落库已收口到 [_showInspirationSheet]（BottomSheet 保存 → _run 统一
+  /// 出口：execute + 触感 + toast + reload；未改动跳过不空耗乐观锁版本）。
 
   @override
   void reload() => _reload();
@@ -349,15 +391,10 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   Future<void> _reload() async {
     final fresh = await widget.repo.byId(_item.id!, includeDeleted: true, includeVault: true);
     if (fresh == null) return;
+    await _loadActiveActions();
     if (!mounted) return;
     setState(() {
       _item = fresh;
-      // 灵感区控制器与最新快照同源：编辑中不覆盖（用户输入优先），
-      // 空闲时回填（外部/AI 更新可见）
-      if (_inspirationCtrl.text.trim().isEmpty ||
-          _inspirationCtrl.text.trim() == (_item.inspirationMd ?? '').trim()) {
-        _inspirationCtrl.text = _item.inspirationMd ?? '';
-      }
     });
     // 会话态与最新快照同源（AI 可能在页面打开期间又写回了一次）。
     _aiSession?.sync(_item);
@@ -382,6 +419,27 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
       _snack(e.message);
     }
   }
+
+  /// 加载本条目 active 任务动作集（[_activeActions]）。任务状态变化不经
+  /// repo 广播（仅条目写广播），故挂在 [_reload]（入队/落库/外部回写都会走）
+  /// 与 initState 两口刷新——与 `_AiTaskStatusLine` 的 FutureBuilder 同源数据。
+  Future<void> _loadActiveActions() async {
+    final tasks = await widget.repo.listTasks();
+    if (!mounted) return;
+    final active = <String>{
+      for (final t in tasks)
+        if (t['item_id'] == _item.id &&
+            (t['status'] == 'pending' || t['status'] == 'processing'))
+          (t['task_action'] as String?) ?? '',
+    }..remove('');
+    setState(() => _activeActions = active);
+  }
+
+  /// 卡内微观态判定（P0-2）：各卡对应任务是否进行中。
+  bool get _summarizeRunning => _activeActions.contains(Repository.taskLlmSummarize);
+  bool get _tagsRunning => _activeActions.contains(Repository.taskLlmTags);
+  bool get _templateRunning =>
+      _activeActions.any((a) => a.startsWith('${Repository.taskTemplateApply}:'));
 
   /// 待办行是否已勾（渲染 lookup：todo_state_json 按行内容 hash 关联）。
   bool _todoDone(String text) {
@@ -1284,6 +1342,19 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
         // ——复用页面既有边界，天然继承 Theme/MediaQuery，不重建离屏树）。
         body: Stack(
           children: [
+            // P0-2 全篇级任务微进度（detail-page-visual-audit.md §6）：本条目有
+            // active 任务时顶栏下 2dp 线性进度——长文任意滚动位置恒可见（钉在
+            // Stack 顶层，不随 SliverAppBar 隐显）。
+            if (_activeActions.isNotEmpty)
+              const Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: SizedBox(
+                  height: 2,
+                  child: LinearProgressIndicator(minHeight: 2),
+                ),
+              ),
             AudioPlaybackService(
               controller: _audioPlayback,
               child: BlockCapabilityExecutor(
@@ -1382,10 +1453,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                                   if (!(_shareScope?.includeBody == false))
                                     ...(_editing && _editRows != null
                                         ? _editBodySlivers()
-                                        : ItemViewTemplate(
-                                            item: _item,
-                                            machineMode: _machineMode,
-                                          ).bodySlivers(context)),
+                                        : ItemViewTemplate(item: _item)
+                                            .bodySlivers(context)),
                                   if (!_editing) ...[
                                     SliverToBoxAdapter(
                                       child: _attachStatusLine(),
@@ -1473,17 +1542,12 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 键盘是否可见（灵感区输入时底栏让位，避免遮挡与视觉挤压）。
   bool get _keyboardVisible => MediaQuery.of(context).viewInsets.bottom > 0;
 
-  /// 公共操作条（ui-spec §4.3 两区改版）：全类型固定 5 项，连成一个**无分隔线的
-  /// 整体胶囊**——编辑 / 分享 / ⋯ / 工作区 / 删除（与全站底栏同款样式）。
-  /// - 编辑↔保存按态切换（label 即实际行为）；分享 = 内容导出链（离屏截图 /
-  ///   PDF，按内容分流），**唯一分享路径**（菜单里的纯文本直分享已移除）；
-  /// - 删除红色 + 二次确认，已由 `⋯` 移回底栏常驻连接组（单一入口）；
-  /// - 摘要与标签已移入灵感区（`_inspirationSection`），不占底栏；`⋯` 面板仅收
-  ///   权限开关（保险箱/对AI可见/允许AI编辑/机器码）。
-  ///
-  /// Wrap 而非 Row：本机逻辑屏宽仅 331dp（1272px / DPR 3.84），Row 溢出在
   /// 顶栏标题（长按原地编辑，2026-10-02 拍板）：编辑态为 TextField，否则为
   /// 可长按文本。随 SliverAppBar 滚动隐显。
+  ///
+  /// （2026-10-15 注释漂移修复：此处原被 `_actionBar` 的「Wrap 而非 Row」孤儿
+  /// 残片占用——该残片属旧版 5 格底栏注释，v2 单行化后已随 `_actionBar` 文档
+  /// 重写清理，见 `detail-page-visual-audit.md` §5 盲点 A。）
   Widget _buildTitle() {
     if (_editingTitle) {
       return TextField(
@@ -1530,11 +1594,16 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 不用 OverflowBar——它放不下时是「每项各占一行」的竖排（AlertDialog
   /// 动作语义），不是换行；不用 BottomAppBar——它把子级高度钉死（实测
   /// h=56），两行必竖向溢出。
-  /// 公共操作条（ui-spec §4.3）：编辑 / 分享 / ⋯ / 工作区 / 删除 五个按钮连成
-  /// **一个无分隔线的整体胶囊**（与全站底栏同款样式：surfaceContainerHigh 底 +
-  /// Radii.lg 圆角），项间不再各自分立。编辑↔保存按态切换（label 即实际行为）；
-  /// 分享为唯一导出入口；删除红色 + 二次确认；`⋯` 仅收权限开关（保险箱/对AI可见/
-  /// 允许AI编辑/机器码），单一入口不重复。
+  /// 公共操作条（ui-spec §4.3；2026-10-15 底栏单行化拍板，
+  /// detail-page-visual-audit.md §6 盲点 A）：**常驻裁到 3 项**——编辑 / 分享 / ⋯
+  /// 连成无分隔线的整体胶囊（surfaceContainerHigh 底 + Radii.lg 圆角）。
+  /// - 331dp 逻辑屏（1272px / DPR 3.84）下旧 5 格 ≈63dp/格 < 74dp 内容宽
+  ///   → 横向溢出（集成测试记录的 1.4px RenderFlex 溢出即此）；3 格 ≈105dp/格，
+  ///   单行彻底消灭换行/溢出隐患——**固定操作条严禁自适应折行吃屏高**；
+  /// - **删除与工作区已移入 `⋯` 面板**（`ItemActions.overflowSheet`，删除首位
+  ///   红字）；编辑↔保存按态切换（label 即实际行为）；分享为唯一导出入口；
+  /// - `⋯` 面板收：删除 / 工作区 / 重新处理（条件）+ 权限开关（保险箱/对AI可见/
+  ///   允许AI编辑/机器码），单一入口不重复。
   Widget _actionBar() {
     final scheme = Theme.of(context).colorScheme;
     return Material(
@@ -1565,17 +1634,6 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                 _barCell(
                   icon: Icons.more_horiz,
                   onPressed: _openOverflowSheet,
-                ),
-                _barCell(
-                  icon: Icons.workspaces_outlined,
-                  label: '工作区',
-                  onPressed: _workspaceHint,
-                ),
-                _barCell(
-                  icon: Icons.delete_outline,
-                  label: '删除',
-                  danger: true,
-                  onPressed: _confirmDelete,
                 ),
               ],
             ),
@@ -1623,9 +1681,14 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     );
   }
 
-  /// 机器态开关（入口对人类隐藏，见 AppBar 标题长按）：双态呈现能力保留，
-  /// 只是不给普通用户按钮（2026-10-01 拍板）。
-  void _toggleMachineMode() => setState(() => _machineMode = !_machineMode);
+  /// 机器态二级页导航（P1-5 降级拍板：不再切换读态正文，读态容器保持纯粹；
+  /// 入口仍走 `⋯` 面板，受设置「机器码」开关门控，默认关闭）。
+  void _openMachineView() {
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(builder: (_) => MachineViewPage(item: _item)),
+    );
+  }
 
   /// 从底部升起 mymind 风格功能面板（见 `_OverflowSheet`）。动作序列与条件收录
   /// 规则（分享/保险箱/删除/机器码）收口到 [ItemActions] 词汇表——本方法只剩
@@ -1636,7 +1699,6 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
         item: _item,
         vaultContext: widget.vaultContext,
         machineModeEnabled: _machineModeEnabled,
-        machineMode: _machineMode,
       ),
       onVault: (on) => on
           ? _run(
@@ -1660,7 +1722,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
             .execute(SetAiEditableCommand(_item.id!, on), actor: CommandActor.ui),
         on ? '已允许 AI 编辑' : '已收回 AI 编辑授权',
       ),
-      onMachineToggle: _toggleMachineMode,
+      onMachineOpen: _openMachineView,
       onReprocess: () async {
         // 主动重做会覆盖现正文（动作层先重置为原文再入队），必确认
         final ok = await confirmDialog(
@@ -1679,6 +1741,9 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
           '已重新入队处理',
         );
       },
+      // 底栏单行化（2026-10-15）：删除/工作区从底栏移入本面板
+      onDelete: _confirmDelete,
+      onOpenWorkspace: _workspaceHint,
     );
     final items = <OverflowItem>[
       for (final a in actions)
@@ -1835,15 +1900,27 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     final canProcess = _item.bodyText.trim().isNotEmpty;
     final summary = _item.summaryMd?.trim() ?? '';
     final hasSummary = summary.isNotEmpty;
+    // P0-3 收敛数据源（detail-page-visual-audit.md §6）：深度摘要未生成时，
+    // 摘要卡回退展示摄入期 human_tldr（原正文流 TLDR 卡已撤，卡名统一「摘要」）
+    final tldrFallback = _item.humanTldr?.trim() ?? '';
     final hasTags = _item.tags.isNotEmpty;
     final templateOutput = _item.templateOutput?.trim() ?? '';
     final hasTemplateOutput = templateOutput.isNotEmpty;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    // 所用模板名（呈现规约 4）：模板已删（松散关联）时退化为不显示名字。
+    final templateName =
+        _item.templateId == null ? null : _templateNames[_item.templateId];
+    final stale = _item.isTemplateOutputStale;
 
     // 分区动作行（卡内右上角）：内容语义归 SectionLegendCard 签名，按钮只管操作。
+    // P0-2 卡内微观态：对应任务进行中时 refresh 位替换为卡内 spinner（18px，
+    // 与图标同占位），不再依赖页面底部全局状态条（detail-page-visual-audit.md §6）。
     Widget sectionActions(
       String refreshTooltip,
       VoidCallback? onRefresh, {
       VoidCallback? onAdd,
+      bool running = false,
     }) {
       final scheme = Theme.of(context).colorScheme;
       return Row(
@@ -1855,15 +1932,25 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
               icon: Icon(Icons.add, size: 18, color: scheme.onSurfaceVariant),
               onPressed: onAdd,
             ),
-          IconButton(
-            tooltip: refreshTooltip,
-            icon: Icon(
-              Icons.refresh,
-              size: 18,
-              color: canProcess ? scheme.onSurfaceVariant : scheme.outline,
+          if (running)
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: Padding(
+                padding: EdgeInsets.all(2),
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            )
+          else
+            IconButton(
+              tooltip: refreshTooltip,
+              icon: Icon(
+                Icons.refresh,
+                size: 18,
+                color: canProcess ? scheme.onSurfaceVariant : scheme.outline,
+              ),
+              onPressed: onRefresh,
             ),
-            onPressed: onRefresh,
-          ),
         ],
       );
     }
@@ -1892,9 +1979,13 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                           '已开始生成摘要',
                         )
                       : null,
+                  running: _summarizeRunning,
                 ),
                 if (hasSummary)
                   RichTextView(markdown: summary, shrinkWrap: true)
+                else if (tldrFallback.isNotEmpty)
+                  // 摄入期粗导语兜底：深度摘要生成后自动被其覆盖（P0-3 折叠规则）
+                  RichTextView(markdown: tldrFallback, shrinkWrap: true)
                 else
                   _inspirationEmpty('还没有摘要，点右上刷新生成'),
               ],
@@ -1919,6 +2010,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                         )
                       : null,
                   onAdd: _editTags,
+                  running: _tagsRunning,
                 ),
                 if (hasTags)
                   Wrap(
@@ -1934,28 +2026,105 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
             ),
           ),
           const SizedBox(height: Insets.md),
-          // ── 模板产出（ai-template P2）：按模板 skill 处理条目的结果，可重跑）
-          SectionLegendCard(
-            legend: '模板产出',
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton.icon(
-                    icon: const Icon(Icons.auto_awesome, size: 18),
-                    label: const Text('按模板处理'),
-                    onPressed: _showTemplatePicker,
+          // ── 模板产出（ai-template P2 + 呈现规约 §5）：
+          // 无产出不挂空卡（规约 2 渐进披露：一行轻入口）；有产出才是完整骑框签卡。
+          if (hasTemplateOutput)
+            SectionLegendCard(
+              legend: '模板产出',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      // 规约 4：显示所用模板名（单槽覆盖，用户须知道当前产出是谁的）
+                      if (templateName != null) ...[
+                        Icon(Icons.auto_awesome,
+                            size: 14, color: scheme.onSurfaceVariant),
+                        const SizedBox(width: Insets.xs),
+                        Expanded(
+                          child: Text(
+                            '按「$templateName」生成',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall
+                                ?.copyWith(color: scheme.onSurfaceVariant),
+                          ),
+                        ),
+                      ] else
+                        const Spacer(),
+                      // 规约 1：入口降权——18px 图标按钮，与摘要/标签 refresh 同权重；
+                      // P0-2 卡内微观态：模板任务进行中显示 spinner
+                      if (_templateRunning)
+                        const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: Padding(
+                            padding: EdgeInsets.all(2),
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )
+                      else
+                        IconButton(
+                          tooltip: stale ? '正文已修改，重新按模板处理' : '按模板处理',
+                          icon: Icon(
+                            Icons.auto_awesome,
+                            size: 18,
+                            color: canProcess
+                                ? scheme.onSurfaceVariant
+                                : scheme.outline,
+                          ),
+                          onPressed: canProcess ? _showTemplatePicker : null,
+                        ),
+                    ],
                   ),
-                ),
-                if (hasTemplateOutput)
-                  RichTextView(markdown: templateOutput, shrinkWrap: true)
-                else
-                  _inspirationEmpty('还没有模板产出，点「按模板处理」选模板'),
-              ],
-            ),
-          ),
+                  // 规约 4：stale 明示（正文改后版本锚失配 = 产出可能过期）
+                  if (stale)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: Insets.xs),
+                      child: Text(
+                        '正文已修改，此产出可能过期',
+                        style: theme.textTheme.bodySmall
+                            ?.copyWith(color: scheme.outline),
+                      ),
+                    ),
+                  RichTextView(markdown: templateOutput, shrinkWrap: true),
+                ],
+              ),
+            )
+          else
+            _templateEntryRow(),
         ],
+      ),
+    );
+  }
+
+  /// 模板处理轻入口（呈现规约 2：无产出不挂骑框签空卡，一行轻入口渐进披露）。
+  Widget _templateEntryRow() {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: Insets.sm),
+      child: InkWell(
+        onTap: _showTemplatePicker,
+        borderRadius: BorderRadius.circular(Radii.sm),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+              vertical: Insets.sm, horizontal: Insets.xs),
+          child: Row(
+            children: [
+              Icon(Icons.auto_awesome, size: 16, color: scheme.onSurfaceVariant),
+              const SizedBox(width: Insets.sm),
+              Text(
+                '按模板处理',
+                style: Theme.of(context)
+                    .textTheme
+                    .bodyMedium
+                    ?.copyWith(color: scheme.onSurfaceVariant),
+              ),
+              const Spacer(),
+              Icon(Icons.chevron_right, size: 16, color: scheme.outline),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1975,8 +2144,9 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     );
   }
 
-  /// 内容生产模板（ai-template P2）：弹出模板列表 → 提交「按模板处理」待办，
-  /// 交 AI 宿主 claim 后按模板 skill 处理（落 inbox_items.template_output）。
+  /// 内容生产模板（ai-template P2 + 呈现规约 3）：定制 BottomSheet 选择器——
+  /// 名称 + 描述 + origin 徽标 + 模板库预览入口，页脚固定「原文不会被修改」。
+  /// 已有产出时选中后确认覆盖（单槽覆盖必须明示，规约 4）。
   Future<void> _showTemplatePicker() async {
     final tpls = await widget.repo.listTemplates();
     if (!mounted) return;
@@ -1984,24 +2154,21 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
       _snack('还没有可用模板，请先让 AI 创建模板');
       return;
     }
-    final chosen = await showDialog<String>(
+    final chosen = await showModalBottomSheet<String>(
       context: context,
-      builder: (ctx) => SimpleDialog(
-        title: const Text('按模板处理'),
-        children: [
-          for (final t in tpls)
-            SimpleDialogOption(
-              onPressed: () => Navigator.pop(ctx, t.id),
-              child: Text(t.name),
-            ),
-          SimpleDialogOption(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消', style: TextStyle(color: Colors.grey)),
-          ),
-        ],
-      ),
+      builder: (ctx) =>
+          _TemplatePickerSheet(templates: tpls, repo: widget.repo),
     );
-    if (chosen == null) return;
+    if (chosen == null || !mounted) return;
+    if (_item.templateOutput?.trim().isNotEmpty ?? false) {
+      final ok = await confirmDialog(
+        context,
+        title: '覆盖当前模板产出',
+        content: '该条目已有一份模板产出，用新模板处理将覆盖它。继续？',
+        confirmText: '继续',
+      );
+      if (!ok || !mounted) return;
+    }
     await _run(
       () => widget.handler.execute(
         TemplateApplyCommand(_item.id!, chosen),
@@ -2011,31 +2178,82 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     );
   }
 
-  /// 灵感区：人的碎片想法，可编辑文本区（点即聚焦、失焦即存）。
+  /// 灵感区：人的碎片想法（P1-6 修订拍板：输入改 **BottomSheet**，不做
+  /// Sliver 内原地形变——长 Sliver 流内动态高度 + 软键盘 = 抖动跳屏陷阱）。
+  /// 卡内只做展示：有内容显文本 + 编辑图标；空态一行轻入口。点按呼出
+  /// 键盘跟随浮层，保存经 UpdateItemCommand 落库后回填卡片。
   Widget _inspirationTextArea() {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
+    final text = _item.inspirationMd?.trim() ?? '';
+    final hasText = text.isNotEmpty;
     return Padding(
       padding: const EdgeInsets.only(top: Insets.md),
       child: SectionLegendCard(
         legend: '灵感',
-        child: TextField(
-          controller: _inspirationCtrl,
-          minLines: 2,
-          maxLines: 8,
-          decoration: InputDecoration(
-            hintText: '写下你的灵感…',
-            filled: true,
-            fillColor: scheme.surfaceContainerLow,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(Radii.md),
-              borderSide: BorderSide.none,
-            ),
-          ),
-          style: theme.textTheme.bodyMedium,
-          onTapOutside: (_) => _saveInspiration(),
-        ),
+        child: hasText
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: IconButton(
+                      tooltip: '编辑灵感',
+                      icon: Icon(Icons.edit_outlined,
+                          size: 18, color: scheme.onSurfaceVariant),
+                      onPressed: _showInspirationSheet,
+                    ),
+                  ),
+                  SelectableText(
+                    text,
+                    style: theme.textTheme.bodyMedium,
+                  ),
+                ],
+              )
+            : InkWell(
+                onTap: _showInspirationSheet,
+                borderRadius: BorderRadius.circular(Radii.sm),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                      vertical: Insets.sm, horizontal: Insets.xs),
+                  child: Row(
+                    children: [
+                      Icon(Icons.edit_note_outlined,
+                          size: 16, color: scheme.onSurfaceVariant),
+                      const SizedBox(width: Insets.sm),
+                      Text(
+                        '写点灵感…',
+                        style: theme.textTheme.bodyMedium
+                            ?.copyWith(color: scheme.onSurfaceVariant),
+                      ),
+                      const Spacer(),
+                      Icon(Icons.chevron_right, size: 16, color: scheme.outline),
+                    ],
+                  ),
+                ),
+              ),
       ),
+    );
+  }
+
+  /// 灵感输入浮层（P1-6）：键盘跟随（isScrollControlled + viewInsets 内边距），
+  /// 保存显式按钮（不再失焦即存——浮层语义下「取消=不改动」更可预期）。
+  Future<void> _showInspirationSheet() async {
+    final saved = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => _InspirationSheet(initial: _item.inspirationMd ?? ''),
+    );
+    if (!mounted || saved == null) return;
+    if (saved.trim() == (_item.inspirationMd ?? '').trim()) {
+      return; // 未改动不空耗乐观锁版本
+    }
+    await _run(
+      () => widget.handler.execute(
+        UpdateItemCommand(id: _item.id!, inspirationMd: saved.trim()),
+        vaultContext: widget.vaultContext,
+      ),
+      '已记下',
     );
   }
 
@@ -2047,14 +2265,18 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     );
   }
 
-  /// 附录章节（派生内容）：小标题 + 内容，**不叠卡片边框**。
+  /// 附录章节（派生内容）：**轻分隔线 + 微标题 + 正文同款排版**，不叠卡片边框
+  /// （P0-1 修订拍板：译文是全量正文镜像，不进骑框签卡——万字长文套卡即畸形；
+  /// 保持与正文一致的全宽无框阅读基线，仅以分隔线划界）。
   Widget _appendix(String title, String body) {
     final theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.only(top: Insets.lg),
+      padding: const EdgeInsets.only(top: Insets.xxl),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          Divider(height: 1, thickness: 1, color: theme.colorScheme.outlineVariant),
+          const SizedBox(height: Insets.md),
           Text(
             title,
             style: theme.textTheme.labelMedium?.copyWith(
@@ -2144,3 +2366,179 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
 
 /// 标签编辑已抽共享组件 `lib/ui/tag_editor_sheet.dart`（动词→容器词汇表：
 /// 「编辑一组小项」唯一容器，便签作曲器同用）。
+
+/// 模板选择 BottomSheet（ai-template.md §5 呈现规约 3）：行 = 模板名 + 描述 +
+/// origin 徽标（AI 托管/官方）；页头「模板库预览」入口（接只读预览页）；
+/// 页脚固定「原文不会被修改」——用户核心顾虑在决策点明示。
+class _TemplatePickerSheet extends StatelessWidget {
+  const _TemplatePickerSheet({required this.templates, required this.repo});
+
+  final List<Template> templates;
+
+  /// 详情页同一 Repository 实例（「模板库预览」按钮复用，零新开数据面）。
+  final Repository repo;
+
+  /// origin → 人类语言（ADR：管理权归 AI，人类须知道模板是谁托管的）。
+  static String _originLabel(String origin) => switch (origin) {
+        'official' => '官方',
+        'user' => '我的',
+        _ => 'AI 托管',
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+                Insets.lg, Insets.lg, Insets.sm, Insets.sm),
+            child: Row(
+              children: [
+                Text('按模板处理', style: theme.textTheme.titleMedium),
+                const Spacer(),
+                TextButton(
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute<void>(
+                      builder: (_) => TemplatePreviewPage(repo: repo),
+                    ),
+                  ),
+                  child: const Text('模板库预览'),
+                ),
+              ],
+            ),
+          ),
+          Flexible(
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: templates.length,
+              itemBuilder: (ctx, i) {
+                final t = templates[i];
+                final desc = t.description?.trim() ?? '';
+                return ListTile(
+                  leading: const Icon(Icons.description_outlined),
+                  title: Text(t.name),
+                  subtitle: desc.isEmpty
+                      ? Text('${_originLabel(t.origin)} · ${t.workspaceId.substring(0, 8)}')
+                      : Text('$desc\n${_originLabel(t.origin)}'),
+                  isThreeLine: desc.isNotEmpty,
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => Navigator.pop(ctx, t.id),
+                );
+              },
+            ),
+          ),
+          // 页脚固定明示：只追加语义的用户承诺（呈现规约 3）
+          Padding(
+            padding: const EdgeInsets.all(Insets.lg),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.lock_outline, size: 14, color: scheme.onSurfaceVariant),
+                const SizedBox(width: Insets.sm),
+                Expanded(
+                  child: Text(
+                    '按模板处理会交由 AI 生成新内容，你的原文不会被修改',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: scheme.onSurfaceVariant),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 灵感输入浮层（P1-6 修订拍板：Sliver 内不做事地动态形变，输入全部收进
+/// 键盘跟随浮层）：显式「保存」按钮取代失焦即存——浮层语义下「取消=不改动」
+/// 更可预期；返回非空 = 用户确认保存（未改动由页面侧 diff 跳过写入）。
+class _InspirationSheet extends StatefulWidget {
+  const _InspirationSheet({required this.initial});
+
+  final String initial;
+
+  @override
+  State<_InspirationSheet> createState() => _InspirationSheetState();
+}
+
+class _InspirationSheetState extends State<_InspirationSheet> {
+  late final TextEditingController _ctrl =
+      TextEditingController(text: widget.initial);
+  final _focus = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    // 键盘跟随：首帧后请求焦点，软键盘弹出与浮层抬升同窗
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _focus.requestFocus());
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      // 键盘跟随：浮层底边距 = 当前键盘高度
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.all(Insets.lg),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('灵感', style: theme.textTheme.titleMedium),
+              const SizedBox(height: Insets.md),
+              TextField(
+                controller: _ctrl,
+                focusNode: _focus,
+                minLines: 4,
+                maxLines: 10,
+                textInputAction: TextInputAction.newline,
+                decoration: InputDecoration(
+                  hintText: '写下你的灵感…',
+                  filled: true,
+                  fillColor: theme.colorScheme.surfaceContainerLow,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(Radii.md),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+              const SizedBox(height: Insets.md),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('取消'),
+                  ),
+                  const SizedBox(width: Insets.sm),
+                  FilledButton(
+                    onPressed: () => Navigator.pop(context, _ctrl.text),
+                    child: const Text('保存'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

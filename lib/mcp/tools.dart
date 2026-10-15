@@ -1448,10 +1448,14 @@ Future<List<Map<String, Object?>>> callTool(
       final itemId = claimed['item_id'] as String;
       final taskAction = claimed['task_action'] as String;
       final block = Repository.parseBlockAction(taskAction);
-      // 条目按 MCP 可见口径读（默认 aiVisible 过滤 + 隐私约束）；已删/不可见
-      // 时任务无载荷可给——不丢任务（保持 processing），返回 not_found 让
-      // 宿主 apply 一个 failed 收尾，避免孤儿 processing 白等 30s 僵尸回收。
-      final item = await repo.byId(itemId, aiVisible: true);
+      // 条目可见性口径（ai-template.md §4 授权断点修复，2026-10-15）：
+      // 远程任务入队时已过 ai_visible 主体门禁（actor=ai 且不可见即拒；
+      // actor=ui 人类显式触发=一次性授权）——**claim 信任已入队任务**，
+      // 不再按 aiVisible 复检（复检放读取侧=门禁形同虚设）。
+      // Vault / 已删仍天然挡（byId 默认过滤）+ not_found 兜底：不丢任务
+      // （保持 processing），宿主 apply 一个 failed 收尾，避免孤儿 processing
+      // 白等 30s 僵尸回收。
+      final item = await repo.byId(itemId);
       if (item == null) {
         return [_text(jsonEncode({
           'status': 'not_found',
@@ -1485,6 +1489,10 @@ Future<List<Map<String, Object?>>> callTool(
         'task_action': taskAction,
         'text': text,
         if (taskAction == Repository.taskLlmTags) 'human_tags': item.tags,
+        // 模板任务显式回 template_id（ai-template.md §6）：宿主免解析动作串，
+        // 直接 resources/read goodshare://templates/{id} 取 skill。
+        if (taskAction.startsWith('${Repository.taskTemplateApply}:'))
+          'template_id': taskAction.substring(Repository.taskTemplateApply.length + 1),
         'block_key': ?blockKey,
         'version': item.version,
       }))];
@@ -1548,7 +1556,9 @@ Future<List<Map<String, Object?>>> callTool(
       // 与 UI 手动重试同构。
       try {
         final r = await _guarded(() => handler.execute(
-              ApplyAiResultCommand(itemId, result, expectedVersion: _int(args['expected_version'])),
+              ApplyAiResultCommand(itemId, result,
+                  taskAction: taskAction,
+                  expectedVersion: _int(args['expected_version'])),
               actor: CommandActor.pipeline,
             ));
         // note 取推理产物载荷（result.note），与 QueueConsumer 完成路径同口径——

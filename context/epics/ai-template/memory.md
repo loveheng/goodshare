@@ -26,4 +26,4 @@ total-merged: 0
 - schema 微调（2026-10-14）：`template_id` 松散关联无 FK（删模板不级联删产出）；`template_output_anchor` 口径与 `summary_anchor` 完全镜像（trim / null 兜底 / md5(humanMd)）
 
 ## 断点
-- [断点] **P1 已完成（2026-10-14）**：数据模型 + Repository + 命令/handler + MCP CRUD 工具 + skill resource + get_item 暴露 + 人类只读预览页（TemplatePreviewPage）+ ADR（管理权归 AI 不对称）+ template_test 5 例。全量 analyze 0 + test 795 全过。下一步 = P2（存量内容选模板 → 入队 template_apply → 远程集合 + claim 解析 + apply 回写 template_output + 详情页入口）。
+- [断点] **P2 已完成（2026-10-14 初版 + 2026-10-15 硬化轮）**：①只追加结构保证——`_applyAiResult` 模板任务分支早退（只写模板三列，human_md 等零触碰；无产出不写列）；②授权断点修复——远程入队点 ai_visible 主体门禁（`_requireAiReadable`：ai 发起守门/ui 显式触发=一次性授权），claim 信任已入队任务 + 回 template_id；③入队互斥（同条目同模板 active 拒）；④详情页呈现规约四条（入口降权/渐进披露/BottomSheet 选择器+原文不改明示/状态与 stale 完备）；⑤SSOT = docs/design/ai-template.md（新建）。验证：analyze 0 + 全量 816 过。**下一步 = P3**：宿主侧真机验收（选模板 → claim → 读 skill → apply 回写只追加），宿主接入归 goodhub 账本。

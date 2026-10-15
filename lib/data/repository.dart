@@ -397,6 +397,20 @@ class Repository extends ChangeNotifier {
     ];
   }
 
+  /// 某条目是否存在指定动作（完整相等）的 active（pending/processing）任务。
+  /// ai-template.md §6 入队互斥：同条目同模板的 `template_apply:<id>` 在队即拒，
+  /// 防连点产生重复远程任务（宿主侧重复认领=重复烧推理额度）。
+  Future<bool> hasActiveTaskAction(String itemId, String action) async {
+    final db = await _database();
+    final rows = await db.rawQuery(
+      "SELECT 1 FROM ai_task_queue "
+      "WHERE item_id = ? AND status IN ('pending', 'processing') "
+      "AND task_action = ? LIMIT 1",
+      [itemId, action],
+    );
+    return rows.isNotEmpty;
+  }
+
   /// 某条目 active（pending/processing）的 **block 任务行**（block-artifact-workflow
   /// §7：`get_item` 的 `block_tasks` 字段数据源）。与 [activeBlockActionsOf] 同口径
   /// 但带任务元数据——该字段是给 AI 的**软引导**（看到任务在跑即自我抑制重复发起），
