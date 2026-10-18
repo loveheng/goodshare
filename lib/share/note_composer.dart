@@ -3,7 +3,7 @@
 /// SSOT：docs/design/rich-text-media.md §2 写入口径（2026-09-30 拍板①：本地行内媒体
 /// 随便签作曲器开放，url = `local://<documents 内相对路径>` 相对标记——**绝不写绝对路径**
 /// （iOS 沙盒容器 UUID 段随升级/恢复变动），渲染/IO 层经 resolveLocalMediaSrc 动态解析）
-/// + ui-spec §4.6。
+/// + ui-design §4.6。
 ///
 /// 设计约束：
 /// - **媒体段序列化为标准 Markdown 媒体行**（`![alt](local://…)` / `[label](local://…)`），

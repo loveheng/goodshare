@@ -304,7 +304,7 @@ class _ImageAnnotatorState extends State<ImageAnnotator> {
     // （渐进披露，五件事含显隐）；导出收 AppBar（低频完成态动作不占画布）。
     return Scaffold(
       appBar: AppBar(
-        // 无返回箭头（ui-spec §3）：出口=系统手势/返回键
+        // 无返回箭头（ui-design §3）：出口=系统手势/返回键
         automaticallyImplyLeading: false,
         title: const Text('图片标注'),
         actions: [

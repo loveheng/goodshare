@@ -11,6 +11,7 @@ import '../ai/reconstructor.dart' show ReconstructResult;
 import '../data/block_artifacts.dart';
 import '../data/repository.dart';
 import '../models/item.dart';
+import 'ai_proxy.dart';
 import 'jsonrpc.dart';
 
 /// MCP 工具集（PRD §7）：list/get/add/query_machine_data/get_timeline_context/
@@ -54,6 +55,7 @@ const Map<String, bool> _kReadOnlyHints = {
   'get_job_status': true,
   'get_timeline_context': true,
   'ai_suggest_tags': true,
+  'ai_summarize_now': true,
 };
 
 List<Map<String, Object?>> toolSchemas() => [
@@ -590,6 +592,23 @@ List<Map<String, Object?>> _toolSchemasRaw() => [
         },
       },
       {
+        'name': 'ai_summarize_now',
+        'description': '为条目即时生成中文摘要：经 MCP sampling 反向请求宿主大模型返回，'
+            '纯只读——不落库、不入任务队列、不改条目。结果供对话/UI 即时预览，「采用」落库由客户端'
+            '走 apply_ai_result（或详情页采用按钮）。与 ai_suggest_tags 同属即时消费族（instant 配额池）。'
+            'Binder 路径走 `_async` + onEvent 终帧（不阻塞 Binder 调用预算），HTTP 走 SSE 流；'
+            '宿主不支持 sampling / 配额超限 / 超时返回结构化 status（sampling_unavailable /'
+            ' sampling_quota_exceeded / sampling_failed / no_content）而非报错。长文详摘要请走'
+            ' summarize_item 异管线。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'id': {'type': 'string', 'description': '条目 uuid（list_items 返回）'},
+          },
+          'required': ['id'],
+        },
+      },
+      {
         'name': 'claim_ai_task',
         'description': '认领一条待远程处理的 AI 任务（AI 宿主 App 专用，ai-app-split.md §3.2）。'
             '只认领大模型类任务（llm_summarize 摘要 / llm_tags 关键词 / block_summarize 块摘要 / '
@@ -852,6 +871,17 @@ List<String> _parseSamplingTags(Object? reply) {
   }
   return [trimmed];
 }
+
+/// 即时摘要专用 system prompt（instant-ai-sampling.md §4.1a，施工照录）。
+const String _kInstantSummarySystem =
+    '你是中文摘要引擎。为给定内容输出一段直接可用的摘要正文，不要输出解释、前言或代码块包裹。';
+
+String _instantSummaryUser(InboxItem item, String body) =>
+    '请为以下内容生成一段简洁准确的中文摘要（200 字左右，概括核心内容与关键结论）：\n\n'
+    '条目标题：${item.humanTitle ?? '（无）'}\n\n正文：\n$body';
+
+/// 即时消费族统一代理面（instant 配额池；single-flight 去重 + 截断 + 降级 + TTFT）。
+final AiSamplingProxy _samplingProxy = AiSamplingProxy();
 
 Future<List<Map<String, Object?>>> callTool(
   String name,
@@ -1438,6 +1468,48 @@ Future<List<Map<String, Object?>>> callTool(
           'reason': e.message,
         }))];
       }
+
+    case 'ai_summarize_now':
+      // instant-ai-sampling.md §4.1：即时摘要消费工具（sampling 反向推理产品化一期）。
+      // 只读：读条目正文 → 经 AiSamplingProxy 反向请求宿主 LLM → 同步回预览摘要，
+      // 不落库/不入队/零写路径；宿主失败返回结构化 status 不 isError。
+      final id = _str(args['id']);
+      if (id == null || id.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 id 不能为空');
+      final item = await repo.byId(id, aiVisible: true);
+      if (item == null) throw McpRpcError(errInvalidParams, '条目不存在或不可见: $id');
+      final body = item.bodyText;
+      if (body.trim().isEmpty) {
+        return [_text(jsonEncode({
+          'status': 'no_content',
+          'hint': '条目无正文（如未 OCR 的图片/未转写的音频），无法生成摘要',
+        }))];
+      }
+      if (sampling == null) {
+        return [_text(jsonEncode({
+          'status': 'sampling_unavailable',
+          'hint': '宿主须以带 _meta.progressToken 的流式调用触发本工具，且声明支持 sampling',
+        }))];
+      }
+      final reply = await _samplingProxy.run(
+        systemPrompt: _kInstantSummarySystem,
+        userPrompt: _instantSummaryUser(item, body),
+        pool: 'instant',
+        sampling: sampling,
+        maxTokens: 1024,
+      );
+      if (reply.status == 'ok') {
+        return [_text(jsonEncode({
+          'status': 'ok',
+          'item_id': id,
+          'summary_md': reply.text,
+          'version': item.version,
+        }))];
+      }
+      return [_text(jsonEncode({
+        'status': reply.status,
+        if (reply.code != null) 'code': reply.code,
+        if (reply.hint != null) 'reason': reply.hint,
+      }))];
 
     case 'claim_ai_task':
       // ai-app-split.md §3.2：原子认领最旧一条远程 pending 任务（占位守卫

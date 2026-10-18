@@ -55,7 +55,7 @@ class ItemViewRegistry {
       _views[itemType] ?? _fallbackView;
 }
 
-/// 详情页模板：**文档形态**（SSOT ui-spec §4.3）。
+/// 详情页模板：**文档形态**（SSOT ui-design §4.3）。
 ///
 /// 结构：类型专属区（=正文本体，按 item_type 分派）。标题在页面 AppBar
 /// （2026-10-02 拍板）；「摘要」在灵感区摘要卡（2026-10-15 P0-3 收敛拍板：
@@ -95,7 +95,7 @@ class ItemViewTemplate extends StatelessWidget {
 
 /// 通用文本/Markdown 专属区（note / chatlog / url / document 摘要）：虚拟化正文。
 /// 长文经 [ContentBodySliver] 转 Isolate 异步解析（Phase 3）；解析为空的
-/// body 回退空态。文章类正文走衬线阅读态（ui-spec §2.2 P0，serif）。
+/// body 回退空态。文章类正文走衬线阅读态（ui-design §2.2 P0，serif）。
 List<Widget> _textView(BuildContext context, InboxItem item) {
   final body = item.bodyText;
   if (body.isEmpty) return const [SliverToBoxAdapter(child: _EmptyView())];

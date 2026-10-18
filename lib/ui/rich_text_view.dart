@@ -11,7 +11,7 @@ import 'tokens.dart';
 
 /// 富文本渲染：块树 → Flutter widget。
 ///
-/// SSOT：docs/design/content-pipeline.md §5，docs/design/ui-spec.md §2.2（排版令牌）。
+/// SSOT：docs/design/content-pipeline.md §5，docs/project/ui-design.md §2.2（排版令牌）。
 /// 取代 `flutter_markdown_plus` 的 `MarkdownBody`。
 ///
 /// 排版令牌（文档感的来源）：
@@ -164,7 +164,7 @@ class _RichTextViewState extends State<RichTextView> with RichBlockParseState {
 
 /// 构建单个富文本块（与 [RichTextView] 共用，详情页 SliverList 直接复用）。
 ///
-/// [serif] = 衬线阅读态（ui-spec §2.2 P0）：正文/标题走系统衬线 + 行高 ≥1.7，
+/// [serif] = 衬线阅读态（ui-design §2.2 P0）：正文/标题走系统衬线 + 行高 ≥1.7，
 /// 文章类详情（note/chatlog/url/document）开启；媒体类转录稿不开启。
 Widget buildRichBlock(
   BuildContext context,
@@ -492,7 +492,7 @@ Widget _buildListItem(
   );
 }
 
-/// 正文样式。[serif] = 衬线阅读态（ui-spec §2.2）：系统衬线 + 暖白已由
+/// 正文样式。[serif] = 衬线阅读态（ui-design §2.2）：系统衬线 + 暖白已由
 /// colorScheme.onSurface 提供 + 行高 ≥1.7（非衬线保持 1.65）。
 TextStyle _bodyStyle(ThemeData theme, bool serif) =>
     (theme.textTheme.bodyLarge ?? const TextStyle()).copyWith(

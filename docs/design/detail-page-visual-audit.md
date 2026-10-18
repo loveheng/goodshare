@@ -6,14 +6,14 @@ updated: 2026-10-15
 # 详情页视觉与人机交互对账蓝本
 
 > 状态：**draft**——2026-10-15 首版对账 + 同日用户评审修订（v2：原建议自身次生问题修正 + 3 个盲点补入 + 核实结论）。**已拍板未实施**，拍板表见 §6。
-> 对账基线：ui-spec §4.3、detail-two-zone.md、detail-visual-hierarchy.md、section_legend.dart（骑框签 SSOT）。
+> 对账基线：ui-design §4.3、detail-two-zone.md、detail-visual-hierarchy.md、section_legend.dart（骑框签 SSOT）。
 > 代码事实源：`lib/pages/item_detail_page.dart`、`lib/ui/item_view_template.dart`。
 
 ## 1. 范围与方法
 
 - 范围：**详情页读态**（编辑态/三级能力页/浮层不在本期）。
 - 方法：以现行 SSOT 为基准对账代码；v2 起每条结论必须附**代码核实结论**（成立/前提有误/部分成立），不允许「看着像」的建议进拍板表。
-- 约束：不新造视觉语言——改动必须落在既有 token 体系、骑框签组件与 mymind 暗色三阶之内（ui-spec §2）。
+- 约束：不新造视觉语言——改动必须落在既有 token 体系、骑框签组件与 mymind 暗色三阶之内（ui-design §2）。
 
 ## 2. 页面结构盘点（读态，现行代码）
 
@@ -75,11 +75,11 @@ flowchart TD
 
 ## 7. 实施顺序建议
 
-1. **底栏单行化 + 注释漂移修复**（盲点 A）：✅ **已落地（2026-10-15）**——常驻裁 3 项（编辑/分享/⋯）；删除/工作区经 `ItemActions.overflowSheet` 移入 `⋯` 面板（删除首位红字 → 工作区 → 重新处理 → 权限开关组）；`:1528` 注释孤儿残片清理；ui-spec §4.3 / detail-two-zone.md §3 同步。真机验收项：底栏无 RenderFlex 溢出。
-2. **TLDR/摘要收敛**（P0-3）：✅ **已落地（2026-10-15）**——`bodySlivers` 撤 TLDR 卡（`item_view_template.dart`，SectionLegendCard import 同步清理）；摘要卡回退链 = `summary_md` → 摄入期 `human_tldr` → 空态引导；ui-spec §4.3 文档形态 ② 标撤。
+1. **底栏单行化 + 注释漂移修复**（盲点 A）：✅ **已落地（2026-10-15）**——常驻裁 3 项（编辑/分享/⋯）；删除/工作区经 `ItemActions.overflowSheet` 移入 `⋯` 面板（删除首位红字 → 工作区 → 重新处理 → 权限开关组）；`:1528` 注释孤儿残片清理；ui-design §4.3 / detail-two-zone.md §3 同步。真机验收项：底栏无 RenderFlex 溢出。
+2. **TLDR/摘要收敛**（P0-3）：✅ **已落地（2026-10-15）**——`bodySlivers` 撤 TLDR 卡（`item_view_template.dart`，SectionLegendCard import 同步清理）；摘要卡回退链 = `summary_md` → 摄入期 `human_tldr` → 空态引导；ui-design §4.3 文档形态 ② 标撤。
 3. **卡内微观态 + AppBar 线性进度**（P0-2）：✅ **已落地（2026-10-15）**——`_activeActions` 任务态集（`_reload`/initState 两口刷新）；摘要/标签/模板卡 refresh 位进行中替换为 18px spinner；本条目有 active 任务时 Stack 顶层钉 2dp `LinearProgressIndicator`（不随 AppBar 隐显，长文任意位置恒可见）；全局状态条收敛为**仅终态**（失败/暂停/取消/完成无产出的 note，R1 保留），进行中行不再渲染（纯函数 `aiTaskStatusText` 契约不变，widget 层收敛）。
-4. **audio/video 播放器前置**（盲点 C）：✅ **已落地（2026-10-15）**——`_audioView`/`_videoView` Column 子序调换（播放器在前、转写文随后）；核实：ui-spec §4.3 工具矩阵本就规定「播放器 → 转写文本」，代码此前漂移，本次为对齐规范。
-5. **机器态降级二级页**（P1-5）：✅ **已落地（2026-10-15）**——新建 `lib/ui/machine_view_page.dart`（JSON 全屏页 + 「暂无机器态」空态）；`ItemViewTemplate` 撤 `machineMode` 参数与 `_machineView`；`ItemActions.machineMode` 改导航入口（撤勾选态）；`ItemActionContext.machineMode` 字段移除（唯一构造点同步）；`⋯` 面板动作改名「机器态」。ui-spec 三处陈述同步。
+4. **audio/video 播放器前置**（盲点 C）：✅ **已落地（2026-10-15）**——`_audioView`/`_videoView` Column 子序调换（播放器在前、转写文随后）；核实：ui-design §4.3 工具矩阵本就规定「播放器 → 转写文本」，代码此前漂移，本次为对齐规范。
+5. **机器态降级二级页**（P1-5）：✅ **已落地（2026-10-15）**——新建 `lib/ui/machine_view_page.dart`（JSON 全屏页 + 「暂无机器态」空态）；`ItemViewTemplate` 撤 `machineMode` 参数与 `_machineView`；`ItemActions.machineMode` 改导航入口（撤勾选态）；`ItemActionContext.machineMode` 字段移除（唯一构造点同步）；`⋯` 面板动作改名「机器态」。ui-design 三处陈述同步。
 6. **灵感卡 BottomSheet 化**（P1-6）：✅ **已落地（2026-10-15）**——Sliver 内 TextField 撤除（`_inspirationCtrl`/`_saveInspiration` 失焦即存/dispose 兜底全退场）；灵感卡改展示态（有内容=文本+编辑图标；空态=一行轻入口）；`_InspirationSheet` 键盘跟随浮层（显式保存/取消，未改动跳过写入不空耗乐观锁）。
 7. **译文轻分隔标识**（P0-1 残余）：✅ **已落地（2026-10-15）**——`_appendix` 加 `outlineVariant` Divider + 顶部间距 `Insets.xxl`（替换 24px 魔法数批次的一部分）；视态切换（原文/译文/双语）另行立项。
 

@@ -8,7 +8,7 @@ updated: 2026-10-08
 > 本文件是阶段二编辑器开发的剩余项清单与推进路线，**纯规划、零代码改动**。
 > 阶段三（统一自研画布）按战略评估暂不启动；本 backlog 只覆盖阶段二范围内剩余功能。
 > 来源：context/epics/workspace/devlog.md（2026-10-07/08）、note-editor-source-of-truth.md、
-> rich-text-gfm.md、ui-spec.md §2.2。
+> rich-text-gfm.md、ui-design.md §2.2。
 
 ## 0. 定位与现状
 
@@ -53,4 +53,4 @@ updated: 2026-10-08
 - context/epics/workspace/devlog.md（2026-10-07 S0–S4/B3/C/G/D/P0/P1a/P1b；2026-10-08 B/D 落地 + A/E/F 归档）
 - docs/design/note-editor-source-of-truth.md（文本真相模型、§4.5.5 占宽回退、§8 未决）
 - docs/design/rich-text-gfm.md（表 9 表格 / 表 10 自动链接 / §3.2 行内码）
-- docs/design/ui-spec.md §2.2（阶段二排版令牌：标题映射 textTheme、行内 rich text）
+- docs/project/ui-design.md §2.2（阶段二排版令牌：标题映射 textTheme、行内 rich text）

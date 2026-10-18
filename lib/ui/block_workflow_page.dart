@@ -187,7 +187,7 @@ class _BlockWorkflowPageState extends State<BlockWorkflowPage> {
     final standalone = standaloneFor(widget.kind);
     return Scaffold(
       appBar: AppBar(
-        automaticallyImplyLeading: false, // 出口=系统手势/返回键（ui-spec §3）
+        automaticallyImplyLeading: false, // 出口=系统手势/返回键（ui-design §3）
         // 标题栏=块类型名（2026-10-05 拍板：不写「区块能力」通称；锚点切到
         // 提取的音频时工作台实为音频链，标题随锚点走）
         title: Text(blockKindLabel(_anchorAudio ? BlockKind.audio : widget.kind)),

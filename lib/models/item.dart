@@ -5,6 +5,13 @@ import 'package:crypto/crypto.dart';
 
 import 'package:rich_text/markdown_subset.dart';
 
+/// 正文指纹单一出处（instant-ai-sampling.md P1-1）：供 summary/template 版本锚与
+/// isSummaryStale 等复用，消除散落复制（item.dart / item_action_handler.dart 多处）。
+/// 纪律：只能从 [InboxItem.humanMd] 直接算，不经编辑器/文件读回/JSON 中转
+/// （换行规范化 = 字节级漂移 = 假失配）。
+String bodyMd5(String? humanMd) =>
+    md5.convert(utf8.encode(humanMd ?? '')).toString();
+
 /// 收集条目：分享进来的「好东西」统一数据模型。
 /// 三层结构（PRD §5.3）：raw_content 原始层 → human_md 人类态 / machine_json 机器态。
 class InboxItem {
@@ -225,7 +232,7 @@ class InboxItem {
     if (s.isEmpty) return false;
     final anchor = summaryAnchor;
     if (anchor == null) return true; // 存量摘要无锚：按可能过期保守处理
-    return anchor != md5.convert(utf8.encode(humanMd ?? '')).toString();
+    return anchor != bodyMd5(humanMd);
   }
 
   /// 模板产出是否可能过期（v23 版本锚判定，同 isSummaryStale 口径）。
@@ -234,7 +241,7 @@ class InboxItem {
     if (s.isEmpty) return false;
     final anchor = templateOutputAnchor;
     if (anchor == null) return true; // 存量产出无锚：按可能过期保守处理
-    return anchor != md5.convert(utf8.encode(humanMd ?? '')).toString();
+    return anchor != bodyMd5(humanMd);
   }
 
   /// 机器态美化 JSON（P1-5 机器态二级页展示源）：`machine_json` 空/缺为 null；

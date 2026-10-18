@@ -118,7 +118,7 @@ class AsrCue {
 | `lib/ai/subtitle.dart` | 新增：`AsrCue` 定义 + SRT / VTT 双份序列化 + 写盘到 `documents/subtitles/` |
 | `lib/ai/asr_reconstructor.dart` | 走带时间戳通道并落字幕文件（VAD 内置即启用）；字幕失败**不影响** `human_md` |
 | `lib/pages/settings_page.dart` | 「语音转写模型」区改为「VAD 已内置」状态提示，移除下载卡片 |
-| 音频/视频详情页 | 字幕文件存在时显示「导出字幕」入口，布局与 M3 规范遵循 [ui-spec.md](ui-spec.md) |
+| 音频/视频详情页 | 字幕文件存在时显示「导出字幕」入口，布局与 M3 规范遵循 [ui-design.md](ui-design.md) |
 
 ## 8. 翻译层
 

@@ -7,7 +7,7 @@ import 'package:flutter/material.dart';
 /// 主题暖灰阶：绳体→surfaceContainerLow 档、线稿/箭头→onSurface 暖白），
 /// 序号经连通域分析剔除（55×55 环形块特征），资产 `assets/glyphs/knot_diagram.png`，
 /// 源图彩色不落一色进代码。定位是**插画**非品牌 glyph（品牌符号=鹦鹉螺兼
-/// app 图标，ui-spec §2.4）。
+/// app 图标，ui-design §2.4）。
 class KnotIllustration extends StatelessWidget {
   const KnotIllustration({super.key, this.height = 96});
 

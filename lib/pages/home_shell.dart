@@ -19,7 +19,7 @@ import 'workspace_page.dart';
 /// 主壳（2026-09-30 改版）：底部 3 tab（全部 / 工作区 / 设置）+ 底部常驻速记条
 /// + 侧边栏（低频 / 隐私入口）。
 ///
-/// 收敛说明（ui-spec §3）：时光机降为主列表排序维度、AI 分类降为标签筛选维度、
+/// 收敛说明（ui-design §3）：时光机降为主列表排序维度、AI 分类降为标签筛选维度、
 /// 保险箱移入侧边栏（安全域，视图仍由「全部」页承载），悬浮球已删除。
 class HomeShell extends StatefulWidget {
   const HomeShell({
@@ -223,7 +223,7 @@ class _HomeShellState extends State<HomeShell> {
             },
           ),
           // 占位入口保留：AI 分类已降为标签维度，暂由主列表 chips 承载，
-          // 此处不再重复给入口（ui-spec §4.7）。
+          // 此处不再重复给入口（ui-design §4.7）。
         ],
       ),
     );

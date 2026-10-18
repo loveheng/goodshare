@@ -2,7 +2,8 @@
 # release-r2 — 拾贝一键发布到 Cloudflare R2（应用内自更新源）
 #
 # 流程: 读 pubspec 版本 → flutter build apk --release（自更新整包，arm64 纯净，versionCode=pub build，注入 UPDATE_SOURCE_URL）
-#       → 算 sha256 → 生成 updates/goodshare-update.json → 上传 apk+json 到 R2 公开域
+#       → 删旧包（前缀下所有 *.apk，避免 CDN 缓存串包）→ 算 sha256
+#       → 生成 updates/goodshare-update.json（apkUrl 指向带版本号的文件名）→ 上传 apk+json 到 R2 公开域
 #
 # 前置:
 #   1) Cloudflare 后台对该 bucket 开启「公开访问」并绑定自定义域（如 update.example.com），
@@ -84,9 +85,11 @@ if [ -z "$APP_ID" ]; then
 fi
 
 APK="build/app/outputs/flutter-apk/app-release.apk"
+APK_NAME="goodshare-v${VERSION_NAME}.apk"          # 安装包带版本号，文件名唯一 → CDN 不串旧缓存
+REMOTE_APK_KEY="${REMOTE_PREFIX}/${APK_NAME}"
 ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 PUBLIC_BASE="https://${R2_PUBLIC_DOMAIN}"
-APK_URL="${PUBLIC_BASE}/${REMOTE_PREFIX}/app-release.apk"
+APK_URL="${PUBLIC_BASE}/${REMOTE_APK_KEY}"
 SRC_URL="${PUBLIC_BASE}/${REMOTE_PREFIX}"
 
 echo "版本: v${VERSION_NAME} (build ${VERSION_CODE})"
@@ -99,8 +102,9 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "  flutter analyze"
   echo "  flutter build apk --release --dart-define=UPDATE_SOURCE_URL=\"$SRC_URL\""
   echo "  sha256sum $APK"
+  echo "  清理旧包: 读取 $REMOTE_PREFIX/goodshare-update.json → 删除其 apkUrl 指向的旧包；并删除遗留 $REMOTE_PREFIX/app-release.apk"
   echo "  生成 updates/goodshare-update.json (apkUrl=$APK_URL, applicationId=$APP_ID)"
-  echo "  node scripts/upload-r2.mjs $APK $REMOTE_PREFIX/app-release.apk application/vnd.android.package-archive"
+  echo "  node scripts/upload-r2.mjs $APK $REMOTE_APK_KEY application/vnd.android.package-archive"
   echo "  node scripts/upload-r2.mjs updates/goodshare-update.json $REMOTE_PREFIX/goodshare-update.json application/json"
   exit 0
 fi
@@ -127,9 +131,31 @@ cat > updates/goodshare-update.json <<EOF
 EOF
 echo "清单已生成: updates/goodshare-update.json"
 
+# ---- 上传前清理旧安装包（避免 CDN 缓存串包 / 残留旧包）----
+# 说明: 发布用 R2 令牌常只授予 Object Read/Write（无 s3:ListBucket），故不依赖列举，
+#       改为「读取当前清单 → 取其 apkUrl → 删上一版包」+ 删遗留的固定名 app-release.apk。
+echo "清理旧安装包..."
+OLD_MANIFEST="$(node scripts/upload-r2.mjs --get "${REMOTE_PREFIX}/goodshare-update.json" 2>/dev/null || true)"
+if [ -n "$OLD_MANIFEST" ]; then
+  OLD_APK_URL="$(printf '%s' "$OLD_MANIFEST" | sed -nE 's/.*"apkUrl"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')"
+  if [ -n "$OLD_APK_URL" ]; then
+    OLD_KEY="${OLD_APK_URL#"$PUBLIC_BASE"/}"   # 去掉公开域前缀 → 对象 Key
+    if [ "$OLD_KEY" != "$REMOTE_APK_KEY" ]; then
+      echo "  删除上一版安装包: $OLD_KEY"
+      node scripts/upload-r2.mjs --delete "$OLD_KEY"
+    else
+      echo "  （清单指向的 apk 已是本次版本，跳过）"
+    fi
+  fi
+fi
+# 遗留的固定名安装包（旧脚本产物，已被带版本号的新包取代，删除以防缓存串包）
+LEGACY_KEY="${REMOTE_PREFIX}/app-release.apk"
+echo "  删除遗留包: $LEGACY_KEY"
+node scripts/upload-r2.mjs --delete "$LEGACY_KEY"
+
 # ---- 上传（零依赖 Node 脚本，AWS SigV4 直传 R2）----
-echo "上传 APK → s3://$R2_BUCKET/$REMOTE_PREFIX/app-release.apk"
-node scripts/upload-r2.mjs "$APK" "$REMOTE_PREFIX/app-release.apk" "application/vnd.android.package-archive"
+echo "上传 APK → s3://$R2_BUCKET/$REMOTE_APK_KEY"
+node scripts/upload-r2.mjs "$APK" "$REMOTE_APK_KEY" "application/vnd.android.package-archive"
 echo "上传清单 → s3://$R2_BUCKET/$REMOTE_PREFIX/goodshare-update.json"
 node scripts/upload-r2.mjs updates/goodshare-update.json "$REMOTE_PREFIX/goodshare-update.json" "application/json"
 

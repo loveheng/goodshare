@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-15
+updated: 2026-10-18
 ---
 
 # AI 宿主 App 拆分契约（M0 接缝）
@@ -9,6 +9,10 @@ updated: 2026-10-15
 > M1/M2 实施以此文为唯一接缝事实源；任何一边改动接缝须同轮修本文档。宿主 App 自身的产品设计（UI / agent / 共享区）不在本文范围——它独立成仓、自成 SSOT。
 
 **实施状态（2026-10-15 对账）**：M1（三接缝工具 + 占位守卫）✅ d34dda5；M2.5（Tier/prompts/resources/SSE 帧流）✅；M3（resources.subscribe + sampling 反向推理 + ai_suggest_tags）✅；**M2 减法（摘 LiteRT 引擎）✅ 2026-10-14 ad06133**——本文 §5/§6 由「计划」转为「已落地」描述。**宿主闭环 ✅（2026-10-15 用户确认）**：goodhub 侧 claim/touch/apply 远程 LLM 闭环跑通（`goodshare_task_api.dart` + `task_loop_service` + BYOK 云端/Binder 节点卡均在宿主仓归并），LLM 工具族结束「入队空转」。剩余 = 按宿主使用反馈补接缝（附件通道 FileProvider 延后件、长任务 progress 中途帧）。
+
+**即时摘要产品化（2026-10-17 拍板，instant-ai-sampling 一期）**：sampling 从「最小验证」转「产品化消费」——goodshare 侧设计稿 `docs/design/instant-ai-sampling.md`（D1 仅即时摘要 / D2 instant 配额池 60 次/60min / D3 maxTokens 维持 1024 / D4 采用/忽略确认卡落库）；接缝增量 = §3.11 消费工具扩族 + `pool` 分池字段。异管线（claim/apply）保留不动，宿主离线时长文详摘要仍走 `summarize_item`。
+
+**任务通知接缝（2026-10-18 新增 §3.12，Notify-then-Pull）**：修复「拉模型缺拉手」断链——goodshare 入队后广播一帧 `notifications/x-goodshare/task_queued`（oneway、尽力而为），宿主收到后**自主**触发 claim；通知只是加速器，**宿主挂载/重连时的 catch-up 补拉才是正确性地基**。不改 claim/apply 语义（§3.2/§3.4 零变更）。
 
 ## 1. 角色定位（拍板）
 
@@ -146,12 +150,56 @@ capabilities 声明：`'sampling': {}`；语义 = MCP 标准 `sampling/createMes
 | 项 | 契约 |
 |---|---|
 | 承载通道 | **请求作用域内夹带**：server 在带 `_meta.progressToken` 的 `tools/call` SSE 响应流内发请求帧 `{jsonrpc, id: 'srv_<n>', method: 'sampling/createMessage', params}`（id `srv_` 前缀防与客户端请求 id 相撞）；**单 JSON 响应（无 token）无承载通道**——sampling 消费工具在非流式调用下返回结构化 status 而非报错 |
-| 请求 params | MCP 标准：`{messages: [{role: 'user'/'assistant', content: {type: 'text', text}}], systemPrompt?, maxTokens}`——goodshare 最小消费工具 `ai_suggest_tags`（只读，读条目正文 → 反向请求 → 同步回建议标签，不落库不入队；落库走 `extract_tags` 异步管线） |
+| 请求 params | MCP 标准：`{messages: [{role: 'user'/'assistant', content: {type: 'text', text}}], systemPrompt?, maxTokens}`——goodshare 消费工具族：`ai_suggest_tags`（只读标签建议，M3 最小验证）+ `ai_summarize_now`（只读即时摘要预览，instant-ai-sampling 一期，2026-10-17）；均不落库不入队，落库由调用方经既有写路径完成。**`pool` 扩展字段**（Tier 1 私有约定，params 平级 String，缺省 = 默认池）：宿主据此分池记配额（见下行），Tier 2 server 不发 = 走默认池无感 |
 | 回程路径 | 宿主按 id **POST 回端点** `{jsonrpc, id: 'srv_<n>', result: {role: 'assistant', model, content: {type: 'text', text}}}` 或 `{..., error: {code, message, data?}}`；server 按 id 唤醒等待中的工具调用，超时（90s）视为宿主不可达 |
-| 配额（宿主侧 enforce，goodhub D3 拍板） | per-server **滑动窗口次数制**：20 次/60min，内存态不落盘（重启清零，定位防滥用非计费）+ 单次输出 maxTokens 宿主硬顶 clamp；超限宿主回 error `-32000`（data.hint 带 retry after）——server 侧透传，消费工具降级为 `status: sampling_quota_exceeded` |
+| 配额（宿主侧 enforce，goodhub D3 拍板；2026-10-17 分池扩展） | per-server **滑动窗口次数制**，按 `pool` 分池（配额 key = `serverKey` / `serverKey:pool`）：**默认池 20 次/60min**（防滥用定位）+ **instant 池 60 次/60min**（即时交互型工具，D2 拍板）；均内存态不落盘（重启清零，定位防滥用非计费）+ 单次输出 maxTokens 宿主硬顶 clamp（1024，D3 拍板维持）；超限宿主回 error `-32000`（data.hint 带 retry after）——server 侧透传，消费工具降级为 `status: sampling_quota_exceeded` |
 | 错误语义 | 宿主未启用 → `-32601`；参数违规 → `-32602`；配额 → `-32000`；宿主推理失败/回程超时 → `-32603`/`-32003`。**消费工具侧一律不 isError**（环境态不计宿主熔断，模型可改走异步管线） |
 | 隔离与围栏（宿主侧） | 临时会话语义（goodhub architecture §15）：推理仅用请求自带消息，无记忆沙盒注入、无 UI 轨迹；N7 出站围栏经云引擎装饰器单咽喉自然覆盖 |
 | 宿主 Polyfill | server 未声明 sampling → 宿主不强制流式、不开消费 handler（Tier 2 零破坏）；宿主未启用 handler → server 请求收到 `-32601`，不悬挂 |
+
+### 3.12 任务通知接缝 · Notify-then-Pull（2026-10-18 新增）
+
+> 背景：§3.2 是**拉模型**（goodshare 不推、宿主主动 claim）。宿主侧「拉手」（ClaimLoopPage）归档后无接管者 → 任务永久滞留 `pending`。本节加一条**极轻的入队通知**，把「下次启动才处理」压到毫秒级，但**不改变拉模型的权力结构**。
+
+#### 3.12.1 通知形状与投递
+
+| 项 | 契约 |
+|---|---|
+| 通知名 | `notifications/x-goodshare/task_queued`（Tier 1 私有扩展，与 `notifications/resources/updated` 同命名风格） |
+| params | 空或 `{count?: int}`——**仅提示「可能有任务」，不得作为任务数量依据** |
+| 承载通道 | Binder `IMcpCallback.onEvent`（oneway 单向回调，既有通道）；HTTP 走 GET SSE 订阅流（§3.10 同路） |
+| 触发时机 | 任务落库提交**之后**（先持久化 PENDING、后发通知——防「通知已发但事务未提交」的空拉） |
+| 投递语义 | **尽力而为（best-effort）**：oneway 无应答、无重试、可丢失、可重复、可乱序。server 不假设有宿主在听，不等结果 |
+
+#### 3.12.2 宿主侧消费纪律（goodhub 侧实现约束，契约保证两端对齐）
+
+1. **幂等自洽**：收到通知后必须自己 `claim_ai_task` 到 `idle` 为止，**不得按通知数量推断任务数**（N 帧通知 ≠ N 个任务，也不得只 claim 一次）
+2. **自主时机（§1 原则不破）**：宿主可暂缓/延后/批量消费——前台对话进行中、低电量、通道降级时可挂起，事后补拉。**goodshare 不得因「发了通知」就认为任务会被处理**：任务终态仍由 §3.4 apply 决定，UI 维持「等待宿主处理」语义不变
+3. **catch-up 是地基**：宿主**挂载/重连时必须主动 claim 到 idle 一次**——通知丢失（宿主未启动/进程被杀/通道瞬断）不导致任务永久滞留。通知只优化延迟，不承担正确性
+4. **单飞 + dirty**：消费循环单运行态互斥，执行期间到达的通知置 dirty 标记、本轮结束后补跑一轮（防并发 claim 重复认领）；**单轮上限达顶不等于队列空**——须继续下一轮
+5. **空拉终止**：`claim_ai_task` 返回 `idle` 即终止本轮（防空转自激）；`not_found` 是有效任务（按 §3.2 指引用 apply 回写 failed 收尾），**不算空拉**
+6. **毒丸防护（必做）**：推理失败须**主动** `apply_ai_result` 回写 failed 终态（带 note），不得留 `processing` 等 30s 僵尸回收——否则该任务被 `reclaimStaleTasks` 重置 `pending` 后反复认领 = 无限重试烧额度。**这是既有实现的缺口，随本接缝一并修**
+7. **生命周期解绑**：连接断开/卸载/重扫时清定时器并复位状态机；触发前确认通道在线（`ConnectionHealth` online）——严禁向已断 Binder 抛未捕获 IPC 异常
+8. **熔断**：单轮连续多次推理异常 → 暂停本轮后续处理，不无限重试
+
+#### 3.12.3 宿主不可达：呈现与一键唤醒（Actionable Pending，2026-10-18 形态 B）
+
+> 场景：宿主未启动 / 进程被杀 / 通知丢失 / 宿主启动中。此时通知必然投递失败，任务回落为「无人消费」——形态 B 给出可见、可操作的出口，把「死等」变成「一键闭环」。
+
+| 项 | 契约 |
+|---|---|
+| **任务状态** | DB **维持 `pending` 不变，不引入 WAITING_HOST 状态值**——理由：① §1「goodshare 不派活、不知道宿主存在」，服务端不记依赖宿主知识的态；② 避免 schema 迁移与 `claimRemoteTask`/占位守卫/`reclaimStaleTasks` 多处 SQL 兼容。**WAITING_HOST 是 UI 展示态，不是存储态** |
+| **呈现两级** | ① pending 即显示「等待处理」；② **持续 pending 超阈值（建议 10s）仍未被认领 → 升级为可操作徽标**「等待 Goodhub 启动」（灰底，替换无意义 spinner）。**判据用时间阈值而非通道探测**——一次覆盖「通知丢失 / 宿主启动中 / 宿主崩溃 / 通道瞬断」四类，服务端零状态可维护 |
+| **一键唤醒** | 徽标/详情页点击 → 弹窗 + 【启动 Goodhub】→ `packageManager.getLaunchIntentForPackage("com.zzh.goodhub")` + `FLAG_ACTIVITY_NEW_TASK` 直达；未安装 → 提示「未检测到 Goodhub 安装包」 |
+| **包可见性前置（必须补）** | Android 11+ 包可见性：现 `<queries>` 仅 `<intent>` 形式（PROCESS_TEXT / MCP_SERVER action），**缺 `<package android:name="com.zzh.goodhub"/>`** → `getLaunchIntentForPackage` 恒返回 null（已装也走兜底）。本接缝落地须同轮补该声明 |
+| **闭环** | 唤起 → goodhub 冷启动 → 本地插件发现 + Binder 挂载 → 触发 §3.12.2-3 的 **catch-up 冷启动自拉取** → 任务被认领处理。**宿主侧零新增**：catch-up 已覆盖，不需为「被唤起」写专门分支 |
+| **跨仓常量** | goodhub 包名 `com.zzh.goodhub`（与 Binder 发现、MCP_SERVER 权限同常量族）；若将来包名变更，两端同轮改 |
+
+#### 3.12.4 兼容与降级
+
+- **无通知能力 = 零影响**：不发通知 / 宿主不支持 → 退化为纯拉模型（catch-up 兜底），与本节之前行为完全一致
+- 与 sampling（§3.11）**通道共存**：两者共用 `onEvent`，靠「有无 id」路由（反向请求有 id+method，通知无 id）——`BinderTransport` 已实现该路由，零冲突
+- §3.2 / §3.3 / §3.4 语义**零变更**（claim/touch/apply 参数、返回、幂等、乐观锁全部不变）
 
 ## 4. 占位守卫（M2 验收第一条）
 
@@ -195,5 +243,8 @@ LLM 任务输入纯文本 → 接缝零附件。后续 ASR 等重任务远程化
 | **M1 PoC**（加法先行，goodshare 零破坏） | goodshare 加三工具（+测试组）；宿主 App 最小壳（MCP 连接 → claim → 推理 → apply） | 真机闭环：`llm_summarize` + `llm_tags` + `block_summarize` 各一条经宿主处理落库，`get_item` 可验证；goodshare 回归全量测试绿 + ML Kit / ASR 真机冒烟 |
 | **M2 剥离**（减法，M1 验证后） | §5 六条 + §6 搬迁 + 占位守卫 | §4 守卫钉子绿；APK 无 litertlm 构建绿；analyze 0 / 全量测试绿（LLM 测试组改写为降级钉子）；UI 双轨真机验证 |
 | **M3+ 宿主产品化**（独立仓，不占本 epic） | 聊天 / 决策卡片 / 多 server 连接池 / 云端 LLM / 共享区 | 宿主仓自管 |
+| **M4 消费闭环**（2026-10-18 新增，跨仓） | §3.12 任务通知接缝：goodshare 入队后广播 `task_queued`；goodhub 侧接管消费循环（catch-up + 单飞 dirty + 让路 + 空拉终止 + 毒丸 failed 收尾 + 生命周期解绑）；§3.12.3 形态 B：宿主不可达时呈现「等待 Goodhub 启动」徽标 + 一键 Intent 唤起（含 `<queries>` 补 `<package>` 声明） | ① goodshare 入队 → 数秒内宿主开始 claim（通知到达可观测）；② 宿主**未启动**时启动后 catch-up 补拉，任务不永久滞留；③ 批量入队 5+ 条：单飞不并发、全数消化；④ 毒丸任务：失败回写 failed 终态，不反复认领；⑤ 断开 Binder 后触发无未捕获 IPC 异常；⑥ 宿主未启动：徽标显示「等待 Goodhub 启动」+【启动 Goodhub】直达唤起 → 回 goodshare 见任务被消化（**须先补 queries package，否则 Android 11+ 恒走未安装兜底**） |
 
 > 顺序纪律：M1 加法先验证闭环，M2 减法才动——顺序不可反（摘了引擎无承接 = goodshare AI 功能裸奔）。
+>
+> M4 消费闭环的**落地顺序**：goodhub 侧消费循环（含 catch-up 与毒丸修复）**先行并独立可验收**——它不依赖通知即可工作（纯拉 + 挂载补拉）；goodshare 侧通知随后叠加，只优化延迟。若只发通知不修宿主消费循环，任务依旧不动（拉模型缺拉手的根因不因通知而消失）。

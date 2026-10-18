@@ -1,6 +1,6 @@
 /// 工作区（2026-09-30）：条目集合容器，与条目**多对多**。
 ///
-/// SSOT：docs/design/ui-spec.md §4.11（对应 mymind 的 Spaces）。
+/// SSOT：docs/project/ui-design.md §4.11（对应 mymind 的 Spaces）。
 ///
 /// 与「AI 分类标签（facets）」的区别（务必分清，否则两套会互相污染）：
 /// - 标签是 AI 产出的**属性**：扁平、用户不能创建、只能筛选

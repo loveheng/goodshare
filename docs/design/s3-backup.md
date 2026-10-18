@@ -161,4 +161,4 @@ sequenceDiagram
 | Vault 备份 | 待 V3 加密落盘后开放「保险箱条目加密进备份」 |
 | iOS 路径 | Android app 私有目录重装后路径稳定，`raw_file_path` 直接复用；iOS Documents 路径含随机 UUID，iOS 适配时需路径重写（Android 首发不阻塞） |
 | 多端同步 | 本设计单向（备份/恢复），双向 sync 引擎是 V3 独立 epic，S3 届时仅为可选传输后端 |
-| 对象存储 Server | **明确不做**（桌面精修走 MCP 工具族，见 docs/design/ui-spec.md §4.3 既有决策） |
+| 对象存储 Server | **明确不做**（桌面精修走 MCP 工具族，见 docs/project/ui-design.md §4.3 既有决策） |

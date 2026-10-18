@@ -1,11 +1,17 @@
 ---
 status: active
-updated: 2026-10-15
+updated: 2026-10-17
 ---
 
 # docs/ 结构索引
 
 > 工程文档纯结构索引（域 → 文档 → 一句话定位）。状态以各文档 frontmatter 为唯一事实源，此处不重复。
+
+## project（项目接入 / 工程事实）
+
+- [index.md](project/index.md) — 功能落点索引（数据）：领域 → 覆盖功能 → 代码/文档落点归属表、跨域隐式契约、业务别名映射；登记规约与维护协议 = 项目 skill `goodshare-index`。
+- [coding-standards.md](project/coding-standards.md) — 编码规则契约（结构立法 SSOT）：分层依赖矩阵（8 层 + 允许出向 + 禁止项）、R1–R7 机械护栏映射、新功能落点决策表、新顶层域三处同步纪律、质量门禁与白名单纪律；写路径行为规则 = 项目 skill `goodshare-arch`，立法原则 = engineering/ai-dev-spec.md。
+- [ui-design.md](project/ui-design.md) — UI 设计规范（视觉/交互/组件 SSOT，原 design/ui-spec.md 迁入）：M3 视觉系统（mymind 基准）、3 底 tab + 侧边栏导航、页面清单、设置树、组件库与双态呈现；落地纪律与自查清单 = 项目 skill `goodshare-ui`。
 
 ## product（产品 / 跨域需求）
 
@@ -24,7 +30,6 @@ updated: 2026-10-15
 
 ## design（UI 设计规范）
 
-- [ui-spec.md](design/ui-spec.md) — UI 设计规范：Material You/M3 视觉系统、3 底 tab（全部/工作区/设置）+ 侧边栏导航、页面清单、设置树、组件库与双态呈现；配套约束见项目 skill `goodshare-ui`。
 - [workspace.md](design/workspace.md) — 工作区管理闭环交互设计稿（active 2026-10-05）：删除守门与清空链路（删工作区≠删内容语义红线、列表层长按单删不做多选、非空守门 B 快捷删「保留内容并删除」、ackNonEmpty 仅 ui actor 的动作层同守门、重命名复用整页创建表单）；「移出本工作区」批量转正为独立候选。
 - [card-batch-selection.md](design/card-batch-selection.md) — 卡片长按批量选择模式方案蓝本（draft 未实现）：长按进选择模式 + 底部操作栏取代导航、四动作（置顶/工作区/保险箱/删除）声明式配置、置顶全链路（pinned_at + PinCommand + MCP set_pin）、四层抽象（词汇表/执行全共享，呈现分形态：列表选择栏/详情底栏/⋯面板）、整体落地切片。
 - [block-format-input.md](design/block-format-input.md) — 编辑态格式输入方案蓝本（draft 未实现）：键盘工具条「格式」按钮先选后打、块级标题/正文真所见即所得、行内加粗/斜体/下划线自研样式化编辑层（无 md 标记可见，不换编辑器）、`<u>` 语法扩展。
@@ -44,6 +49,7 @@ updated: 2026-10-15
 - [ai-capabilities-overview.md](design/ai-capabilities-overview.md) — AI 能力总览。
 - [ai-app-split.md](design/ai-app-split.md) — AI 宿主 App 拆分契约（M0 接缝 SSOT）：LLM 任务拆至独立宿主 App（master/交互式 MCP 客户端，非 worker）、3 个新增 MCP 工具（claim/touch/apply）、占位守卫、M2 剥离行为清单与验收标准。
 - [ai-template.md](design/ai-template.md) — 内容生产模板（AI 托管+人类消费）SSOT：body_md 双视图派生、ADR 管理权归 AI、P2 只追加回写（模板三列早退、human_md 零触碰）、ai_visible 授权断点口径（人类显式触发=一次性授权）、详情页呈现规约四条。
+- [instant-ai-sampling.md](design/instant-ai-sampling.md) — 即时 AI 摘要消费面产品化一期（active 2026-10-17）：详情页点按即取宿主 LLM 摘要预览、确认后一键落库；协议侧（sampling 反向推理）见 ai-app-split.md §3.11。
 - [goodhub-local-plugin.md](design/goodhub-local-plugin.md) — goodshare 改造为 goodhub 本地 Binder 插件评估稿（active 2026-10-13）：现状 HTTP MCP server vs 目标本地插件（零端口/系统发现/同签名权限/随调随起）对照、必须实现清单（对照 thirdconnect.md §1.2）、五个决策点与 PoC 范围。
 - [goodshare-goodhub-local-plugin-eval.md](design/goodshare-goodhub-local-plugin-eval.md) — PoC 阶段一评估报告（active 2026-10-13，goodhub 宿主侧视角）：对照 goodhub 契约 SSOT thirdconnect.md TC1~TC14 逐条核对 AIDL/manifest/Service/handleJsonRpc 合规性，及必须修的 bug 清单（交回 goodshare 侧）。
 - [block-artifact-workflow.md](design/block-artifact-workflow.md) — 块附件通道与工作流式三级能力页：行内媒体块 AI 能力（block_artifacts 派生表 schema v21、block_* 队列动作串、手动即授权门禁豁免）、WorkflowSpec 声明式能力编排（一步双产物/锚点切换/应用导出动词）、三级页工作流轨重设计（结构保留只换芯）。

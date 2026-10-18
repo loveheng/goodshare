@@ -43,7 +43,7 @@ updated: 2026-10-15
 
 ## 5. 详情页呈现规约（HCI 评估结论，2026-10-15）
 
-评估基线：mymind 视觉基准（ui-spec §2）、详情页 = 一篇文章而非仪表盘、chrome 极低、骑框签分区语言（`section_legend.dart` SSOT，禁止手写）。
+评估基线：mymind 视觉基准（ui-design §2）、详情页 = 一篇文章而非仪表盘、chrome 极低、骑框签分区语言（`section_legend.dart` SSOT，禁止手写）。
 
 | # | 规约 | 理由 |
 |---|---|---|

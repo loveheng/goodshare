@@ -67,7 +67,7 @@ class BlockCapabilityPage extends StatelessWidget {
     final standalone = standaloneFor(kind);
     return Scaffold(
       appBar: AppBar(
-        // 无返回箭头（ui-spec §3）：出口=系统手势/返回键
+        // 无返回箭头（ui-design §3）：出口=系统手势/返回键
         automaticallyImplyLeading: false,
         // 标题栏=块类型名（2026-10-05 拍板：不写「区块能力」通称）
         title: Text(blockKindLabel(kind)),

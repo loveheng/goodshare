@@ -58,4 +58,4 @@ InlineSpan 家族新增 SlotSpan(
 - **协议层**（已锁）：md-template-schema.md——V2 解析容忍度基线；
 - **渲染层**（本期设计）：SlotSpan 扩展复用规则层/块编辑器，新块类型走既有注册机制；
 - **执行层**（V4 主体）：agent 引擎（PRD §9 V4）消费 skill 库作为工作流配置——AI 既是 skill 的创造者又是使用者；
-- **数据层**：skill 沉淀的模板文件进备份、不进条目库；模板的「双视角」与 human_md/machine_json 双态、灵感区双消费者（ui-spec §4.3）同构——一份派生物，多端消费。
+- **数据层**：skill 沉淀的模板文件进备份、不进条目库；模板的「双视角」与 human_md/machine_json 双态、灵感区双消费者（ui-design §4.3）同构——一份派生物，多端消费。

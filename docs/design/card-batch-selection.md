@@ -121,7 +121,7 @@ BatchAction(
 
 ## 7. 关联文档与待办
 
-- 交互规范基线：`docs/design/ui-spec.md`（本功能落地后其组件库节需补选批量选择模式条目）。
+- 交互规范基线：`docs/project/ui-design.md`（本功能落地后其组件库节需补选批量选择模式条目）。
 - 待办台账：`context/todos.md` goodshare 节（回收站批量接入条目）。
 
 ## 8. 未实现项清单（转 active 的验收对照）

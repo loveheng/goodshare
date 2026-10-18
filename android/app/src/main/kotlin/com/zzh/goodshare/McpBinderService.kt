@@ -96,6 +96,9 @@ class McpBinderService : Service() {
 
         override fun registerCallback(cb: IMcpCallback?) {
             callback = cb
+            // Register 到进程内汇集点：供 UI 主 isolate 的通知桥转发（§3.12）。
+            // 注销（传 null）同步摘钩——goodhub 主动解绑后不再给它推帧。
+            McpCallbackHub.attach(cb)
             // 通知 Dart 侧回调通道已建立（异步事件 / 反向请求可用，#4/#5 批次接）。
             // invokeMethod 须引擎主线程执行。
             mainHandler.post { runCatching { channel?.invokeMethod("hostCallbackReady", cb != null) } }
@@ -171,6 +174,7 @@ class McpBinderService : Service() {
         flutterEngine = null
         channel = null
         callback = null
+        McpCallbackHub.attach(null) // 服务销毁：桥出口一并注销
     }
 
     companion object {

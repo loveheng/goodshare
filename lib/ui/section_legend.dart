@@ -1,4 +1,4 @@
-/// 签名式分区卡（mymind 形态，SSOT ui-spec §2.2/§2.3）。
+/// 签名式分区卡（mymind 形态，SSOT ui-design §2.2/§2.3）。
 ///
 /// 「legend 骑框」：小签嵌在描边框顶边上（背景色切断边框），右侧一段延长线——
 /// 与 mymind 详情页 TLDR / MIND TAGS 分区同构。详情页正文类分区

@@ -22,7 +22,7 @@ import '../ui/tokens.dart';
 import 'item_detail_page.dart';
 import 'workspace_create_page.dart';
 
-/// 工作区（ui-spec §4.11）：条目集合容器，多对多。
+/// 工作区（ui-design §4.11）：条目集合容器，多对多。
 ///
 /// 两层（2026-09-30 D2 用户拍板「卡片化」）：
 /// ①工作区列表 = 卡片网格（mymind Spaces 形态：卡 = 工作区，封面拼贴
@@ -265,7 +265,7 @@ class _WorkspacePageState extends State<WorkspacePage> with RepoAutoReload {
 
   @override
   Widget build(BuildContext context) {
-    // 进入某工作区后手势返回=退回工作区列表（ui-spec §3）；列表层级交还系统
+    // 进入某工作区后手势返回=退回工作区列表（ui-design §3）；列表层级交还系统
     return PopScope(
       // 返回手势分层退出：选择模式 > 工作区内页 > 工作区列表（§2.1 模式出口优先）。
       canPop: _selected == null && !_selection.active,

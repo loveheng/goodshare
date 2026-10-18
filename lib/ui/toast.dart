@@ -21,7 +21,7 @@ import 'tokens.dart';
 ///   结构下不依赖子页 context），消失时 `Timer.cancel` + `entry.remove`
 ///   双保；宿主组件自持 controller，remove 前 unmount 不触发 setState。
 ///
-/// 触感（ui-spec §6.0 对号）：error 必配 mediumImpact；success/info 默认
+/// 触感（ui-design §6.0 对号）：error 必配 mediumImpact；success/info 默认
 /// 静音（操作本身已有轻反馈，避免双重震动），调用点可显式开。
 
 enum ToastKind { success, info, error }

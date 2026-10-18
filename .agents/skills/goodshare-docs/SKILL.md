@@ -1,36 +1,56 @@
 ---
 name: goodshare-docs
-description: 拾贝 goodshare 的文档体系归属索引——只登记三项项目数据：docs/ 域目录表、本仓 docs-lint 脚本路径、存量与 docs-spec 的例外。规范机制一律指针到全局 docs-spec，严禁复制正文。改/增/移动/废弃文档前先查本表与 docs/README.md。
+description: goodshare 的文档体系项目数据登记处：docs/ 域目录表、docs-lint 触发命令、存量例外与 AI 落笔自检三问。规范机制一律指针到全局 docs-spec，严禁复制正文。新增、修改、移动或废弃文档前先读本表与 docs/README.md。
 ---
 
 # goodshare 文档体系
 
-本 skill 是 `docs/` 的**项目数据**登记处（域目录表 / lint 脚本路径 / 例外），不是规范机制。
+本 skill 是 `docs/` 的**项目数据**登记处（域目录表 / lint 命令 / 例外），不是规范机制。
 规范机制（frontmatter 四字段、根目录平铺、updated 软自查、三层索引、墓碑与引用修复）一律指针到全局 skill **`docs-spec` §1–§7**，本文件不复制其正文（防双源漂移）。
 
 ## 1. 域目录表（以存量结构为准，不臆造新域）
 
-`docs/` 现状域（与 `docs/README.md` 结构索引同源，后者为唯一事实源）：
+`docs/` 现状域（与 `docs/README.md` 结构索引同源，后者为唯一事实源；本表禁记文档数/文件清单等易腐数据）：
 
-| 域 | 路径 | 内容定位 | 文档数 |
-|---|---|---|---|
-| product（产品/跨域需求） | `docs/product/` | 全局 PRD、V2 收敛需求 | 2 |
-| architecture（架构） | `docs/architecture/` | 分层总览、Human-AI 对称性（无头架构） | 2 |
-| guide（接入指南） | `docs/guide/` | MCP 接入、自更新手册 | 2 |
-| design（UI 设计规范） | `docs/design/` | 全部 UI/交互/媒体/AI 能力设计稿（多为 draft） | 39 |
-| engineering（工程规范） | `docs/engineering/` | AI 协作开发双操作者约束 | 1 |
+| 域 | 路径 | 内容定位 |
+|---|---|---|
+| project（项目接入/工程事实） | `docs/project/` | 功能落点索引（数据）+ 编码规则契约（coding-standards）+ UI 规范 SSOT（ui-design）；索引规约 = `goodshare-index` skill |
+| product（产品/跨域需求） | `docs/product/` | 全局 PRD、V2 收敛需求 |
+| architecture（架构） | `docs/architecture/` | 分层总览、Human-AI 对称性（无头架构） |
+| guide（接入指南） | `docs/guide/` | MCP 接入、自更新手册 |
+| design（UI 设计规范） | `docs/design/` | 全部 UI/交互/媒体/AI 能力设计稿（多为 draft） |
+| engineering（工程规范） | `docs/engineering/` | AI 协作开发双操作者约束 |
 
-## 2. 本仓 lint 脚本路径
+## 2. 机械校验与快速自测
 
-- 机械校验：`scripts/agent-tools/docs-lint.sh`（项目 toolbox 工具 `docs-lint`，pre-commit 门禁）
-- 校验项：frontmatter `status`/`updated` 四项、根目录平铺、README 双向覆盖（链接存在性 + 孤儿检测）。细则见 `docs-spec §6`。
+修改任何 `docs/` 内容后，提交前单行触发：
 
-## 3. 本仓例外（存量与 docs-spec 的冲突；不静默改写存量）
+```sh
+toolbox run docs-lint   # 别名 dl；pre-commit-gate 对 docs/ 改动自动分派
+```
+
+- 脚本本体：`scripts/agent-tools/docs-lint.sh`（无 toolbox 直跑它）。
+- 校验项：frontmatter `status`/`updated` 四项、根目录平铺、README 双向覆盖（链接存在性 + 孤儿检测）。细则 = `docs-spec §6`。
+
+## 3. 操作纪律（正文机制指针 docs-spec，此处只列本项目动作）
+
+- **新建**：frontmatter（`status` + `updated`）+ 同轮在 `docs/README.md` 加条目——**仅此一处**，不动本 skill、不动 `docs/project/index.md`（索引只登记「功能归属」，纯文档新增不回改）。
+- **移动/重命名**：按 `docs-spec §5` 同步 README 索引并**全仓 grep 精确文件名修引用**（含各 skill 与代码注释）；若该文档是 index.md 归属表的文档落点，同轮修正。
+- **废弃**：按 `docs-spec §4` 墓碑协议（翻 `status: deprecated` + 墓碑行），禁静默删除；被取代时在取代者处留一行指针（如 note-format-guidance-layer.md 取代 quick-note-format-dial.md 的先例）。
+- **域级变迁（新增域/拆分/合并/整体迁移）**：按 `docs-spec §2` 三处同步——`docs/README.md` + `docs/project/index.md` + 本 skill 域目录表。逐篇文档操作**不触发**本条。
+
+## 4. 写后自检（AI 落笔三问，任一命中即删/移；判据正文 = `docs-spec §7` 反模式）
+
+1. 这句是**现行事实**，还是**关于事实的历史**（何时新增/迁入/谁拍板）？——历史移交 devlog/memory，正文删。
+2. 是否写了「原没有 X」「此前缺失」「暂无 + 解释正常流程」类自证句？——删，只留结论。
+3. 是否在复述另一事实源（文档数/文件清单/状态列）？——删，留指针指向唯一事实源（README / frontmatter / index）。
+
+## 5. 本仓例外（存量与 docs-spec 的冲突；不静默改写存量）
 
 - `docs/architecture/overview.md`、`docs/guide/self-update.md`：使用非标准 `> status:` **块引用** frontmatter，而非标准 YAML `status:` 字段。已记入 `docs/README.md` 待归一，迁移按 `docs-spec §4/§5` 墓碑与引用修复纪律执行，不属默认动作。
 - `docs/design/` 大量文档 `status: draft`（未拍板设计稿）：属产品既定状态，lint 不报错；落地实现前不得视 draft 为事实源（口径见各稿头部「待拍板」声明）。
 
 ## 维护协议
 
-- 域表禁止一次性铺满（project-index「表格式规范」「维护协议」）；新增域/大文档时同步更新 `docs/README.md` 与 `goodshare-index` 的「文档落点」列（三处同步）。
+- 域目录表只随**域级变迁**更新（`docs-spec §2`），逐篇文档增删不回改本 skill；表内禁记文档数、文件清单等易腐数据，禁写过程叙事（何时新增/迁入/「原没有 X」）——见 `docs-spec §7` 反模式。
 - 规范机制变更不回改本 skill；全局 docs-spec 升级时本文件无需改（指针即同步）。

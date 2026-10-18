@@ -39,6 +39,7 @@ import 'service/mcp_controller.dart';
 import 'share/attachments.dart';
 import 'share/share_intake.dart';
 import 'share/text_collector.dart';
+import 'service/mcp_bridge_channel.dart';
 import 'sync/backup_service.dart';
 import 'update/remote_config_store.dart';
 
@@ -90,6 +91,16 @@ Future<void> main() async {
   await mcp.load();
   // 冷启动自动恢复 MCP 服务（上次开启过则重新拉起，含 WifiLock 修复）
   await mcp.restoreIfNeeded();
+  // §3.12 UI 主 isolate 的任务入队通知出口（fan-out）：真正的任务入口
+  //（ItemActionHandler 各命令）都在这个 isolate，而 goodhub 的 `IMcpCallback` 只注册
+  // 在 Binder 后台 isolate——两个 FlutterEngine 之间无共享 Dart 内存，但同处一个
+  // Android 进程，故经原生信号跳板单向转发；HTTP MCP server 在线时顺势向桌面 SSE
+  // 广播同一帧。单 hook 在此集中 fan-out，避免两承载互相覆盖；任一缺席即静默 no-op
+  //（best-effort，正确性仍由宿主 catch-up 兜底，§3.12.4）。
+  repo.onTaskQueued = () {
+    McpBridgeChannel().notifyTaskQueuedOnly(); // goodhub（Binder-only，真机主路径）
+    mcp.notifyTaskQueued(); // 桌面 SSE 调试回退
+  };
   await RemoteConfigStore.instance.load();
   // S3 备份（2026-09-29）：独立状态机，不进 ai_task_queue；配置加载后设置页即可用
   final backup = BackupService(repo);
@@ -167,7 +178,7 @@ Future<void> main() async {
   );
 }
 
-/// mymind 视觉基准主题（ui-spec §2.1，2026-09-30 拍板）。
+/// mymind 视觉基准主题（ui-design §2.1，2026-09-30 拍板）。
 ///
 /// 恒定暗色 + 三阶色阶分层（底/卡/浮）+ 单一橘红强调色。dynamic_color /
 /// 明暗跟随已废弃，亮色模式不做。ColorScheme.dark 全量 override，M3 seed
@@ -184,7 +195,7 @@ ThemeData _mymindTheme() {
     surfaceContainer: Color(0xFF1C1F27),
     surfaceContainerHigh: Color(0xFF242833),
     surfaceContainerHighest: Color(0xFF2A2F3B),
-    // 单一强调色：橘红仅用于动作与选中（ui-spec §2.1）。
+    // 单一强调色：橘红仅用于动作与选中（ui-design §2.1）。
     primary: Color(0xFFFF5A1E),
     onPrimary: Color(0xFFFFFFFF),
     primaryContainer: Color(0xFF3D1D0E),
@@ -312,7 +323,7 @@ ThemeData _mymindTheme() {
         ),
       ),
     ),
-    // Chip 家族（ui-spec §2.3，2026-10-01 全系统去胶囊）：深色无边框、
+    // Chip 家族（ui-design §2.3，2026-10-01 全系统去胶囊）：深色无边框、
     // 大圆角矩形 md12、选中即橘红填充——Stadium 胶囊全面退役。
     chipTheme: ChipThemeData(
       backgroundColor: scheme.surfaceContainerHigh,
@@ -374,7 +385,7 @@ class GoodShareApp extends StatelessWidget {
           child: PrivacyBlurOverlay(child: child!),
         );
       },
-      // 恒定暗色：不跟随系统（ui-spec §2.1 拍板）。
+      // 恒定暗色：不跟随系统（ui-design §2.1 拍板）。
       darkTheme: _mymindTheme(),
       themeMode: ThemeMode.dark,
       home: HomeShell(

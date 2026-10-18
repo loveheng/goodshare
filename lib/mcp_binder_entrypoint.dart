@@ -32,6 +32,10 @@ void mcpBinderMain() {
     repo: repo,
     tokenProvider: () => null, // Binder 同签名零鉴权
   );
+  // §3.12 Notify-then-Pull 接线：本 isolate 的任务入队 → 广播 task_queued 给宿主。
+  // 注意各 isolate 持有**各自一套** Repository：UI 主 isolate 的入队不经过这里，
+  // 两侧通知各自覆盖自己 isolate 内的写入口（AppData 生命周期见 http server 侧）。
+  repo.onTaskQueued = server.notifyTaskQueued;
 
   final channel = MethodChannel(_kChannel);
   // Binder 插件→宿主事件发射器（#4/#5）：Dart 侧经原生 `pushEvent` 通道转

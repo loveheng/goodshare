@@ -566,4 +566,185 @@ void main() {
     env.client.close();
     await env.server.stop();
   });
+
+  test('instant：ai_summarize_now 流内反向请求 → 宿主回程 → 同步回摘要 + version', () async {
+    final env = await spinUp();
+    final added = await env.server.repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      sourceType: InboxItem.typeNote,
+      rawContent: '今天在深圳湾跑步十公里，配速五分半，感觉状态不错',
+      collectMode: InboxItem.modeScatter,
+      aiVisible: true,
+      createdAt: 1,
+    ));
+
+    final req = await env.client.postUrl(Uri.parse('${env.base}/mcp'));
+    req.headers.contentType = ContentType.json;
+    req.write(jsonEncode({
+      'jsonrpc': '2.0',
+      'id': 100,
+      'method': 'tools/call',
+      'params': {
+        'name': 'ai_summarize_now',
+        'arguments': {'id': added.id},
+        '_meta': {'progressToken': 1},
+      },
+    }));
+    final res = await req.close();
+    expect(res.headers.contentType?.mimeType, 'text/event-stream',
+        reason: 'sampling 依赖流式通道，progressToken 触发 SSE');
+    final it = StreamIterator(
+        res.transform(utf8.decoder).transform(const LineSplitter()));
+
+    final start = await nextFrame(it);
+    expect(start?['method'], 'notifications/progress', reason: '起始 progress 帧');
+
+    final mid = await nextFrame(it);
+    expect(mid?['method'], 'notifications/progress', reason: 'M3-T2：sampling 前的中途帧（真实进度点）');
+    expect(((mid?['params'] as Map)['message'] as String), contains('宿主推理'));
+
+    final ask = await nextFrame(it);
+    expect(ask?['method'], 'sampling/createMessage', reason: '反向请求帧夹带在响应流内');
+    final askId = ask?['id'];
+    expect((askId as String).startsWith('srv_'), isTrue, reason: 'srv_ 前缀防与客户端请求 id 相撞');
+    final askParams = ask?['params'] as Map;
+    final askText = (((askParams['messages'] as List).first as Map)['content'] as Map)['text'] as String;
+    expect(askText, contains('深圳湾'), reason: '载荷须含条目正文');
+
+    final ack = await rawPost(env.client, env.base, {
+      'jsonrpc': '2.0',
+      'id': askId,
+      'result': {
+        'role': 'assistant',
+        'model': 'test-host',
+        'content': {'type': 'text', 'text': '今天在深圳湾完成十公里跑步，配速约五分半，状态良好。'},
+      },
+    });
+    expect(ack.body, isNull, reason: '回程响应 202 无 body');
+
+    final finalFrame = await nextFrame(it);
+    expect(finalFrame?['id'], 100, reason: '终帧 tools/call result');
+    final content = ((finalFrame?['result'] as Map)['content'] as List).first as Map;
+    final payload = jsonDecode(content['text'] as String) as Map<String, Object?>;
+    expect(payload['status'], 'ok');
+    expect(payload['item_id'], added.id);
+    expect(payload['summary_md'], contains('深圳湾'));
+    expect(payload['version'], added.version, reason: '读取时乐观锁版本随预览回传');
+    it.cancel();
+    env.client.close();
+    await env.server.stop();
+  });
+
+  test('instant：非流式调用返回 sampling_unavailable（结构化 status 不 isError）', () async {
+    final env = await spinUp();
+    final added = await env.server.repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      sourceType: InboxItem.typeNote,
+      rawContent: '非流式路径的条目',
+      collectMode: InboxItem.modeScatter,
+      aiVisible: true,
+      createdAt: 1,
+    ));
+    final r = await rpc(env.client, env.base, 1, 'tools/call',
+        {'name': 'ai_summarize_now', 'arguments': {'id': added.id}});
+    expect(errorOf(r.body), isEmpty);
+    final content = (resultOf(r.body)['content'] as List).first as Map;
+    final payload = jsonDecode(content['text'] as String) as Map<String, Object?>;
+    expect(payload['status'], 'sampling_unavailable');
+    expect(resultOf(r.body)['isError'], isNot(true));
+    env.client.close();
+    await env.server.stop();
+  });
+
+  test('instant：空正文返回 no_content（不发射采样）', () async {
+    final env = await spinUp();
+    final added = await env.server.repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      sourceType: InboxItem.typeNote,
+      rawContent: '', // 无正文
+      collectMode: InboxItem.modeScatter,
+      aiVisible: true,
+      createdAt: 1,
+    ));
+    final r = await rpc(env.client, env.base, 1, 'tools/call',
+        {'name': 'ai_summarize_now', 'arguments': {'id': added.id}});
+    final content = (resultOf(r.body)['content'] as List).first as Map;
+    final payload = jsonDecode(content['text'] as String) as Map<String, Object?>;
+    expect(payload['status'], 'no_content');
+    env.client.close();
+    await env.server.stop();
+  });
+
+  test('instant：只读不变——调用前后 get_item 的 summary 字段保持稳定为空', () async {
+    final env = await spinUp();
+    final added = await env.server.repo.add(InboxItem(
+      itemType: InboxItem.typeNote,
+      sourceType: InboxItem.typeNote,
+      rawContent: '即时摘要只读不落库的正文内容',
+      collectMode: InboxItem.modeScatter,
+      aiVisible: true,
+      createdAt: 1,
+    ));
+    String? summaryBefore() => added.summaryMd;
+    expect(summaryBefore(), isNull, reason: '初始无摘要');
+
+    final req = await env.client.postUrl(Uri.parse('${env.base}/mcp'));
+    req.headers.contentType = ContentType.json;
+    req.write(jsonEncode({
+      'jsonrpc': '2.0',
+      'id': 100,
+      'method': 'tools/call',
+      'params': {
+        'name': 'ai_summarize_now',
+        'arguments': {'id': added.id},
+        '_meta': {'progressToken': 1},
+      },
+    }));
+    final res = await req.close();
+    final it = StreamIterator(
+        res.transform(utf8.decoder).transform(const LineSplitter()));
+    await nextFrame(it); // progress
+    await nextFrame(it); // progress (M3-T2 中途帧)
+    final ask = await nextFrame(it);
+    final askId = ask?['id'];
+    await rawPost(env.client, env.base, {
+      'jsonrpc': '2.0',
+      'id': askId,
+      'result': {
+        'role': 'assistant',
+        'model': 'test-host',
+        'content': {'type': 'text', 'text': '一段摘要'},
+      },
+    });
+    final finalFrame = await nextFrame(it);
+    final content = ((finalFrame?['result'] as Map)['content'] as List).first as Map;
+    final payload = jsonDecode(content['text'] as String) as Map<String, Object?>;
+    expect(payload['status'], 'ok', reason: '即时预览成功返回');
+
+    final fresh = await env.server.repo.byId(added.id!);
+    expect(fresh?.summaryMd, isNull, reason: '工具只读，摘要不落库');
+    it.cancel();
+    env.client.close();
+    await env.server.stop();
+  });
+
+  test('§3.12 task_queued 帧形：Binder onEvent 发出，无 id、params 为空', () async {
+    final env = await spinUp();
+    final frames = <String>[];
+    env.server.onEventEmitter = frames.add;
+
+    env.server.notifyTaskQueued();
+
+    expect(frames.length, 1, reason: 'Binder 在线则走 IMcpCallback.onEvent');
+    final frame = jsonDecode(frames.single) as Map<String, Object?>;
+    expect(frame['jsonrpc'], '2.0');
+    expect(frame['method'], 'notifications/x-goodshare/task_queued');
+    expect(frame.containsKey('id'), isFalse,
+        reason: '带 id 会被 goodhub BinderTransport 按「含 id」路由成反向请求响应（§1.2.2）');
+    expect(frame['params'], isEmpty,
+        reason: 'params 恒空：仅提示「可能有任务」，宿主不得据帧数推断任务数（§3.12.1）');
+
+    env.client.close();
+    await env.server.stop();
+  });
 }

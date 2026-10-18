@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+
 import '../data/repository.dart';
 import 'jsonrpc.dart';
 import 'prompts_resources.dart';
@@ -17,6 +19,18 @@ import 'tools.dart';
 /// 承载 server 主动帧（notifications/resources/updated 订阅推送）；② sampling
 /// 反向请求——请求帧夹带在带 progressToken 的 tools/call 响应流内（id 前缀
 /// srv_），宿主按 id POST 回响应；两能力均可协商，Tier 2 客户端不受影响。
+/// §3.12.1 `task_queued` 通知帧正文（**唯一定义处**）：Binder 侧 [McpServer.notifyTaskQueued]、
+/// 通知桥 `McpBridgeChannel`、SSE 下行三者同帧；形状由 `mcp_server_test` 钉死。
+///
+/// **无 id**（易错点）：goodhub BinderTransport 按「是否含 method/id」路由——带 id
+/// 会被判成反向请求响应而非通知（§1.2.2）。params 恒空：仅提示「可能有任务」，宿主
+/// 不得据帧数推断任务数（§3.12.1 / §3.12.2-1）。
+const Map<String, Object?> kTaskQueuedFrame = <String, Object?>{
+  'jsonrpc': '2.0',
+  'method': 'notifications/x-goodshare/task_queued',
+  'params': <String, Object?>{},
+};
+
 class McpServer {
   McpServer({required this.repo, required this.tokenProvider, this.instructionsProvider});
 
@@ -302,9 +316,33 @@ class McpServer {
   /// Binder 专属：插件→宿主事件发射（#4/#5）。仅 [onEventEmitter] 非空（Binder 后台引擎接入）时有效。
   void _emitOnEvent(String payload) => onEventEmitter?.call(payload);
 
+  /// §3.12 任务通知接缝：任务入队（且已提交）后向宿主广播一帧 `task_queued`，
+  /// 宿主收到后**自主** `claim_ai_task` 到 idle（Notify-then-Pull）。
+  ///
+  /// **帧必须无 id**（易错点）：goodhub BinderTransport 按「是否含 method/id」路由
+  /// ——同 *_async* 终帧相反，**带 id 会被判成反向请求响应而非通知**（§1.2.2）。
+  /// params 恒空：仅提示「可能有任务」，不是任务数量（§3.12.1 明令不得据此计数）。
+  ///
+  /// 承载通道：Binder 走 [onEventEmitter]（oneway `IMcpCallback.onEvent`），HTTP 走
+  /// SSE 下行流（§3.10 同路 [subscriptions.broadcast]）；两者都缺席时静默丢弃——
+  /// 通知是 best-effort，任务最终是否被处理仍由宿主 catch-up 兜底（§3.12.4）。
+  void notifyTaskQueued() {
+    final frame = kTaskQueuedFrame;
+    try {
+      _emitOnEvent(jsonEncode(frame));
+    } catch (e) {
+      debugPrint('[DEGRADE] task_queued_binder_failed error=$e');
+    }
+    try {
+      subscriptions.broadcast(frame);
+    } catch (e) {
+      debugPrint('[DEGRADE] task_queued_sse_failed error=$e');
+    }
+  }
+
   /// Binder 长任务清单（#4）：预计超 Binder 调用预算（§1.2.3 <5s）的工具必须登记于此，
   /// 走 `_async` + onEvent 终帧，避免 `call` 同步阻塞触发 ANR。新增超预算工具须登记。
-  static const Set<String> _kBinderAsyncTools = {'ai_suggest_tags'};
+  static const Set<String> _kBinderAsyncTools = {'ai_suggest_tags', 'ai_summarize_now'};
 
   /// 丢弃后台 Future（避免 unawaited 告警），用于 `_async` 工具的非阻塞派发。
   static void _fireAndForget(Future<void> future) {}

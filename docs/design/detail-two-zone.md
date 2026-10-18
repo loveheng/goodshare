@@ -5,7 +5,7 @@ updated: 2026-10-01
 
 # 详情页两区改版与区块能力平台设计
 
-> SSOT 声明：本文档是「详情页两区改版 + 区块能力分发 + 能力卡 + 分享分流」的**设计拍板与架构 SSOT**；页面层视觉口径见 [ui-spec.md](ui-spec.md) §4.3，富文本渲染见 [rich-text-component.md](rich-text-component.md)，行内媒体见 [rich-text-media.md](rich-text-media.md)。冲突时本文档对**能力架构**部分优先。
+> SSOT 声明：本文档是「详情页两区改版 + 区块能力分发 + 能力卡 + 分享分流」的**设计拍板与架构 SSOT**；页面层视觉口径见 [ui-design.md](ui-design.md) §4.3，富文本渲染见 [rich-text-component.md](rich-text-component.md)，行内媒体见 [rich-text-media.md](rich-text-media.md)。冲突时本文档对**能力架构**部分优先。
 
 ## 1. 背景与问题
 

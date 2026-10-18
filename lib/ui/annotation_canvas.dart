@@ -306,7 +306,7 @@ class _AnnotationCanvasState extends State<AnnotationCanvas> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
-        // 手势返回兜底（ui-spec §3）：生成/拖拽中不退页——笔画起于屏幕边缘
+        // 手势返回兜底（ui-design §3）：生成/拖拽中不退页——笔画起于屏幕边缘
         // 手势带时被系统掐断（ACTION_CANCEL→_onPointerCancel），随后的返回
         // 事件在此被解释为「取消生成模式」而非退出标注；拖拽中则静默吞掉。
         return PopScope(

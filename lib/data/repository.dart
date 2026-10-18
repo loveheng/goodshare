@@ -67,6 +67,32 @@ class Repository extends ChangeNotifier {
     }
   }
 
+  /// §3.12 任务入队通知沉降点（Notify-then-Pull）：任务行**提交之后**回调一次，
+  /// 宿主收到后**自主**触发 claim——通知只是延迟加速器，不承担正确性。
+  ///
+  /// 语义边界（红线）：① 仅表示「可能有任务可拉」，**不携带任务数量**——宿主不得
+  /// 按帧数推断任务数、也不得只 claim 一次（§3.12.1/§3.12.2-1）；② best-effort
+  /// oneway，可丢失可重复，goodshare 不得假设「发了通知 = 任务会被处理」，任务
+  /// 终态仍由 apply 决定；③ 由 app 层接线到具体承载通道（Binder `IMcpCallback.onEvent`
+  /// / HTTP SSE 下行），无人接线即静默退化（§3.12.4「无通知能力 = 零影响」）。
+  void Function()? onTaskQueued;
+
+  /// 事务内入队缓冲（与 [_txnTouched] 同节奏）：先持久化 PENDING、提交后才发通知
+  /// ——防「通知已发但事务未提交」时宿主拉开空（§3.12.1 触发时机）。
+  bool _txnEnqueued = false;
+
+  void _emitTaskQueued() {
+    final cb = onTaskQueued;
+    if (cb == null) return;
+    try {
+      cb();
+    } catch (e) {
+      // 宿主缺席 / 通道瞬断在此消化，绝不回灌入队路径：入队已提交成功，任务仍在
+      // 队中等被拉，降级语义与 §3.12.4 一致。
+      debugPrint('[DEGRADE] task_queued_notify_failed error=$e');
+    }
+  }
+
   /// **写路径串行锁（FIFO）**：把「读 → 校验 → 写」复合操作压平成一列。
   ///
   /// 为什么需要：sqflite 只保证**单条 SQL** 的原子性，保证不了动作层
@@ -103,6 +129,11 @@ class Repository extends ChangeNotifier {
         _itemChanges.add(id);
       }
       _txnTouched.clear();
+    }
+    // §3.12.1：事务已提交 → PENDING 行此刻对外可见，才允许通知宿主来拉。
+    if (_txnEnqueued) {
+      _txnEnqueued = false;
+      _emitTaskQueued();
     }
     notifyListeners();
     return result;
@@ -549,7 +580,7 @@ class Repository extends ChangeNotifier {
   // ───────── 工作区（2026-09-30：条目集合容器，多对多） ─────────
   //
   // 与「AI 分类标签（facets）」的区别：标签是 AI 产出的属性（扁平、只可筛选），
-  // 工作区是容器（用户可创建 / 命名 / 增删条目）。见 ui-spec §4.11。
+  // 工作区是容器（用户可创建 / 命名 / 增删条目）。见 ui-design §4.11。
 
   Future<Workspace> createWorkspace(String name) async {
     final db = await _database();
@@ -898,6 +929,13 @@ class Repository extends ChangeNotifier {
       'status': 'pending',
       'updated_at': DateTime.now().millisecondsSinceEpoch,
     });
+    // §3.12.1：无事务 = 本条 insert 自成原子提交，可立即通知；事务内 = 缓冲到
+    // [transaction] 提交后再发（否则 PENDING 行对外不可见，宿主会拉开空）。
+    if (txn == null) {
+      _emitTaskQueued();
+    } else {
+      _txnEnqueued = true;
+    }
     return taskId;
   }
 

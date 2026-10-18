@@ -1,8 +1,8 @@
 {
-  "versionCode": 8067,
-  "versionName": "1.3.0",
+  "versionCode": 8069,
+  "versionName": "1.3.1",
   "applicationId": "com.zzh.goodshare",
-  "apkUrl": "https://r2.oklhj.eu.org/updates/goodshare/app-release.apk",
-  "sha256": "e82d3178ec1b7447d7fc1bc58b3cf79d73d24cd4d28953b34b8a300f1a8bc36b",
-  "changelog": "feat(rich-text): 接入 package:rich_text + 数学公式 LaTeX 渲染闭环"
+  "apkUrl": "https://r2.oklhj.eu.org/updates/goodshare/goodshare-v1.3.1.apk",
+  "sha256": "0362f0edce5f799ac96d5cdc07ab64338f6de828c4c4653a89c0f06edf10f053",
+  "changelog": "docs: 全链路需求对账——文档对齐代码现状为唯一事实源"
 }

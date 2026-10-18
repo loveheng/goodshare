@@ -1,11 +1,11 @@
 ---
 status: active
-updated: 2026-09-28
+updated: 2026-10-17
 ---
 
 # AI 协作开发规范（engineering/）
 
-> 定位：约束**人 + AI 双操作者**的工程规范。以通用前端团队规范为底本改造——立法原则从「人类读散文、靠自觉」换成「机器读断言、靠工具执行」。架构与写路径的完整论证见 [human-ai-parity.md](../architecture/human-ai-parity.md)（SSOT），本文不重复其论证，只装约束清单与判定方法。
+> 定位：约束**人 + AI 双操作者**的工程规范。以通用前端团队规范为底本改造——立法原则从「人类读散文、靠自觉」换成「机器读断言、靠工具执行」。架构与写路径的完整论证见 [human-ai-parity.md](../architecture/human-ai-parity.md)（SSOT），分层矩阵 / 护栏映射 / 落点决策 / 质量门禁的**结构立法**见 [../project/coding-standards.md](../project/coding-standards.md)（SSOT）；本文不重复两者，只装立法原则与约束清单。
 
 ## 0. 立法三原则
 
@@ -15,7 +15,7 @@ updated: 2026-09-28
 
 ## 1. 架构与目录
 
-- **目录分层**（落点与各层禁止项见 `goodshare-arch` skill 的分层表）：新文件必须落对应层目录，禁止在根目录或业务目录平铺临时文件。检查：arch-guard + review。
+- **目录分层**（落点与各层禁止项见 `docs/project/coding-standards.md` §1 分层矩阵，权威正文在那儿）：新文件必须落对应层目录，禁止在根目录或业务目录平铺临时文件。检查：arch-guard + review。
 - **全局/局部状态边界**：全局数据源唯一（`Repository extends ChangeNotifier`），页面交互态（选中/草稿/画笔）留页面 `State`。新增全局状态先问「多页面共享吗」——否即留局部。
 - **写路径唯一入口**：所有写（UI/MCP/管线）一律组装 `ItemCommand` 经 `ItemActionHandler.execute`/`executeAll`；摄入链路走 `CollectCommand`/`AppendSegmentCommand`。**为什么**：校验必须下沉唯一入口，每多一个入口漏一遍校验（历史教训：set_vault(off) 曾漏在 MCP 层）。检查：arch-guard R1/R5。
 - **网络请求集中**：本项目 local-first 几乎无网络；仅有的 HTTP（模型下载 `lib/ai/model_manager.dart`、自更新 `lib/update/`）按域归位，禁止在页面/组件层出现 `http`/`Dio` 调用。检查：grep 页面层 import。

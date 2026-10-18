@@ -70,7 +70,7 @@ class ContentBody extends StatefulWidget {
   /// Markdown 子集富文本。
   final String markdown;
 
-  /// 衬线阅读态（ui-spec §2.2 P0）：文章类详情开启，媒体附文不开启。
+  /// 衬线阅读态（ui-design §2.2 P0）：文章类详情开启，媒体附文不开启。
   final bool serif;
 
   final RichTextParser parser;
@@ -162,7 +162,7 @@ class ContentBodySliver extends StatefulWidget {
   /// Markdown 子集富文本。
   final String markdown;
 
-  /// 衬线阅读态（ui-spec §2.2 P0）：文章类详情开启，媒体附文不开启。
+  /// 衬线阅读态（ui-design §2.2 P0）：文章类详情开启，媒体附文不开启。
   final bool serif;
 
   /// 待办勾选回调（勾选是写操作，走动作层命令；null 时不可点）。

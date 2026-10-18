@@ -9,7 +9,7 @@ updated: 2026-10-05
 
 ## 1. 背景与现状
 
-工作区功能已上线两层形态（ui-spec §4.11，2026-09-30 D2 拍板卡片化）：列表层 2 列卡片网格（封面拼贴+条目数）、条目层瀑布流双列；条目层批量选择已接 `SelectionController`/`SelectionActionBar`（card-batch-selection 配置）；**「移出本工作区」已于 2026-10-05 转正落地**（批处理条第五动作，§3.3）。
+工作区功能已上线两层形态（ui-design §4.11，2026-09-30 D2 拍板卡片化）：列表层 2 列卡片网格（封面拼贴+条目数）、条目层瀑布流双列；条目层批量选择已接 `SelectionController`/`SelectionActionBar`（card-batch-selection 配置）；**「移出本工作区」已于 2026-10-05 转正落地**（批处理条第五动作，§3.3）。
 
 缺口：UI 层没有任何删除/重命名工作区入口（用户视角「工作区不能删除」）；命令层 `DeleteWorkspaceCommand`（op=delete_workspace）与 MCP `delete_workspace`（第 8 工具）已存在——`_deleteWorkspace` 级联清理 workspaces/workspace_items 关系行，**条目本身不受影响**。
 
@@ -52,7 +52,7 @@ updated: 2026-10-05
 | UI | `lib/pages/workspace_page.dart`（卡片长按菜单/守门弹窗/深链进选择模式/全选） |
 | 动作层 | `lib/action/commands.dart` + `item_action_handler.dart` `_deleteWorkspace`（非空检查下沉）、`ui/actions/item_actions.dart`（移出本工作区转正） |
 | MCP | `lib/mcp/tools.dart` `delete_workspace`（同守门，错误带 hint） |
-| 设计 | 本稿回写 + ui-spec §4.11 工作区行补删除交互 |
+| 设计 | 本稿回写 + ui-design §4.11 工作区行补删除交互 |
 
 ## 5. 拍板决议（2026-10-05，用户确认）
 

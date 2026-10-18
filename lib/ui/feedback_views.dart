@@ -50,7 +50,7 @@ class ErrorRetryView extends StatelessWidget {
 class EmptyStateView extends StatelessWidget {
   const EmptyStateView({super.key, required this.text, this.action});
 
-  /// 空态文案（一句话，非动作教学——ui-spec §2.4 禁手势教学文案）。
+  /// 空态文案（一句话，非动作教学——ui-design §2.4 禁手势教学文案）。
   final String text;
 
   /// 可选动作（如「清除筛选」）。

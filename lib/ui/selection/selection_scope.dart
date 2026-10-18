@@ -188,7 +188,7 @@ class BatchActionExecutor {
     try {
       await _handler.executeAll([for (final it in selected) build(it)],
           vaultContext: vaultContext);
-      // 成功落库触感（ui-spec §6.0 触感映射：medium=成功落库）
+      // 成功落库触感（ui-design §6.0 触感映射：medium=成功落库）
       HapticFeedback.mediumImpact();
       ToastManager.show('$successMsg（${selected.length} 条）', kind: ToastKind.success);
       return true;

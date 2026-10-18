@@ -28,7 +28,7 @@ import 'search_page.dart';
 /// **标签维度**，保险箱降为**筛选条件**（其入口在侧边栏，视图仍由本页承载）。
 ///
 /// 顶部 `＋` 只管「把外部资源拿进来」（拍照 / 扫描文档 / 导入），
-/// 速记归底部常驻条（ui-spec §4.6 的分工）。
+/// 速记归底部常驻条（ui-design §4.6 的分工）。
 class InboxPage extends StatefulWidget {
   const InboxPage({
     super.key,

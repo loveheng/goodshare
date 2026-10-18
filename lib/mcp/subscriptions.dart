@@ -78,6 +78,15 @@ class ResourceSubscriptionHub {
     unawaited(req.response.done.whenComplete(() => _clients.remove(client)));
   }
 
+  /// 向所有在线 SSE 下行连接广播**已成型帧**（订阅线与 §3.12 任务通知共用同一条
+  /// 下行长连接，ai-app-split.md §3.12.1：HTTP 走 SSE 订阅流）。无连接时零开销。
+  void broadcast(Map<String, Object?> frame) {
+    if (_clients.isEmpty) return;
+    for (final c in List.of(_clients)) {
+      c.send(frame);
+    }
+  }
+
   /// 条目变更 → 命中订阅即向所有在线连接广播 notifications/resources/updated。
   /// 通知 params 恒为**具体条目 URI**（集合级订阅也收具体 uri——宿主自行匹配）。
   void onItemChanged(String itemId) {

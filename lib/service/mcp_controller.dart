@@ -102,6 +102,20 @@ class McpController extends ChangeNotifier {
     }
   }
 
+  /// §3.12 任务通知的 **HTTP/SSE 承载**（桌面调试路）：供 UI 主 isolate 的通知 fan-out
+  /// 调用；HTTP server 未运行（MCP 未开启）即静默 no-op——通知 best-effort，不承担正确性。
+  ///
+  /// 注：goodhub 真机主路径不经此维护isk（`goodhub` 是 Binder-only），走 `McpBridgeChannel`
+  /// 的原生信号跳板；两承载由 app 组合根统一 fan-out，避免 `Repository.onTaskQueued`
+  /// 单 hook 被互相覆盖。
+  void notifyTaskQueued() {
+    try {
+      _server?.notifyTaskQueued();
+    } catch (e) {
+      debugPrint('[DEGRADE] task_queued_sse_dispatch_failed error=$e');
+    }
+  }
+
   Future<void> _shutdown() async {
     try {
       await _server?.stop();

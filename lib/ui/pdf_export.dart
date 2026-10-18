@@ -7,7 +7,7 @@ import 'package:pdf/widgets.dart' as pw;
 import '../models/item.dart';
 import 'share_scope_sheet.dart' show ShareScope;
 
-/// 详情条目导出 PDF（ui-spec §4.3 两区改版：公共区「导出 PDF」）。
+/// 详情条目导出 PDF（ui-design §4.3 两区改版：公共区「导出 PDF」）。
 ///
 /// 中文字体内嵌 `assets/fonts/DroidSansFallbackFull.ttf`（Apache 2.0，可再
 /// 分发）——pdf 包内置字体不含 CJK，不内嵌则中文全是空白。

@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:sqflite/sqflite.dart';
 
@@ -207,6 +206,13 @@ class ItemActionHandler {
       final err = validateMachineJson(cmd.machineJson);
       if (err != null) throw ActionException(err, code: ActionErrorCode.schemaInvalid);
       values['machine_json'] = cmd.machineJson;
+    }
+    // 摘要回写（UI「忽略即时摘要」回滚，todos T2）：与 apply_ai_result 同口径
+    // 套打码 + 重算版本锚（锚取写入时正文指纹，正文不变则锚恒有效）。
+    if (cmd.summaryMd != null) {
+      final maskOn = isMaskEnabled?.call() ?? true;
+      values['summary_md'] = maskSensitiveText(cmd.summaryMd!, enabled: maskOn);
+      values['summary_anchor'] = bodyMd5(item.humanMd ?? '');
     }
     if (cmd.itemType != null && cmd.itemType != item.itemType) {
       // 重分类用户入口已退役（2026-10-09 拍板），仅管线回写保留 itemType 改判
@@ -1185,8 +1191,7 @@ class ItemActionHandler {
         if (r.templateId != null) values['template_id'] = r.templateId!;
         // 版本锚取「写入时」的 human_md 指纹（镜像 summary_anchor 口径）：
         // 用户此后改正文 → 锚失配 → template_output_stale，UI 明示过期。
-        values['template_output_anchor'] =
-            md5.convert(utf8.encode(item.humanMd ?? '')).toString();
+        values['template_output_anchor'] = bodyMd5(item.humanMd);
       }
       if (values.isNotEmpty) {
         await _write('apply_ai_result', cmd.id, values,
@@ -1302,7 +1307,7 @@ class ItemActionHandler {
     if (r.summaryMd != null) {
       values['summary_md'] = maskSensitiveText(r.summaryMd!, enabled: maskOn);
       final effectiveBody = keepHuman ? (item.humanMd ?? '') : maskedIncoming;
-      values['summary_anchor'] = md5.convert(utf8.encode(effectiveBody)).toString();
+      values['summary_anchor'] = bodyMd5(effectiveBody);
     }
     // 内容生产模板产出（ai-template P2）：按模板 skill 处理条目的结果，落
     // template_output（独立字段，与 summary_md 语义分离）；同样过打码 + 版本锚
@@ -1314,7 +1319,7 @@ class ItemActionHandler {
       values['template_output'] = maskSensitiveText(r.templateOutput!, enabled: maskOn);
       if (r.templateId != null) values['template_id'] = r.templateId;
       final effectiveBody = keepHuman ? (item.humanMd ?? '') : maskedIncoming;
-      values['template_output_anchor'] = md5.convert(utf8.encode(effectiveBody)).toString();
+      values['template_output_anchor'] = bodyMd5(effectiveBody);
     }
     // 文档归一化元信息（2026-09-30）：覆盖率 / 降级 / 确认状态，供 UI 明示
     // 「提取了多少、哪些降级了」——降级不允许静默成功（content-pipeline §7）。
@@ -1358,7 +1363,7 @@ class ItemActionHandler {
                 : '已回写 AI 产出'));
   }
 
-  // ---- 工作区（2026-09-30：条目集合容器，多对多，见 ui-spec §4.11） ----
+  // ---- 工作区（2026-09-30：条目集合容器，多对多，见 ui-design §4.11） ----
   //
   // 工作区操作对象不是条目，无乐观锁语义（工作区无并发编辑冲突面）；
   // add/remove 对条目走 _require 可见性校验——Vault 条目对 AI 不可见，

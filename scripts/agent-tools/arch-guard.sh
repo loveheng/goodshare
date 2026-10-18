@@ -10,7 +10,7 @@
 # cat: test
 # alias: ag
 #
-# 规则口径见 .agents/skills/goodshare-arch/SKILL.md 与 goodshare-ui/SKILL.md；
+# 规则口径：映射与规则正文见 docs/project/coding-standards.md §2；细则见 .agents/skills/goodshare-arch、goodshare-ui、goodshare-mobile 各 SKILL.md；
 # 白名单内的条目是**历史例外**，只许减少不许增加（迁移一个删一行）。
 
 set -uo pipefail
@@ -110,7 +110,7 @@ scan_all() {
   # - note_composer_editor.dart：**仅豁免悬浮球角标**（H1/H2/B/I…）一处
   #   9px 微标签——自绘装饰件上的字数角标，M3 语义档位无 9px 对应（最小
   #   labelSmall=11），改用 11 会让角标高度超过 Radii.sm 半径一半、退化成
-  #   胶囊（违反 ui-spec §2.3 全系统去胶囊）。其余排版一律走 textTheme
+  #   胶囊（违反 ui-design §2.3 全系统去胶囊）。其余排版一律走 textTheme
   #   （同文件的 'Tt' 装饰字形已改 titleSmall=14，等值无视觉变化）。
   scan_pattern "R7-typography" "lib/pages lib/ui" \
     "裸 fontSize/textScaleFactor 字面量，须映射 M3 textTheme 并用 textScaler" \

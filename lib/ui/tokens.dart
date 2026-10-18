@@ -39,6 +39,6 @@ class Radii {
   /// 16：中圆角（按钮、BottomSheet 内元素）
   static const double lg = 16;
 
-  /// 20：大圆角（卡片、媒体封面卡——mymind 基准，ui-spec §2.3）
+  /// 20：大圆角（卡片、媒体封面卡——mymind 基准，ui-design §2.3）
   static const double xl = 20;
 }

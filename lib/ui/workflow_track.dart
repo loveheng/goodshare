@@ -157,7 +157,7 @@ class WorkflowTrack extends StatelessWidget {
   }
 }
 
-/// 分区签名式小标题（2026-10-05 骨架重做，ui-spec §2.2）：短前置规则 + 宽字距标签，
+/// 分区签名式小标题（2026-10-05 骨架重做，ui-design §2.2）：短前置规则 + 宽字距标签，
 /// 与详情页分区标题同视觉语言；强调色只留给动作，此处取中性 onSurfaceVariant。
 Widget sectionHeader(ThemeData theme, ColorScheme scheme, String label) => Row(
       children: [

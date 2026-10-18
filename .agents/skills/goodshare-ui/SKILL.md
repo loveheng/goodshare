@@ -1,30 +1,41 @@
 ---
 name: goodshare-ui
-description: 拾贝 goodshare（Flutter 分享收集器+MCP）UI 层规范事实源：视觉令牌（Insets/Radii/吸附规则）、渲染性能与生命周期、异步加载三态、沉浸式与多设备避让、交互反馈、Local-first 拉齐、导航/双态/组件硬约束。新增或改版页面、组件、BottomSheet、样式前先读本 skill + docs/design/ui-spec.md；写路径/分层/并发见 goodshare-arch，生命周期与内存见 goodshare-mobile。
+description: 拾贝 goodshare（Flutter 分享收集器+MCP）UI 层规范事实源：视觉令牌（Insets/Radii/吸附规则）、渲染性能与生命周期、异步加载三态、沉浸式与多设备避让、交互反馈、Local-first 拉齐、导航/双态/组件硬约束。新增或改版页面、组件、BottomSheet、样式前先读本 skill + docs/project/ui-design.md；写路径/分层/并发见 goodshare-arch，生命周期与内存见 goodshare-mobile。
 ---
 
 # goodshare UI 规范
 
-视觉 / 导航 / 组件单一事实源在 `docs/design/ui-spec.md`。本 skill 只装**文档里没有的落地口径**（令牌常量、吸附规则、性能纪律、避让与反馈），改动以该文档为权威。
+视觉 / 导航 / 组件单一事实源在 `docs/project/ui-design.md`。本 skill 只装**文档里没有的落地口径**（令牌常量、吸附规则、性能纪律、避让与反馈），改动以该文档为权威。
 **UI 侧的写路径 / 分层 / 并发不在这里** → `goodshare-arch`；**生命周期 / 内存 / Vault 不在这里** → `goodshare-mobile`。
+
+## 查阅指引（按改动范围定向查阅）
+
+| 准备修改的内容 | 规范正文（ui-design） | 本 skill 对应节 | 核心实现落点 |
+|---|---|---|---|
+| 色彩 / 主题槽位 | §2.1（取色） | 「交互与主题硬规则」（槽位覆写核对） | `lib/main.dart`（`ColorScheme.dark` override） |
+| 字号 / 行高 / 阅读态 | §2.2 | 「视觉令牌」 | textTheme 槽位 + `'serif'` |
+| 导航 / 速记条 / 侧边栏 | §3 | 「硬约束」（导航固定） | `lib/pages/`（home_shell） |
+| 页面清单 / 设置树 | §4 / §5 | 「硬约束」（设置树五分组） | `lib/pages/` |
+| 组件与触感反馈 | §6（§6.0 触感映射） | 「交互反馈」「视觉令牌」 | `lib/ui/` |
+| 双态呈现 | §7 | 「硬约束」（human_md / machine_json） | `ItemViewTemplate` + `ItemViewRegistry` |
 
 ## 用法
 
-1. 改 / 加页面、组件、样式前，先读 `docs/design/ui-spec.md` 对应节。
+1. 改 / 加页面、组件、样式前，先读 `docs/project/ui-design.md` 对应节（按上表定向）。
 2. 改完逐条过本文件末尾「自查清单」。
 3. 收尾跑机械护栏：`toolbox run arch-guard`（规则口径见 `goodshare-arch`）。
 
-## 硬约束（UI 侧，与 ui-spec 不重复的口径）
+## 硬约束（UI 侧，与 ui-design 不重复的口径）
 
-- 视觉基准 **mymind 风格**（2026-09-30 拍板「留骨头、换皮」，口径见 `ui-spec` §2 引言）：**代码层 Material 库照用**（Scaffold/Sheet/TextField 是 Flutter 地基）、**主题层 ThemeData 全量 override 为 mymind 令牌（M3 默认视觉一个像素不许露出）**、**视觉层只认 mymind 基准（「像不像 M3」不是评价维度）**。不照搬「文件极客」的**文件管理隐喻**（文件夹 / 清理）——本 App 是内容 / 时间线中枢。
-- 导航固定（2026-09-29 信息结构收敛，SSOT=ui-spec §3）：底部 **3 tab（全部 / 工作区 / 设置）** + **底部常驻速记条**（仅首页，点即聚焦打字即存；导入类走顶部 `＋` 菜单）+ 侧边栏（低频/隐私入口：保险箱·最近删除·AI 任务队列）。**无悬浮球**；时光机/AI 分类已降为筛选维度、保险箱入侧边栏，`timeline_page`/`ai_tags_page`/`floating_ball` 已删除——不得复活，不得新开顶层入口（除非回写 PRD / V2 需求）。
+- 视觉基准 **mymind 风格**（2026-09-30 拍板「留骨头、换皮」，口径见 `ui-design` §2 引言）：**代码层 Material 库照用**（Scaffold/Sheet/TextField 是 Flutter 地基）、**主题层 ThemeData 全量 override 为 mymind 令牌（M3 默认视觉一个像素不许露出）**、**视觉层只认 mymind 基准（「像不像 M3」不是评价维度）**。不照搬「文件极客」的**文件管理隐喻**（文件夹 / 清理）——本 App 是内容 / 时间线中枢。
+- 导航固定（2026-09-29 信息结构收敛，SSOT=ui-design §3）：底部 **3 tab（全部 / 工作区 / 设置）** + **底部常驻速记条**（仅首页，点即聚焦打字即存；导入类走顶部 `＋` 菜单）+ 侧边栏（低频/隐私入口：保险箱·最近删除·AI 任务队列）。**无悬浮球**；时光机/AI 分类已降为筛选维度、保险箱入侧边栏，`timeline_page`/`ai_tags_page`/`floating_ball` 已删除——不得复活，不得新开顶层入口（除非回写 PRD / V2 需求）。
 - 详情页必须支持 `human_md`（Markdown 渲染）与 `machine_json`（可切换 JsonView）**双态呈现**；双态共享同一 `item` 数据，禁止双源。
 - 详情 / 编辑采用**模板 + 按类型策略**：`ItemViewTemplate`（`lib/ui/item_view_template.dart`）+ `ItemViewRegistry` 按 `item_type` 分发；新增文件类型 = 实现模板 + 注册，框架零改动（与 `AiReconstructor` 抽象同构，见 PRD §6 模块二）。
-- **标签维度**（2026-09-29 降级，原「AI 分类」tab 删除）：标签是主列表筛选 chips 之一，按 `facets` 过滤，视觉走 ui-spec §2.3 胶囊流；依赖 AI 打标，无 `facets` 时空态，不做假数据。
+- **标签维度**（2026-09-29 降级，原「AI 分类」tab 删除）：标签是主列表筛选 chips 之一，按 `facets` 过滤，视觉走 ui-design §2.3 胶囊流；依赖 AI 打标，无 `facets` 时空态，不做假数据。
 - Vault 内容在 MCP 层物理隔离（`is_vault=0` 过滤），UI 进入需生物识别（`local_auth`）。
-- 设置树固定 `ui-spec` §5 五分组；新增开关先在需求登记再落地。
+- 设置树固定 `ui-design` §5 五分组；新增开关先在需求登记再落地。
 
-## 交互与主题硬规则（2026-10-01 会话沉淀；案例细节 SSOT=ui-spec §2.4/§3/§4.6/§6）
+## 交互与主题硬规则（2026-10-01 会话沉淀；案例细节 SSOT=ui-design §2.4/§3/§4.6/§6）
 
 - **二级页无返回箭头**：出口=系统手势/返回键。三层落法——①路由页 `automaticallyImplyLeading: false`；②状态层级视图（同页状态切换的上下级，如保险箱视图/工作区进入态）**必须先补 `PopScope` 接管手势返回再摘箭头**（此类视图不是路由，裸摘箭头=困住用户）；③画布类手势密集页绘制中 `canPop:false` 兜底。例外（语义非导航返回，保留按钮）：Sheet/Dialog 关闭/取消、速记面板收起。
 - **主题槽位覆写核对**：`ColorScheme` 30+ 槽位，**用未覆写槽位即漏 M3 基线紫白系**（实证事故：outlineVariant 漏浅薰衣草白=便签白边、secondaryContainer 漏紫灰=保存钮撞色）。新用任何槽位前先核对 `lib/main.dart` 已覆写清单，缺则先补主题层；主按钮 tonal/填充色已映射暖棕系（对齐 primaryContainer）。
@@ -37,10 +48,10 @@ description: 拾贝 goodshare（Flutter 分享收集器+MCP）UI 层规范事实
 - **按压反馈分级（禁面积型反馈）**：M3 半透明状态层叠暗底即「灰泥」（与禁用罩同源）。图标钮=图标本身变色（onSurfaceVariant→onSurface）、底板罩透明；CTA=底色实色加深一档（禁罩）；文字钮=文字实色加深。已全局收口在 `main.dart` 主题（`splashFactory: NoSplash` + 三类 ButtonTheme 的 resolveWith），新按钮零成本继承；**非按下态 resolveWith 必须返回 null 回落 M3 默认**，否则 selected 橘红等状态丢失；tonal 按钮的按压深棕须局部样式（全局 pressed 色是橘红系）。
 - **全系统去胶囊（2026-10-01 拍板）**：胶囊（Stadium/half-height 圆角）不再是任何组件的合法形态——按钮 Filled/Outlined/FAB 主题收口 `Radii.lg`，chips/标签 `md`，搜索输入框 `xl`，工具栏 `lg`（lib 内 Stadium 归零）。新组件按尺寸取档：小件 md、按钮/工具栏 lg、卡片/输入框 xl；**禁止手写 StadiumBorder 或半径 ≥ 高度一半的伪装胶囊**，按钮不要单独加 shape（继承主题）。
 
-## 视觉令牌（单一事实源；2026-09-30 起 mymind 基准，口径 SSOT=ui-spec §2）
+## 视觉令牌（单一事实源；2026-09-30 起 mymind 基准，口径 SSOT=ui-design §2）
 
 - **取色 / 圆角 / 间距一律走令牌**：颜色用 `Theme.of(context).colorScheme.*` / `surfaceContainer*`；**唯一硬编码处是主题层**（`lib/main.dart` 的 `ColorScheme.dark` override——恒定暗色三阶底/卡/浮 + 橘红强调，`dynamic_color` 已废弃）。
-- **字号 / 行高映射 M3 `textTheme` 槽位**（槽位是工程接口，视觉值由主题层定）：`textTheme.*.copyWith(...)`，禁止裸 `fontSize:` / `FontWeight.bold` 字面量；等宽 `fontFamily: 'monospace'` 仅用于机器态；**文章类详情正文走衬线阅读态**（`'serif'`，ui-spec §2.2）。
+- **字号 / 行高映射 M3 `textTheme` 槽位**（槽位是工程接口，视觉值由主题层定）：`textTheme.*.copyWith(...)`，禁止裸 `fontSize:` / `FontWeight.bold` 字面量；等宽 `fontFamily: 'monospace'` 仅用于机器态；**文章类详情正文走衬线阅读态**（`'serif'`，ui-design §2.2）。
 - **间距 / 圆角常量化**：`lib/ui/tokens.dart` 提供 `Insets`（xs4 / sm8 / md12 / lg16 / xl20 / xxl24）与 `Radii`（sm8 / md12 / lg16，**视觉基准改版后卡片类用 lg16→xl20 档**，令牌值以主题改版落地为准）；Padding / Margin / 圆角禁止 13、17 之类非规范魔术数字。
   - **吸附规则（Snap to Token，渐进迁移）**：① 标数（8/12/16/20/24）直接替换为 `Insets.sm/md/lg/xl/xxl`、`Radii.sm/md/lg`；② 非标数字（10/14/15）在不破坏视觉层级前提下就近取整（10→`Insets.sm`、14→`md` 或 `lg`）；③ `0` 与**组件 / 内容专属尺寸**（`width/height:48` 缩略图、`height:160` 播放器区、`Divider(height:32)`、图标 `size`）**不**走 Token，保留字面量。
   - **控制范围**：顺手吸附只对高频文件动手，**不扫荡全仓**；已迁移示范 `lib/ui/item_view_template.dart`、`lib/ui/content_card.dart`（新代码强制、旧代码留缓冲）。
@@ -78,8 +89,30 @@ description: 拾贝 goodshare（Flutter 分享收集器+MCP）UI 层规范事实
 
 ## 实现指针
 
-- 取色 ~~`dynamic_color`~~（2026-09-30 废弃 → `ColorScheme.dark` override，见 `ui-spec` §2.1）；路由 `go_router`；Markdown 用 flutter_markdown 社区维护分叉（原包已归档停更，如 flutter_markdown_plus，实现前核实 pub.dev 择优）；Json 视图 `json_view`；生物识别 `local_auth`；状态 `flutter_riverpod` 为 **V2 可选**（当前未用）。
+- 取色 ~~`dynamic_color`~~（2026-09-30 废弃 → `ColorScheme.dark` override，见 `ui-design` §2.1）；路由 `go_router`；Markdown 用 flutter_markdown 社区维护分叉（原包已归档停更，如 flutter_markdown_plus，实现前核实 pub.dev 择优）；Json 视图 `json_view`；生物识别 `local_auth`；状态 `flutter_riverpod` 为 **V2 可选**（当前未用）。
 - 平台能力（截图防护等）经接口调用，不在此散写 `Platform` 分支 → 见 `goodshare-arch`「多平台适配」。
+
+## UI 验收闭环（顺序要求；命令原文唯一出处 = goodshare-workflow）
+
+改 UI 后按序三重自证，**命令原文（含 SDK 环境变量前缀、`--timeout 60s`）以 workflow「研发闭环命令」为准**，本 skill 只锁顺序与口径：
+
+1. **架构护栏**：`toolbox run arch-guard` 秒过（裸 Image / Platform 分支 / 内联 json / 直连 repo 写等 7 条）——红灯即修结构，不申请白名单。
+2. **静态与单测**：`flutter analyze` 0 issue + `flutter test --timeout 60s` 全绿。
+3. **视觉验证**：本机无模拟器，唯一途径 = 真机侧载人工确认（命令查 workflow §2；工具链踩坑查 `context/lessons.md`）。
+
+## 维护与扩展纪律（程序归本 skill，规范正文不自带管理程序）
+
+`ui-design.md` 是**即成规范**（现行规则的终态陈述），自身不承载维护/扩展程序——一切「怎么扩、冲突听谁的」在本节执行，原则**规范先行**：
+
+| 场景 | 程序 |
+|---|---|
+| 新增界面 / 组件 | 先归入 ui-design §4/§6 既有模式之一；无先例形态**先扩规范再实现** |
+| 新增状态 / 语义色 | 先核对 `lib/main.dart` 已覆写槽位清单，缺则先补主题层再使用，禁直取任意色值 |
+| 新增尺寸 / 字号 / 圆角 | 落 `Insets`/`Radii` 既有档（吸附规则见「视觉令牌」）；档外先扩 token 再使用 |
+| 规范与实现冲突 | 以 `ui-design.md` 为准改实现；确需突破（新形态/新档位）先修订规范——禁实现单方面领先规范 |
+| 功能清单（有哪些件/做什么） | 不入规范——归各功能设计稿与 `docs/project/index.md` 归属表 |
+
+- **规范移动/改名**：按 docs-spec §5 三处同步（`docs/README.md` + `docs/project/index.md` + goodshare-docs 域表），并全仓 grep 文件名修引用。
 
 ## 自查清单（改 / 加页面时自查）
 

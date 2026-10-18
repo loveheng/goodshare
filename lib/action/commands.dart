@@ -234,6 +234,8 @@ sealed class ItemCommand {
           humanMd: _str(json['human_md']),
           machineJson: _jsonField(json['machine_json']),
           itemType: _str(json['item_type']),
+          summaryMd: _str(json['summary_md']),
+          summaryAnchor: _str(json['summary_anchor']),
           expectedVersion: ev,
         );
       case 'delete':
@@ -421,6 +423,9 @@ sealed class ItemCommand {
 }
 
 /// 编辑（= MCP update_item 的 patch）：title / tldr / tags / human_md / machine_json / item_type。
+/// [summaryMd] / [summaryAnchor] 为可选摘要回写通道：供 UI「忽略即时摘要」回滚到
+/// 旧摘要（ai-app-split.md §3.11 / todos T2），与 apply_ai_result 同口径套打码 + 版本锚；
+/// 两者均 null = 不动摘要。
 final class UpdateItemCommand extends ItemCommand {
   const UpdateItemCommand({
     required this.id,
@@ -432,6 +437,8 @@ final class UpdateItemCommand extends ItemCommand {
     this.itemType,
     this.inspirationMd,
     this.todoState,
+    this.summaryMd,
+    this.summaryAnchor,
     super.expectedVersion,
   });
 
@@ -456,6 +463,13 @@ final class UpdateItemCommand extends ItemCommand {
   /// 重分类目标类型；null = 不改。
   final String? itemType;
 
+  /// 摘要回写（UI「忽略即时摘要」回滚到旧摘要，todos T2）。null = 不动摘要；
+  /// 落库时由动作层套打码 + 重算版本锚（与 apply_ai_result 同口径）。
+  final String? summaryMd;
+
+  /// 摘要版本锚（v22）：显式传入时原样落库；null 由动作层按当前正文重算。
+  final String? summaryAnchor;
+
   bool get isEmpty =>
       title == null &&
       tldr == null &&
@@ -464,7 +478,9 @@ final class UpdateItemCommand extends ItemCommand {
       machineJson == null &&
       itemType == null &&
       inspirationMd == null &&
-      todoState == null;
+      todoState == null &&
+      summaryMd == null &&
+      summaryAnchor == null;
 
   @override
   String get op => 'update';
@@ -483,6 +499,8 @@ final class UpdateItemCommand extends ItemCommand {
         if (machineJson != null) 'machine_json': machineJson,
         if (itemType != null) 'item_type': itemType,
         if (inspirationMd != null) 'inspiration_md': inspirationMd,
+        if (summaryMd != null) 'summary_md': summaryMd,
+        if (summaryAnchor != null) 'summary_anchor': summaryAnchor,
         if (expectedVersion != null) 'expected_version': expectedVersion,
       };
 }

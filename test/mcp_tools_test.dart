@@ -227,9 +227,9 @@ void main() {
     expect(byJob['found'], isFalse, reason: 'job_id 入口也必须做条目可见性门控');
   });
 
-  test('工具清单共 42 个且不含 execute_action', () {
+  test('工具清单共 43 个且不含 execute_action', () {
     final names = toolSchemas().map((s) => s['name']).toList();
-    expect(names.length, 42); // M3 +ai_suggest_tags；ai-template P1 +4 模板 CRUD
+    expect(names.length, 43); // M3 +ai_suggest_tags；ai-template P1 +4 模板 CRUD；instant-ai-sampling T1 +ai_summarize_now
     expect(names, isNot(contains('execute_action')));
     expect(names, containsAll([
       'update_item', 'unlock_edit', 'set_vault', 'set_pin', 'reprocess_item',
@@ -256,6 +256,8 @@ void main() {
       'list_workspaces', 'list_template', 'list_jobs', 'get_job_status', 'get_timeline_context',
       // M3：ai_suggest_tags 只读+反向推理，不产生任何写路径（ai-app-split.md §3.11）
       'ai_suggest_tags',
+      // instant-ai-sampling T1：ai_summarize_now 只读+反向推理，零写路径（instant-ai-sampling.md §4.1）
+      'ai_summarize_now',
     ];
     for (final s in schemas) {
       final annotations = s['annotations'] as Map<String, Object?>?;

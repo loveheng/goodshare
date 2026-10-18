@@ -31,6 +31,7 @@ import '../models/item.dart';
 import '../media/block_media.dart';
 import '../models/annotation.dart';
 import '../models/template.dart';
+import '../service/host_launch_channel.dart';
 import '../service/settings_store.dart';
 import '../ui/actions/item_actions.dart';
 import '../ui/ai_diff.dart';
@@ -56,6 +57,7 @@ import '../ui/section_legend.dart';
 import '../ui/rich_text_view.dart';
 import '../ui/share_scope_sheet.dart';
 import '../ui/tokens.dart';
+import 'task_queue_page.dart';
 
 import 'template_preview_page.dart';
 
@@ -156,6 +158,45 @@ String aiTaskActionLabel(String? action) {
 /// 有产出或没有相关任务时整行不占位（避免噪音）。
 /// 灵感区页签已废弃（detail-two-zone.md §3 拍板 2026-10-01：摘要/标签
 /// 平行并置，不再互斥切换）。
+/// §3.12.3 形态 B 徽标：远程任务 pending 久未被宿主认领时**替换无意义的 spinner**。
+///
+/// 灰底小胶囊 + 「等待 Goodhub 启动」，整枚可点 → 一键唤醒宿主（[_WaitingHostBadge.onTap]）。
+/// DB 维持 `pending` 不变——本徽标是纯 UI 展示态，不引入 WAITING_HOST 存储态；
+/// 宿主被唤起后任务转 processing，判据自然失效、徽标消失。
+class _WaitingHostBadge extends StatelessWidget {
+  const _WaitingHostBadge({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return InkWell(
+      borderRadius: BorderRadius.circular(Radii.sm),
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: Insets.xs, vertical: 3),
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(Radii.sm),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.hourglass_empty, size: 13, color: scheme.onSurfaceVariant),
+            const SizedBox(width: Insets.xs),
+            Text(
+              '等待 Goodhub 启动',
+              style: Theme.of(context).textTheme.labelSmall
+                  ?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _AiTaskStatusLine extends StatelessWidget {
   const _AiTaskStatusLine({required this.repo, required this.item});
 
@@ -257,6 +298,42 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 进行中时卡内转 spinner；任一 active 任务存在时 AppBar 下 2dp 线性进度
   /// 长文任意滚动位置恒可见）。刷新时机：入队/落库后 [_reload] 与 repo 通知。
   Set<String> _activeActions = const {};
+
+  /// §3.12.3 形态 B 阈值：pending 持续超过该时长仍未被宿主认领 → UI 升级为
+  /// 可操作徽标「等待 Goodhub 启动」（替换无意义 spinner）。
+  ///
+  /// **判据用时间阈值而非通道探测**（契约原话）：一次覆盖「通知丢失 / 宿主启动中
+  /// / 宿主崩溃 / 通道瞬断」四类成因，且服务端零状态可维护。**红线**：DB 维持
+  /// `pending` 不变，WAITING_HOST 只是 UI 展示态，不引入存储态。
+  static const Duration _hostWaitThreshold = Duration(seconds: 10);
+
+  /// 远程任务 pending 的入队时刻（task_action → `updated_at` 毫秒）。
+  ///
+  /// 仅收 [Repository.isRemoteTaskAction] 为真的任务——本地任务（OCR/转写/翻译）
+  /// 由本地 QueueConsumer 消费，挂「等待宿主」是错的。pending 且未被认领时
+  /// `updated_at` 恒等于入队时刻，故可直接据此算「已等时长」而不新增任何存储态。
+  Map<String, int> _pendingSince = const {};
+
+  /// 跨阈值那一刻翻转 UI 的单次定时器（**非轮询**：只在刚好到点时醒一次）。
+  Timer? _hostWaitTimer;
+
+  // ── T2：即时摘要（详情页即时入口，todos T2）。
+  // 底层复用 SummarizeCommand 异步管线（非流式）；真·采样流式路径等 goodhub
+  // Binder 接好再做（ai-app-split.md §3.11）。UX 三态：加载骨架 → 预览卡
+  //（采用/忽略 + 时效标注）→ 失败/无变化降级（转后台处理链接）。
+  bool _instantRunning = false;
+  String? _instantPreview; // 已落库、待采用/忽略的新摘要
+  DateTime? _instantTs; // 生成时间戳（时效标注）
+  String? _instantPrevSummary; // 忽略时回滚基准
+  bool _instantFailed = false;
+  bool _instantNoChange = false;
+  int _instantLoadingStep = 0;
+  Timer? _instantTimer;
+  static const List<String> _kInstantLoadingTexts = [
+    '正在生成摘要…',
+    '大模型推理中…',
+    '马上就好…',
+  ];
 
   /// AI 写回会话状态机（ai-writeback-revert §4/§5）：悬浮条显隐、还原 /
   /// 恢复 AI 改动、以及「用户手改即接管」的 settle 判定都归它。
@@ -370,6 +447,8 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   @override
   void dispose() {
     _lifecycleSub?.cancel();
+    _instantTimer?.cancel();
+    _hostWaitTimer?.cancel();
     // §8.3：dispose 是最后一道 flush 点——先 flush 完再 dispose 控制器
     // （反过来会把 _disposed 置真，令 flush 的落库回调整体空转）。
     final ai = _aiSession;
@@ -420,6 +499,221 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     }
   }
 
+  // ── T2 即时摘要（todos T2）：复用 SummarizeCommand 异步管线（非流式），
+  // 真·采样流式路径等 goodhub Binder 接好再做。UX：inline 骨架加载（含
+  // 转后台处理链接 + 文案轮转）→ 预览卡（采用/忽略 + 时效标注）→ 失败/无变化降级。
+  Future<void> _runInstantSummary() async {
+    if (_instantRunning || !mounted) return;
+    final prev = _item.summaryMd?.trim() ?? '';
+    setState(() {
+      _instantRunning = true;
+      _instantPreview = null;
+      _instantFailed = false;
+      _instantNoChange = false;
+      _instantLoadingStep = 0;
+      _instantPrevSummary = prev;
+    });
+    _startInstantLoadingText();
+    try {
+      await widget.handler.execute(
+        SummarizeCommand(_item.id!),
+        vaultContext: widget.vaultContext,
+      );
+      final ok = await _waitForTask(_item.id!, Repository.taskLlmSummarize);
+      await _reload();
+      final generated = _item.summaryMd?.trim();
+      if (!ok || generated == null || generated.isEmpty) {
+        _instantFailed = true;
+      } else if (generated == prev) {
+        _instantNoChange = true;
+      } else {
+        _instantPreview = generated;
+        _instantTs = DateTime.now();
+        _snack('已生成摘要，可一键采用或忽略');
+      }
+    } on ActionException catch (e) {
+      _snack(e.message);
+      _instantFailed = true;
+    } finally {
+      _instantTimer?.cancel();
+      _instantTimer = null;
+      if (mounted) setState(() => _instantRunning = false);
+    }
+  }
+
+  void _startInstantLoadingText() {
+    _instantLoadingStep = 0;
+    _instantTimer?.cancel();
+    _instantTimer = Timer.periodic(const Duration(seconds: 3), (t) {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
+      if (_instantLoadingStep < _kInstantLoadingTexts.length - 1) {
+        setState(() => _instantLoadingStep++);
+      } else {
+        t.cancel();
+      }
+    });
+  }
+
+  /// 采用：新摘要已落库，仅收起预览卡（summary_md 即最终结果）。
+  void _instantAccept() => setState(() => _instantPreview = null);
+
+  /// 忽略：回滚到生成前的摘要（空 = 清空本次新增）。走 UpdateItemCommand 摘要回写通道。
+  Future<void> _instantRevert() async {
+    final prev = _instantPrevSummary ?? '';
+    await _run(
+      () => widget.handler.execute(
+        UpdateItemCommand(id: _item.id!, summaryMd: prev),
+        vaultContext: widget.vaultContext,
+      ),
+      prev.isEmpty ? '已忽略新摘要' : '已回滚到原摘要',
+    );
+    if (mounted) setState(() => _instantPreview = null);
+  }
+
+  void _openQueue() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => TaskQueuePage(repo: widget.repo)),
+    );
+  }
+
+  String _formatInstantTs(DateTime ts) {
+    final h = ts.hour.toString().padLeft(2, '0');
+    final m = ts.minute.toString().padLeft(2, '0');
+    return '$h:$m';
+  }
+
+  Widget _buildInstantLoading() {
+    final scheme = Theme.of(context).colorScheme;
+    final w = MediaQuery.of(context).size.width;
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 200),
+      alignment: Alignment.topCenter,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: Insets.sm),
+          for (var i = 0; i < 6; i++)
+            Container(
+              margin: const EdgeInsets.only(bottom: 6),
+              height: 10,
+              width: (i == 5 ? 0.5 : [0.9, 0.7, 0.95, 0.6, 0.8][i % 5]) * w,
+              decoration: BoxDecoration(
+                color: scheme.onSurfaceVariant.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(6),
+              ),
+            ),
+          const SizedBox(height: Insets.xs),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _kInstantLoadingTexts[_instantLoadingStep],
+                  style: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.copyWith(color: scheme.onSurfaceVariant),
+                ),
+              ),
+              TextButton(onPressed: _openQueue, child: const Text('转后台处理')),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInstantPreview() {
+    final scheme = Theme.of(context).colorScheme;
+    final ts = _instantTs;
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 200),
+      alignment: Alignment.topCenter,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(Insets.sm),
+            decoration: BoxDecoration(
+              border: Border.all(color: scheme.outline),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                RichTextView(markdown: _instantPreview!, shrinkWrap: true),
+                if (ts != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: Insets.xs),
+                    child: Text(
+                      '生成于 ${_formatInstantTs(ts)}',
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodySmall
+                          ?.copyWith(color: scheme.onSurfaceVariant),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: Insets.xs),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(onPressed: _instantRevert, child: const Text('忽略')),
+              const SizedBox(width: Insets.sm),
+              FilledButton(onPressed: _instantAccept, child: const Text('采用')),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInstantResultNote() {
+    final scheme = Theme.of(context).colorScheme;
+    final msg = _instantNoChange
+        ? '摘要无变化（可能内容过短或模型无新产出）'
+        : '摘要生成失败，可转后台查看或重试';
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 200),
+      alignment: Alignment.topCenter,
+      child: Row(
+        children: [
+          Icon(Icons.info_outline, size: 16, color: scheme.onSurfaceVariant),
+          const SizedBox(width: Insets.xs),
+          Expanded(
+            child: Text(
+              msg,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+          ),
+          TextButton(onPressed: _openQueue, child: const Text('转后台处理')),
+          if (!_instantNoChange)
+            TextButton(onPressed: _runInstantSummary, child: const Text('重试')),
+        ],
+      ),
+    );
+  }
+
+  /// 摘要卡正文：T2 即时三态优先，否则回落既有展示（深度摘要 / 摄入期 TLDR / 空态）。
+  Widget _summaryInstantBody(String summary, String tldrFallback, bool hasSummary) {
+    if (_instantRunning) return _buildInstantLoading();
+    if (_instantFailed || _instantNoChange) return _buildInstantResultNote();
+    if (_instantPreview != null) return _buildInstantPreview();
+    if (hasSummary) return RichTextView(markdown: summary, shrinkWrap: true);
+    if (tldrFallback.isNotEmpty) {
+      // 摄入期粗导语兜底：深度摘要生成后自动被其覆盖（P0-3 折叠规则）
+      return RichTextView(markdown: tldrFallback, shrinkWrap: true);
+    }
+    return _inspirationEmpty('还没有摘要，点右上刷新生成');
+  }
+
   /// 加载本条目 active 任务动作集（[_activeActions]）。任务状态变化不经
   /// repo 广播（仅条目写广播），故挂在 [_reload]（入队/落库/外部回写都会走）
   /// 与 initState 两口刷新——与 `_AiTaskStatusLine` 的 FutureBuilder 同源数据。
@@ -432,7 +726,19 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
             (t['status'] == 'pending' || t['status'] == 'processing'))
           (t['task_action'] as String?) ?? '',
     }..remove('');
-    setState(() => _activeActions = active);
+    // 形态 B 数据源：本条目「远程 + pending」任务的入队时刻（见 [_pendingSince]）。
+    final since = <String, int>{
+      for (final t in tasks)
+        if (t['item_id'] == _item.id &&
+            t['status'] == 'pending' &&
+            Repository.isRemoteTaskAction(t['task_action'] as String?))
+          (t['task_action'] as String): (t['updated_at'] as int?) ?? 0,
+    };
+    setState(() {
+      _activeActions = active;
+      _pendingSince = since;
+    });
+    _scheduleHostWaitFlip(since);
   }
 
   /// 卡内微观态判定（P0-2）：各卡对应任务是否进行中。
@@ -440,6 +746,64 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   bool get _tagsRunning => _activeActions.contains(Repository.taskLlmTags);
   bool get _templateRunning =>
       _activeActions.any((a) => a.startsWith('${Repository.taskTemplateApply}:'));
+
+  // ── §3.12.3 形态 B：宿主不可达时「等待宿主」替换无意义 spinner ──
+  // DB 始终是 pending（红线：不引入 WAITING_HOST 存储态），此处纯按 pending
+  // 持续时长派生 UI 展示——任务一旦被认领转 processing，判据自然失效、徽标消失。
+
+  /// [match] 按任务动作匹配；模板这类动态动作串（`template_apply:<id>`）用前缀。
+  bool _waitingHostOf(bool Function(String action) match) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (final e in _pendingSince.entries) {
+      if (match(e.key) &&
+          now - e.value >= _hostWaitThreshold.inMilliseconds) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool get _summarizeWaiting =>
+      _waitingHostOf((a) => a == Repository.taskLlmSummarize);
+  bool get _tagsWaiting => _waitingHostOf((a) => a == Repository.taskLlmTags);
+  bool get _templateWaiting =>
+      _waitingHostOf((a) => a.startsWith('${Repository.taskTemplateApply}:'));
+
+  /// 到阈值那一刻醒一次刷新 UI：**单次定时而非轮询**——取最早跨越阈值的剩余时长
+  /// 设定一次 fire；已全部越界则不等（本次 setState 已生效）。到点后**重读队列**
+  /// 而非仅 setState，避免任务已被认领却仍按陈旧数据显示徽标。
+  void _scheduleHostWaitFlip(Map<String, int> since) {
+    _hostWaitTimer?.cancel();
+    _hostWaitTimer = null;
+    if (since.isEmpty) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    int? nearest;
+    for (final ts in since.values) {
+      final left = ts + _hostWaitThreshold.inMilliseconds - now;
+      if (left > 0 && (nearest == null || left < nearest)) nearest = left;
+    }
+    if (nearest == null) return;
+    _hostWaitTimer = Timer(Duration(milliseconds: nearest), () {
+      if (!mounted) return;
+      unawaited(_loadActiveActions());
+    });
+  }
+
+  /// 一键唤醒出口（契约 §3.12.3）：确认弹窗 → `goodshare/host_launch` 拉起 goodhub。
+  /// 未安装 / 通道缺失 → toast 兜底；**不误报成功**（正确性由宿主侧 catch-up 兜底）。
+  Future<void> _promptLaunchGoodhub() async {
+    final ok = await confirmDialog(
+      context,
+      title: '等待 Goodhub 处理',
+      content: '这条 AI 任务需要 Goodhub（AI 宿主）来消费。启动它会立即接管待处理任务；'
+          '未安装则请先在设备上部署 Goodhub。',
+      confirmText: '启动 Goodhub',
+    );
+    if (!ok || !mounted) return;
+    final launched = await HostLaunchChannel().launchGoodhub();
+    if (!mounted) return;
+    if (!launched) _snack('未检测到 Goodhub 安装包');
+  }
 
   /// 待办行是否已勾（渲染 lookup：todo_state_json 按行内容 hash 关联）。
   bool _todoDone(String text) {
@@ -1459,7 +1823,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                                     SliverToBoxAdapter(
                                       child: _attachStatusLine(),
                                     ),
-                                    // 灵感区（ui-spec §4.3 两区改版）：摘要/标签切换 + 刷新重生成
+                                    // 灵感区（ui-design §4.3 两区改版）：摘要/标签切换 + 刷新重生成
                                     SliverToBoxAdapter(
                                       child: _inspirationSection(),
                                     ),
@@ -1594,7 +1958,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 不用 OverflowBar——它放不下时是「每项各占一行」的竖排（AlertDialog
   /// 动作语义），不是换行；不用 BottomAppBar——它把子级高度钉死（实测
   /// h=56），两行必竖向溢出。
-  /// 公共操作条（ui-spec §4.3；2026-10-15 底栏单行化拍板，
+  /// 公共操作条（ui-design §4.3；2026-10-15 底栏单行化拍板，
   /// detail-page-visual-audit.md §6 盲点 A）：**常驻裁到 3 项**——编辑 / 分享 / ⋯
   /// 连成无分隔线的整体胶囊（surfaceContainerHigh 底 + Radii.lg 圆角）。
   /// - 331dp 逻辑屏（1272px / DPR 3.84）下旧 5 格 ≈63dp/格 < 74dp 内容宽
@@ -1643,7 +2007,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     );
   }
 
-  /// 底栏连接胶囊内的单个点击单元（mymind 形态，ui-spec §4.3）：icon + label 横排，
+  /// 底栏连接胶囊内的单个点击单元（mymind 形态，ui-design §4.3）：icon + label 横排，
   /// 与全站底栏同款；无自身背景，整条胶囊共用一个圆角外形。`⋯` 单元无 label 仅图标；
   /// 删除标红（danger）。
   Widget _barCell({
@@ -1920,19 +2284,31 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
       String refreshTooltip,
       VoidCallback? onRefresh, {
       VoidCallback? onAdd,
+      VoidCallback? onInstant,
       bool running = false,
+      // §3.12.3 形态 B：pending 久未被宿主认领时以徽标**替换** spinner（不再空转）。
+      bool waitingHost = false,
     }) {
       final scheme = Theme.of(context).colorScheme;
       return Row(
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
+          if (onInstant != null)
+            IconButton(
+              tooltip: '即时摘要',
+              icon: Icon(Icons.bolt, size: 18, color: scheme.onSurfaceVariant),
+              onPressed: _instantRunning ? null : onInstant,
+            ),
           if (onAdd != null)
             IconButton(
               tooltip: '手动添加标签',
               icon: Icon(Icons.add, size: 18, color: scheme.onSurfaceVariant),
               onPressed: onAdd,
             ),
-          if (running)
+          // 形态 B 优先于 spinner：徽标自身即入口（点击 → 一键唤醒宿主）。
+          if (waitingHost)
+            _WaitingHostBadge(onTap: _promptLaunchGoodhub)
+          else if (running)
             const SizedBox(
               width: 18,
               height: 18,
@@ -1979,15 +2355,17 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                           '已开始生成摘要',
                         )
                       : null,
-                  running: _summarizeRunning,
+                  running: _summarizeRunning && !_instantRunning,
+                  waitingHost: _summarizeWaiting,
+                  onInstant: canProcess ? _runInstantSummary : null,
                 ),
-                if (hasSummary)
-                  RichTextView(markdown: summary, shrinkWrap: true)
-                else if (tldrFallback.isNotEmpty)
-                  // 摄入期粗导语兜底：深度摘要生成后自动被其覆盖（P0-3 折叠规则）
-                  RichTextView(markdown: tldrFallback, shrinkWrap: true)
-                else
-                  _inspirationEmpty('还没有摘要，点右上刷新生成'),
+                // T2 即时摘要三态：加载骨架 → 预览卡（采用/忽略）→ 失败/无变化降级；
+                // 非即时态回落既有展示（深度摘要 / 摄入期 TLDR 兜底 / 空态）。
+                AnimatedSize(
+                  duration: const Duration(milliseconds: 200),
+                  alignment: Alignment.topCenter,
+                  child: _summaryInstantBody(summary, tldrFallback, hasSummary),
+                ),
               ],
             ),
           ),
@@ -2011,6 +2389,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                       : null,
                   onAdd: _editTags,
                   running: _tagsRunning,
+                  waitingHost: _tagsWaiting,
                 ),
                 if (hasTags)
                   Wrap(
@@ -2053,8 +2432,11 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
                       ] else
                         const Spacer(),
                       // 规约 1：入口降权——18px 图标按钮，与摘要/标签 refresh 同权重；
-                      // P0-2 卡内微观态：模板任务进行中显示 spinner
-                      if (_templateRunning)
+                      // P0-2 卡内微观态：模板任务进行中显示 spinner；
+                      // §3.12.3 形态 B：久未被认领时改挂可点徽标（替换 spinner）。
+                      if (_templateWaiting)
+                        _WaitingHostBadge(onTap: _promptLaunchGoodhub)
+                      else if (_templateRunning)
                         const SizedBox(
                           width: 18,
                           height: 18,
@@ -2291,7 +2673,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   }
 
   /// 末尾来源小字（把「从哪来、什么时候」说清楚）。
-  /// mymind 形态（ui-spec §4.3）：居中、更弱化（outline 色，仅存档感）。
+  /// mymind 形态（ui-design §4.3）：居中、更弱化（outline 色，仅存档感）。
   Widget _sourceLine() {
     // 无标题态时间已占标题位（detail-visual-hierarchy §3 拍板去重），
     // 元信息行不再重复展示。

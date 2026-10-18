@@ -98,5 +98,9 @@
         <intent>
             <action android:name="com.zzh.goodhub.action.MCP_SERVER" />
         </intent>
+        <!-- §3.12.3 包可见性前置：一键唤醒走 getLaunchIntentForPackage（**按包名**查询），
+             仅声明上面的 <intent> 不足以让包可见，该 API 在 Android 11+ 会恒返回 null
+             （已装也误判「未安装」）。本声明使 com.zzh.goodhub 对该调用可见。 -->
+        <package android:name="com.zzh.goodhub" />
     </queries>
 </manifest>

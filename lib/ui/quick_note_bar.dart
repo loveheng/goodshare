@@ -346,7 +346,7 @@ class _QuickNoteBarState extends State<QuickNoteBar> {
               return Align(
                 alignment: Alignment.bottomCenter,
                 child: Semantics(
-                  // 无障碍（ui-spec §6.0）：拉手无文字，TalkBack 需中文 label
+                  // 无障碍（ui-design §6.0）：拉手无文字，TalkBack 需中文 label
                   button: true,
                   label: _expanded ? '速记便签' : '速记便签，点按或上滑展开',
                   child: GestureDetector(

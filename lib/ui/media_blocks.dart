@@ -396,7 +396,7 @@ class _MediaAudioBarState extends State<MediaAudioBar>
   /// 描边是**结构分层**（2026-10-04 用户实证「音频条和背景色太接近不好区
   /// 分」）：单靠色阶差在深/浅主题下都可能与页面背景糊在一起，描边恒定可见。
   /// 底纹走 CustomPainter 而非位图资产：随主题槽位取色，换主题零维护
-  ///（ui-spec §2.4 装饰色纪律：源图彩色不落一色进代码）。
+  ///（ui-design §2.4 装饰色纪律：源图彩色不落一色进代码）。
   Widget _cardShell({required ColorScheme scheme, required Widget child}) {
     return Container(
       // clipBehavior：底纹（内层 DecoratedBox 画满整卡）随圆角裁切，
@@ -463,7 +463,7 @@ class _MediaAudioBarState extends State<MediaAudioBar>
 ///
 /// 作用是把卡片从页面背景里「托」出来（2026-10-04 拍板）：底纹 + 描边组合
 /// 分层，不依赖色阶差。纯代码绘制 = 随主题槽位取色，换主题零维护、不引入
-/// 位图资产（ui-spec §2.4 装饰色纪律：装饰不走橘红）。
+/// 位图资产（ui-design §2.4 装饰色纪律：装饰不走橘红）。
 class _AudioWaveDecoration extends Decoration {
   const _AudioWaveDecoration({
     required this.lineColor,

@@ -135,4 +135,31 @@ void main() {
     expect(back.todoState.single.done, isTrue);
     expect(back.hasAttachment, isTrue);
   });
+
+  // ── §3.12 任务通知接缝（Notify-then-Pull）──
+
+  test('§3.12.1 通知时机：事务内缓冲到提交后发，同事务多条入队只发一次', () async {
+    final repo = Repository();
+    final item = await repo.add(
+      InboxItem(itemType: InboxItem.typeNote, rawContent: 'notify 时序', createdAt: 1),
+    );
+    var fired = 0;
+    repo.onTaskQueued = () => fired++;
+
+    await repo.transaction((txn) async {
+      await repo.enqueueTask(item.id!, Repository.taskLlmSummarize, txn: txn);
+      expect(fired, 0,
+          reason: '事务未提交时 PENDING 行对外不可见，此时通知会让宿主拉开空');
+    });
+    expect(fired, 1, reason: '提交之后补发一次（先持久化 PENDING、后发通知）');
+
+    await repo.enqueueTask(item.id!, Repository.taskLlmTags);
+    expect(fired, 2, reason: '无事务时 insert 自成原子提交，可立即通知');
+
+    await repo.transaction((txn) async {
+      await repo.enqueueTask(item.id!, Repository.taskLlmSummarize, txn: txn);
+      await repo.enqueueTask(item.id!, Repository.taskLlmTags, txn: txn);
+    });
+    expect(fired, 3, reason: '同一事务多条入队只发一次——通知不承载任务数量语义');
+  });
 }

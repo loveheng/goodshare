@@ -149,7 +149,7 @@ class _TaskTile extends StatelessWidget {
         'pending' => ('等待', scheme.outline),
         'processing' => ('处理中', scheme.primary),
         // 暂停/完成强调色克制：走色阶与语义槽位，不用 Material 调色板字面量
-        // （mymind 基准，ui-spec §2.1）。
+        // （mymind 基准，ui-design §2.1）。
         'paused' => ('已暂停', scheme.onSurfaceVariant),
         'completed' => ('完成', scheme.secondary),
         'failed' => ('失败', scheme.error),

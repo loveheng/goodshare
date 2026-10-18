@@ -7,26 +7,19 @@ description: 拾贝 goodshare（Flutter 分享收集器+MCP）分层架构与无
 
 **设计 SSOT = `docs/architecture/human-ai-parity.md`**（试金石、命令矩阵、并发机制的完整论证在那儿）。本 skill 只装三样文档里没有的东西：**落地锚点、踩坑口径、自查 / 反模式清单**。
 
-> **层级**：本 skill 是写路径/分层的**操作性事实源**（怎么改代码看这里）；`docs/engineering/ai-dev-spec.md` 是**约束清单与立法原则**（为什么这样定、判定标准，含反模式与「明确不做」全集）。冲突时按规范 §8 裁决链（显式决策 > 项目 skill > 规范 > 通用惯例）。两边同步改，禁止单边新增硬规则。
+> **层级**：规则 landscape 三段分工——`docs/project/coding-standards.md` 是**结构立法 SSOT**（分层矩阵 / 机械护栏映射 / 落点决策 / 质量门禁）；本 skill 是写路径的**行为规则与操作性事实源**（七条硬规则 / 三套机制 / 自查清单，怎么改代码看这里）；`docs/engineering/ai-dev-spec.md` 是**立法原则与判定标准**（为什么这样定，含反模式与「明确不做」全集）。冲突时按裁决链（显式决策 > 项目 skill > coding-standards 与 ai-dev-spec > 通用惯例）。新增硬规则双边同步，禁止单边立法。
 
 ## 用法
 
 1. 动 `lib/action/`（命令 / 校验）、`lib/mcp/tools.dart`、摄入链路 `lib/share/`、或给页面加写操作前，先读 `docs/architecture/human-ai-parity.md`。
 2. 按本文件「自查清单」逐条过。
-3. 收尾跑机械护栏：`toolbox run arch-guard`（7 条规则：UI 禁直连 repo 写 / 禁内联 json / 禁 Platform 分支 / 禁裸 Image / 摄入禁直写 repo / 禁另起 WidgetsBindingObserver / 禁裸排版字面量；规则与白名单见 `scripts/agent-tools/arch-guard.sh`）。
+3. 收尾跑机械护栏：`toolbox run arch-guard`（7 条规则：UI 禁直连 repo 写 / 禁内联 json / 禁 Platform 分支 / 禁裸 Image / 摄入禁直写 repo / 禁另起 WidgetsBindingObserver / 禁裸排版字面量；映射与规则正文 = `coding-standards` §2，脚本与白名单见 `scripts/agent-tools/arch-guard.sh`）。
 
 ## 分层架构（UI 与业务分离）
 
 **UI 层只负责交互态与渲染，禁止内联任何业务逻辑**；领域规则、持久化、文件 IO、JSON 编解码一律下沉。
 
-| 层 | 目录 | 职责 | 本层禁止 |
-|---|---|---|---|
-| **UI 层** | `lib/pages/` `lib/ui/` | 交互态（选中/草稿/画笔/颜色）、渲染、手势采集；读经 `Repository`、写经 `ItemActionHandler` | 文件 IO、`jsonDecode/Encode`、路径拼接、直连 `repo.add`/`enqueueTask`、领域判定 |
-| **动作层** | `lib/action/`（commands.dart / item_action_handler.dart / machine_json_validator.dart） | 命令协议 + UI/MCP/管线**共用**唯一写路径 `execute`（`executeAll` 事务批量）+ `machine_json` Schema 校验 + **全部领域防呆** | 重复造写入口；把校验留在 UI / MCP 层 |
-| **数据层** | `lib/data/`（db.dart / repository.dart） | `Repository`（共用查询入口）、sqflite 三表、FIFO 写锁 | 领域规则 |
-| **领域 Store** | `lib/models/`（annotation.dart / draft_store.dart） | 类型专属领域数据读写落盘（标注、草稿） | UI 直接读写文件 |
-| **AI 管线** | `lib/ai/` | `AiReconstructor` 抽象 / Registry / 队列消费者 | —— |
-| **MCP 服务** | `lib/mcp/` `lib/service/` | 复用动作层 / 数据层 | 复制 UI 的业务逻辑 |
+> **分层依赖矩阵（8 层 + 角色 + 允许出向 + 本层禁止）权威正文 = `docs/project/coding-standards.md` §1**（结构立法，含摄入/媒体层与 R1–R7 护栏映射）；本节不复制矩阵（防双源），只装写路径行为规则。
 
 ### 硬规则（违反即重构）
 

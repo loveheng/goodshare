@@ -6,7 +6,7 @@ import 'package:goodshare/data/repository.dart';
 import 'package:goodshare/models/item.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-/// 工作区命令单测（2026-09-30）：条目集合容器，多对多，见 ui-spec §4.11。
+/// 工作区命令单测（2026-09-30）：条目集合容器，多对多，见 ui-design §4.11。
 void main() {
   setUpAll(() {
     sqfliteFfiInit();
