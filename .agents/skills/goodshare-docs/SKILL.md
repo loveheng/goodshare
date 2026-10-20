@@ -52,5 +52,6 @@ toolbox run docs-lint   # 别名 dl；pre-commit-gate 对 docs/ 改动自动分�
 
 ## 维护协议
 
+- **fact-probe 底稿处置（接入/对账场景）**：项目形态先判定——非编码工作区不接入（dev-init §1 第 1 步，留一行理由）；存量项目须将 fact-probe 底稿与既有 `<repo>-workflow` skill **逐条 diff**，差异点按 **dev-init §1.5 第 1 项**核实（命令实测 ≥1 条跑通、语义命名 AI 提炼，底稿严禁直接采信）。
 - 域目录表只随**域级变迁**更新（`docs-spec §2`），逐篇文档增删不回改本 skill；表内禁记文档数、文件清单等易腐数据，禁写过程叙事（何时新增/迁入/「原没有 X」）——见 `docs-spec §7` 反模式。
 - 规范机制变更不回改本 skill；全局 docs-spec 升级时本文件无需改（指针即同步）。

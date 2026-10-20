@@ -114,3 +114,17 @@ dummy 的 slowEcho/reverseDemo e2e 覆盖，#10 真机联调前先有回归护�
 1. `settings_page.dart` 删「MCP 网关」分区与「服务与连接」tile（设置树不再可见）。
 2. 长按「关于」分区标题 → 调试菜单 BottomSheet（`_showDebugSheet`）→ 「MCP 调试服务」tile（带运行态）→ 进 McpPage。调试菜单是收纳位，后续其他调试入口也挂这里。
 3. `mcp-integration.md` 手机端准备第 1 步改为长按手势路径。
+
+## 2026-10-20 #6 SDK 接入落地：手搓 AIDL 第三份副本 → goodhub-mcp-plugin-core 0.1.0
+
+goodshare 成为 SDK 首个 Dart 业务层使用方。把本地 Binder 插件从「手搓 AIDL + 手写 IMcpChannel.Stub」迁移到官方 SDK（2026-10-20 从 goodhub 仓 android-sdk/ 拆出的独立仓 goodhub-mcp-sdk，v0.1.0 已推 tag）。
+
+1. **依赖接入**：`android/build.gradle.kts` 的 `allprojects.repositories` 加离线 maven 源（默认 `/home/zzh/app/goodhub-mcp-sdk/dist/maven-repo`，可用 `GOODHUB_MCP_SDK_REPO` 环境变量覆盖；CI 克隆公开 SDK 仓后指向其 dist）+ GitHub Packages 回退源（需 read:packages 的 PAT）。`android/app/build.gradle.kts` 加 `implementation("com.zzh.goodhub.mcp:goodhub-mcp-plugin-core:0.1.0")`；`:plugin-core` 用 `api` 传递引入 `:contract` 契约 AAR，无需单独声明。删 `buildFeatures { aidl = true }`（无其它 .aidl）。
+2. **McpBinderService 改造**：`class McpBinderService : GoodHubPluginService(SERVER_ID, SERVER_TITLE)`——由 SDK 承载 AIDL 语义 + 基类 `onBind`（返回其内部 Stub）。**删除**手写 `IMcpChannel.Stub` 整块（`call`/`registerCallback`/`answerReverse`）+ 自写 `onBind`；**接管三个口子**：`handleJsonRpc(req)`（全量转 MethodChannel `dispatch`→Dart `McpServer.handleJsonRpc`，保留 ready 5s + per-call 5s 超时，-32000 语义不变）、`onHostCallback(cb)`（`McpCallbackHub.attach(cb)` + 通知 Dart `hostCallbackReady`）、`onHostAnswerReverse(resp)`（post→Dart `answerReverse`）。Dart→宿主推帧原 `callback?.onEvent(json)` 改 `emitEvent(json)`（基类持宿主回调）。`McpCallbackHub` 保留供 MainActivity 侧 task_queued 通知桥。
+3. **删自拷 AIDL**：删除 `android/app/src/main/aidl/` 整个目录（IMcpChannel/IMcpCallback），契约唯一物理副本现归 SDK `:contract` AAR——跨仓手抄 AIDL 历史清零。
+4. **CI**：`.github/workflows/android.yml` v* 构建前加步骤克隆公开 SDK 仓（HTTPS 免认证）并 `export GOODHUB_MCP_SDK_REPO=/tmp/goodhub-mcp-sdk/dist/maven-repo`，使发布构建可解析 plugin-core（默认本地路径在 CI 跑机不存在）。
+5. **验证**：`cd android && ./gradlew :app:assembleDebug` → **BUILD SUCCESSFUL**；`flutter analyze` → **No issues found!**。
+
+**关键决策偏差（务必记录）**：原 #6 计划是「hand-coded switch(name) 迁 @McpTool 注解」，但 goodshare 工具在 Dart（McpServer），SDK 默认反射派发器扫描本类 `@McpTool` 方法对 Dart 宿主无效 → `tools/list` 会空、工具全量丢失。故走 SDK 为 Dart 业务层开的 `handleJsonRpc` 接管口子（保留 goodshare 自己的 Dart 通道），**不写 @McpTool**。这正是 SDK 设计的 Dart-bridge 路径，goodshare 作为首个 Dart 使用方验证可行。
+
+**行为对照（迁移零差异）**：AIDL 包名 `com.zzh.goodhub.mcp`/发现四常量/方法签名全部冻结（SDK 仓一致）；`MethodChannel` 方法名 `ready/dispatch/hostCallbackReady/answerReverse/pushEvent` 与 McpCallbackHub 通知桥零改动；-32000（引擎未就绪/call timeout）语义不变；5s 超时行为不变。真机联调（#10）须逐项核工具清单/Schema/错误码，预期与迁移前一致。

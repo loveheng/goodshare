@@ -10,10 +10,8 @@ android {
     compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
-    // 本地 Binder 插件 AIDL（com.zzh.goodhub.mcp.IMcpChannel/IMcpCallback，goodhub 契约）
-    buildFeatures {
-        aidl = true
-    }
+    // AIDL 契约（com.zzh.goodhub.mcp.IMcpChannel/IMcpCallback）现由 goodhub-mcp SDK 的
+    // :contract AAR 提供（goodshare 侧自拷副本已删除，跨仓手抄历史清零），无需 aidl buildFeature。
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -65,6 +63,12 @@ dependencies {
     // 国内适配（2026-09-28 决策）：切 bundled 中文库 com.google.mlkit:*——模型打进 APK，
     // 离线可用，不依赖 GMS/Play 动态下载。注意：com.google.android.gms:play-services-mlkit-*
     // 是 unbundled 变体（模型经 Play 下载），国内不可用，勿用。
+    // goodhub-mcp 本地插件 SDK（:plugin-core，AIDL 语义 + 基类 onBind 由此承载；
+    // 经 api 依赖传递引入 :contract 契约 AAR，无需单独声明）。goodshare 业务逻辑在 Dart，
+    // 故仅继承 GoodHubPluginService 接管 handleJsonRpc / onHostCallback / onHostAnswerReverse，
+    // 不写 @McpTool（否则反射派发器扫不到工具）。
+    implementation("com.zzh.goodhub.mcp:goodhub-mcp-plugin-core:0.1.0")
+
     implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 
     // 视频切片导出（media-native P3，ADR 见 context/decisions.md「media-native」节）：

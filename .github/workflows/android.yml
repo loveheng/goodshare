@@ -59,7 +59,15 @@ jobs:
         run: flutter analyze
 
       - name: 单测（全过交付线）
-        run: flutter test
+        run: flutter test --timeout 60s
+
+      # goodhub-mcp SDK 解析（v* 构建才跑 Gradle）：本地离线路径在 CI 跑机不存在、
+      # SDK 仓 dist/ 又 gitignore 未随仓提交，故走 GitHub Packages 公网坐标
+      # （android/build.gradle.kts）。公开包若支持匿名读取即可直连；跨仓 read:packages 受限时
+      # 须在仓库 Secrets 配 GH_PACKAGES_TOKEN（scope 含 read:packages 的 PAT）。
+      - name: 注入 SDK Packages 令牌（如已配置）
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: echo "GH_PACKAGES_TOKEN=${{ secrets.GH_PACKAGES_TOKEN }}" >> "$GITHUB_ENV"
 
       # 只构建 arm64-v8a（2026-09-27 决策）。注意：--target-platform 必须配合
       # --split-per-abi 才会真正裁 ABI（单用仍产出三架构包），产物为 app-arm64-v8a-release.apk
