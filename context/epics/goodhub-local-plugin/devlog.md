@@ -128,3 +128,5 @@ goodshare 成为 SDK 首个 Dart 业务层使用方。把本地 Binder 插件从
 **关键决策偏差（务必记录）**：原 #6 计划是「hand-coded switch(name) 迁 @McpTool 注解」，但 goodshare 工具在 Dart（McpServer），SDK 默认反射派发器扫描本类 `@McpTool` 方法对 Dart 宿主无效 → `tools/list` 会空、工具全量丢失。故走 SDK 为 Dart 业务层开的 `handleJsonRpc` 接管口子（保留 goodshare 自己的 Dart 通道），**不写 @McpTool**。这正是 SDK 设计的 Dart-bridge 路径，goodshare 作为首个 Dart 使用方验证可行。
 
 **行为对照（迁移零差异）**：AIDL 包名 `com.zzh.goodhub.mcp`/发现四常量/方法签名全部冻结（SDK 仓一致）；`MethodChannel` 方法名 `ready/dispatch/hostCallbackReady/answerReverse/pushEvent` 与 McpCallbackHub 通知桥零改动；-32000（引擎未就绪/call timeout）语义不变；5s 超时行为不变。真机联调（#10）须逐项核工具清单/Schema/错误码，预期与迁移前一致。
+- [2026-10-24] [变更]: SDK 0.2.0 接入对齐：依赖 0.1.0→0.2.0（契约 v1 不变，纯增量）；SERVER_TITLE 中文展示名双处改「拾贝」（Kotlin 常量+Manifest meta-data 防双份配置 split-brain）；mcpConsumable 保持默认 false（default-deny，goodshare 拍板 MCP 不对外）；@McpTool/visibility/hints 不适用（Dart 业务层走 handleJsonRpc 接管，反射派发器不参与，tools/list 由 Dart 生成不标即最严=默认 PRIVATE 语义成立）。
+- [2026-10-24] [验证]: cd android && ./gradlew :app:assembleDebug → BUILD SUCCESSFUL (1m31s)；flutter analyze → No issues found

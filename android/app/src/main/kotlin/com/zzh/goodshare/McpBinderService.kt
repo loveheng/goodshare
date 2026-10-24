@@ -190,7 +190,7 @@ class McpBinderService : GoodHubPluginService(SERVER_ID, SERVER_TITLE) {
         /** serverId：与 AndroidManifest meta-data com.zzh.goodhub.SERVER_ID 保持一致（冻结）。 */
         const val SERVER_ID = "goodshare"
         /** serverTitle：与 AndroidManifest meta-data com.zzh.goodhub.SERVER_TITLE 保持一致（冻结）。 */
-        const val SERVER_TITLE = "GoodShare"
+        const val SERVER_TITLE = "拾贝"
 
         const val CHANNEL = "goodshare/mcp_binder"
         const val ENTRYPOINT = "mcpBinderMain"

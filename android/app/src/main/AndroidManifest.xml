@@ -76,7 +76,7 @@
                 android:value="goodshare" />
             <meta-data
                 android:name="com.zzh.goodhub.SERVER_TITLE"
-                android:value="GoodShare" />
+                android:value="拾贝" />
         </service>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

@@ -67,7 +67,7 @@ dependencies {
     // 经 api 依赖传递引入 :contract 契约 AAR，无需单独声明）。goodshare 业务逻辑在 Dart，
     // 故仅继承 GoodHubPluginService 接管 handleJsonRpc / onHostCallback / onHostAnswerReverse，
     // 不写 @McpTool（否则反射派发器扫不到工具）。
-    implementation("com.zzh.goodhub.mcp:goodhub-mcp-plugin-core:0.1.0")
+    implementation("com.zzh.goodhub.mcp:goodhub-mcp-plugin-core:0.2.0")
 
     implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 
