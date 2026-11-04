@@ -227,9 +227,9 @@ void main() {
     expect(byJob['found'], isFalse, reason: 'job_id 入口也必须做条目可见性门控');
   });
 
-  test('工具清单共 43 个且不含 execute_action', () {
+  test('工具清单共 44 个且不含 execute_action', () {
     final names = toolSchemas().map((s) => s['name']).toList();
-    expect(names.length, 43); // M3 +ai_suggest_tags；ai-template P1 +4 模板 CRUD；instant-ai-sampling T1 +ai_summarize_now
+    expect(names.length, 44); // M3 +ai_suggest_tags；ai-template P1 +4 模板 CRUD；instant-ai-sampling T1 +ai_summarize_now；W4-A +release_ai_task
     expect(names, isNot(contains('execute_action')));
     expect(names, containsAll([
       'update_item', 'unlock_edit', 'set_vault', 'set_pin', 'reprocess_item',
@@ -246,6 +246,8 @@ void main() {
       'get_job_status', 'list_jobs',
       // AI 宿主 App 接缝（ai-app-split.md §3，M1）
       'claim_ai_task', 'touch_ai_task', 'apply_ai_result',
+      // Release 原语（§3.12.4，2026-11-04 W4-A 增）
+      'release_ai_task',
     ]));
   });
 
@@ -853,6 +855,31 @@ void main() {
     final r = jsonDecode(textOf(await callTool('touch_ai_task', {'task_id': 'no-such-task'}, repo)))
         as Map<String, Object?>;
     expect(r['exists'], isFalse);
+  });
+
+  test('release_ai_task：processing → pending 立即回收可再认领；非 processing 态 released=false（§3.12.4）', () async {
+    final it = await repo.add(aiItem(itemType: InboxItem.typeNote, rawContent: '正文', createdAt: 1));
+    final ev = await repo.enqueueTask(it.id!, Repository.taskLlmSummarize);
+    await callTool('claim_ai_task', {}, repo);
+    expect((await repo.taskById(ev))!['status'], 'processing');
+
+    // 放弃认领：立即回 pending（不等 30s 僵尸回收）。
+    final r = jsonDecode(textOf(await callTool('release_ai_task', {'task_id': ev}, repo)))
+        as Map<String, Object?>;
+    expect(r['released'], isTrue);
+    expect((await repo.taskById(ev))!['status'], 'pending');
+    // 立即可再次认领（Release 语义闭环）。
+    final r2 = jsonDecode(textOf(await callTool('claim_ai_task', {}, repo)))
+        as Map<String, Object?>;
+    expect(r2['task_id'], ev);
+
+    // 非 processing 态（已 completed）→ released=false。
+    await callTool('apply_ai_result', {
+      'task_id': ev, 'id': it.id, 'summary_md': '完成',
+    }, repo);
+    final r3 = jsonDecode(textOf(await callTool('release_ai_task', {'task_id': ev}, repo)))
+        as Map<String, Object?>;
+    expect(r3['released'], isFalse);
   });
 
   test('apply_ai_result：摘要/关键词/块摘要经管线同一出口落库（actor=pipeline）', () async {

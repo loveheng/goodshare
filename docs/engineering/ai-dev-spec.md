@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-17
+updated: 2026-11-01
 ---
 
 # AI 协作开发规范（engineering/）
@@ -55,6 +55,11 @@ updated: 2026-10-17
 - 写路径经 `Repository.synchronized` FIFO 串行；读查询不入队。锁挂 `Repository` 不挂 Handler（MCP 每次 new 实例，实例锁无效）。
 - 「读→思考→写」长窗口必须带 `expectedVersion` 乐观锁，否则即静默覆盖。
 - 耗时（>数百 ms）路径转 Job（入队即返 `job_id`），禁止在串行锁内 await 重活。
+
+### 端侧推理接缝（goodhub `:engine`）
+
+- 停用词契约（D-3 重构 2026-11-01）：`generationParams.stopSequences: List<String>` **原始字符串下发**，编码判定下沉各 Runner Native 自治（自绑 tokenizer 实时 match）。**禁预编码 token id 跨后端下发**——GGUF（BPE 词表）与 `.litertlm`（SentencePiece）词表无关联，同一组 id 跨栈语义错乱。AIDL/Bridge/Runner 任一层改此契约须同轮修本条。
+- 生成参数其余键（`maxTokens`/`temperature`/`topP`/`foreground`/`promptFilePath`）键名与缺省值单源 = goodhub `SessionTicketWire.GenerationParams`，禁缝外重抄。
 
 ### 工具描述引导（给 AI 的"接口文档"）
 

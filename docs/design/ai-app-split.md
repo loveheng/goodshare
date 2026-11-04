@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-18
+updated: 2026-11-04
 ---
 
 # AI 宿主 App 拆分契约（M0 接缝）
@@ -150,12 +150,28 @@ capabilities 声明：`'sampling': {}`；语义 = MCP 标准 `sampling/createMes
 | 项 | 契约 |
 |---|---|
 | 承载通道 | **请求作用域内夹带**：server 在带 `_meta.progressToken` 的 `tools/call` SSE 响应流内发请求帧 `{jsonrpc, id: 'srv_<n>', method: 'sampling/createMessage', params}`（id `srv_` 前缀防与客户端请求 id 相撞）；**单 JSON 响应（无 token）无承载通道**——sampling 消费工具在非流式调用下返回结构化 status 而非报错 |
-| 请求 params | MCP 标准：`{messages: [{role: 'user'/'assistant', content: {type: 'text', text}}], systemPrompt?, maxTokens}`——goodshare 消费工具族：`ai_suggest_tags`（只读标签建议，M3 最小验证）+ `ai_summarize_now`（只读即时摘要预览，instant-ai-sampling 一期，2026-10-17）；均不落库不入队，落库由调用方经既有写路径完成。**`pool` 扩展字段**（Tier 1 私有约定，params 平级 String，缺省 = 默认池）：宿主据此分池记配额（见下行），Tier 2 server 不发 = 走默认池无感 |
+| 请求 params | MCP 标准：`{messages: [{role: 'user'/'assistant', content: {type: 'text', text}}], systemPrompt?, maxTokens}`——goodshare 消费工具族：`ai_suggest_tags`（只读标签建议，M3 最小验证）+ `ai_summarize_now`（只读即时摘要预览，instant-ai-sampling 一期，2026-10-17）；均不落库不入队，落库由调用方经既有写路径完成。**`pool` 扩展字段**（Tier 1 私有约定，params 平级 String，缺省 = 默认池）：宿主据此分池记配额（见下行），Tier 2 server 不发 = 走默认池无感。**`responseFormat` 扩展字段**（2026-11-03 S17b 增，Tier 1 私有约定，params 平级可选对象 `{type: 'json'|'regex', value: string}`，缺省 = 无约束零变化）：宿主端侧供给面约束解码规格随生成参数下发——结构化输出场景宿主禁截断降级档（截断产物必然解析失败），端侧解码失败带同一份规格回退云端（goodhub K15）；键名单源 = 宿主 `GenerationConfig.responseFormat` ↔ `:engine` `GenerationParams.responseFormatType/Value`（goodhub SessionTicketWire.kt，2026-10-11 regex/JSON Schema 旧裸机桥真机实证合规） |
 | 回程路径 | 宿主按 id **POST 回端点** `{jsonrpc, id: 'srv_<n>', result: {role: 'assistant', model, content: {type: 'text', text}}}` 或 `{..., error: {code, message, data?}}`；server 按 id 唤醒等待中的工具调用，超时（90s）视为宿主不可达 |
 | 配额（宿主侧 enforce，goodhub D3 拍板；2026-10-17 分池扩展） | per-server **滑动窗口次数制**，按 `pool` 分池（配额 key = `serverKey` / `serverKey:pool`）：**默认池 20 次/60min**（防滥用定位）+ **instant 池 60 次/60min**（即时交互型工具，D2 拍板）；均内存态不落盘（重启清零，定位防滥用非计费）+ 单次输出 maxTokens 宿主硬顶 clamp（1024，D3 拍板维持）；超限宿主回 error `-32000`（data.hint 带 retry after）——server 侧透传，消费工具降级为 `status: sampling_quota_exceeded` |
 | 错误语义 | 宿主未启用 → `-32601`；参数违规 → `-32602`；配额 → `-32000`；宿主推理失败/回程超时 → `-32603`/`-32003`。**消费工具侧一律不 isError**（环境态不计宿主熔断，模型可改走异步管线） |
 | 隔离与围栏（宿主侧） | 临时会话语义（goodhub architecture §15）：推理仅用请求自带消息，无记忆沙盒注入、无 UI 轨迹；N7 出站围栏经云引擎装饰器单咽喉自然覆盖 |
 | 宿主 Polyfill | server 未声明 sampling → 宿主不强制流式、不开消费 handler（Tier 2 零破坏）；宿主未启用 handler → server 请求收到 `-32601`，不悬挂 |
+
+### 3.11.2 端侧算力转发反向接缝 · host/onDeviceComplete（W5 增量，2026-11-04）
+
+- **私有反向 method（Tier 1，与 sampling/createMessage 并列）**：同机插件 App 经 `tools/call` 请求作用域内的反向请求帧发 `{"jsonrpc":"2.0","id":"srv_<n>","method":"host/onDeviceComplete","params":{"instruction":"<任务指令>","input":"<原文>"}}`，宿主经**端侧供给面**单发推理并回 result `{"role":"assistant","model":"goodhub-on-device","content":{"type":"text","text":"<产出>"}}`。
+- **与 sampling/createMessage 并存不互替**：sampling 反向请求走宿主**云端**引擎；本接缝走宿主**端侧**算力（离线/低延迟/不耗宿主云端成本），由转发方按需选择。
+- **降级语义显式可知（红线）**：端侧算力尽力而为——未装载/降级窗口/PII 拦截/并发与频次超限均回 error 帧（code -32000，message 含原因与「宿主不兜底云端」提示），**宿主不自动兜底云端**，转发方须自行处置失败；调用幂等无副作用，可重试。
+- **配额**：宿主侧 K22 事务语义（并发上限 2 执行槽 + 频次滑动窗口 20 次/60min，复用反向请求配额池形态；频次仅实际产出计入）。
+- **宿主回归锚** = goodhub `test/coordinator/supply_quota_test.dart` + `reverse_wiring` 接线（McpRuntime 与 Gateway 两装配点同款，Binder/HTTP 插件路径双路可达）。
+- **调用方进程死亡 → 宿主协作式打断并作废本次调用（红线）**：宿主为**调用方链路**注册**独立**死亡代理——既有方向的死亡代理（宿主作客户端感知插件死亡，收敛宿主在途请求）**不覆盖反向路径**，须新增链路而非复用既有字段；检测到调用方进程死亡（系统回收或用户强退）即**协作式打断**本次端侧执行（中断只在生成循环检查点生效，非强制终止；打断未生效不得假设算力已腾出，禁以重启引擎腾算力）并**作废本次调用**：产出即弃、不回程、不计调用方配额频次。转发方重启后不得假设上一笔调用仍在宿主侧执行。
+- **宿主回归锚（死亡联动补充）** = goodhub `test/coordinator/caller_death_interrupt_test.dart`（注册表：按调用方身份键打断在途 + 单例装配）+ `test/mcp/binder_caller_death_test.dart`（新增链路 `onCallerDied` 与既有 `onTransportError` 死亡信封互不替代）+ `test/coordinator/reverse_wiring_test.dart`「调用方身份键同源」钉（身份键 = 包名，与平台侧死亡事件键同源——serverId 与包名不同值，混用即漏打断）。
+
+### 3.11.1 跨 App 流式口径（W4 验收钉，2026-11-04）
+
+- **首期跨 App 导出只暴露聚合完成面**：`sampling/createMessage` 返回单 JSON result（`content.text` = 完整聚合文本），**不分块、无流式字段**——外部 App 经导出项调用拿到的是聚合结果；引擎层内部的流式实现是对外契约的不可见细节。
+- **后续开放跨 App 流式须显式声明承载机制**（MCP progress 通知 / SSE 分帧等），并处理流中断与半截产物清理；未声明前 server 侧不得假设流式可用，避免联调期对「是否流式」扯皮。
+- 宿主侧回归锚 = goodhub `test/mcp/sampling_test.dart`「W4 验收钉·跨 App 流式口径」。
 
 ### 3.12 任务通知接缝 · Notify-then-Pull（2026-10-18 新增）
 
@@ -181,6 +197,12 @@ capabilities 声明：`'sampling': {}`；语义 = MCP 标准 `sampling/createMes
 6. **毒丸防护（必做）**：推理失败须**主动** `apply_ai_result` 回写 failed 终态（带 note），不得留 `processing` 等 30s 僵尸回收——否则该任务被 `reclaimStaleTasks` 重置 `pending` 后反复认领 = 无限重试烧额度。**这是既有实现的缺口，随本接缝一并修**
 7. **生命周期解绑**：连接断开/卸载/重扫时清定时器并复位状态机；触发前确认通道在线（`ConnectionHealth` online）——严禁向已断 Binder 抛未捕获 IPC 异常
 8. **熔断**：单轮连续多次推理异常 → 暂停本轮后续处理，不无限重试
+
+#### 3.12.4 放弃认领原语 · Release（2026-11-04 W4-A 增，task-capability）
+
+- **工具**：`release_ai_task(task_id)`——宿主算力暂时不可用（如单执行槽冲突）时主动放弃认领：任务 **processing → pending 立即**，可被再次认领，不等 30s 僵尸回收（`reclaimStaleTasks` 仍是进程被杀场景的兜底，零变更）。返回 `{released: bool}`（false = 任务不在 processing 态：已删除/回收/已终态）。
+- **语义正交**：Release = 任务本身可完成、宿主暂时没算力（瞬时态）；apply(failed) = 任务不可完成（毒丸防护终态，§3.12.2-6 不变）。
+- **宿主侧承载**：`TaskSource.release` 契约（task 层来源抽象，goodshare 首个实现）；消费循环在槽冲突类失败时先 Release 再让出，替代「认领后不回写等 30s」的旧形态。
 
 #### 3.12.3 宿主不可达：呈现与一键唤醒（Actionable Pending，2026-10-18 形态 B）
 

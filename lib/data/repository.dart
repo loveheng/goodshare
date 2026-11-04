@@ -1151,6 +1151,22 @@ class Repository extends ChangeNotifier {
     return n > 0;
   }
 
+  /// 放弃认领（ai-app-split.md §3.12 Release 原语，2026-11-04 W4-A 增）：
+  /// processing → pending——宿主算力暂时不可用（如单执行槽冲突）时主动
+  /// 释放任务，**立即**可被再次认领，不等 30s 僵尸回收。与毒丸防护
+  /// （apply failed 终态）语义正交：Release = 任务本身可完成、宿主暂时
+  /// 没算力；failed = 任务不可完成。返回是否释放成功（非 processing 则否）。
+  Future<bool> releaseRemoteTask(String taskId) async {
+    final db = await _database();
+    final n = await db.update(
+      'ai_task_queue',
+      {'status': 'pending', 'updated_at': DateTime.now().millisecondsSinceEpoch},
+      where: 'task_id = ? AND status = ?',
+      whereArgs: [taskId, 'processing'],
+    );
+    return n > 0;
+  }
+
   /// 结束任务：completed / failed / cancelled。
   ///
   /// [note] 为**原因说明**（失败时写错误原因，「完成但无产出」时写提示）——

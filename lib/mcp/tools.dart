@@ -633,6 +633,20 @@ List<Map<String, Object?>> _toolSchemasRaw() => [
         },
       },
       {
+        'name': 'release_ai_task',
+        'description': '放弃认领（ai-app-split.md §3.12 Release 原语，2026-11-04 W4-A 增，AI 宿主 App 专用）：'
+            '宿主算力暂时不可用（如单执行槽冲突）时主动释放任务——任务立即回 pending 可被再次认领，'
+            '不等 30 秒僵尸回收。与 apply_ai_result(failed) 语义正交：Release = 任务可完成、宿主暂时没算力；'
+            'failed = 任务不可完成（毒丸防护）。返回 released=false 表示任务不在 processing 态（已被删除/回收/已终态）。',
+        'inputSchema': {
+          'type': 'object',
+          'properties': {
+            'task_id': {'type': 'string', 'description': 'claim_ai_task 返回的 task_id'},
+          },
+          'required': ['task_id'],
+        },
+      },
+      {
         'name': 'apply_ai_result',
         'description': '回写认领任务的推理产出（AI 宿主 App 专用，ai-app-split.md §3.4），经 '
             'ItemActionHandler 统一落库（与本机 AI 管线同一出口，乐观锁/打码/标签并集自动生效）。'
@@ -1575,6 +1589,15 @@ Future<List<Map<String, Object?>>> callTool(
       await repo.touchTask(tid);
       final exists = (await repo.taskById(tid)) != null;
       return [_text(jsonEncode({'exists': exists}))];
+
+    case 'release_ai_task':
+      // ai-app-split.md §3.12 Release 原语（2026-11-04 W4-A 增）：processing
+      // → pending，宿主算力暂时不可用时主动让出——立即回收可认领，毒丸
+      // 防护（apply failed）语义不变、与其正交。
+      final rid = _str(args['task_id']);
+      if (rid == null || rid.trim().isEmpty) throw McpRpcError(errInvalidParams, '参数 task_id 不能为空');
+      final released = await repo.releaseRemoteTask(rid);
+      return [_text(jsonEncode({'released': released}))];
 
     case 'apply_ai_result':
       // ai-app-split.md §3.4：与进程内 QueueConsumer 同一落库出口——镜像其
