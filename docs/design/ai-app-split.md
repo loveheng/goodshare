@@ -270,3 +270,17 @@ LLM 任务输入纯文本 → 接缝零附件。后续 ASR 等重任务远程化
 > 顺序纪律：M1 加法先验证闭环，M2 减法才动——顺序不可反（摘了引擎无承接 = goodshare AI 功能裸奔）。
 >
 > M4 消费闭环的**落地顺序**：goodhub 侧消费循环（含 catch-up 与毒丸修复）**先行并独立可验收**——它不依赖通知即可工作（纯拉 + 挂载补拉）；goodshare 侧通知随后叠加，只优化延迟。若只发通知不修宿主消费循环，任务依旧不动（拉模型缺拉手的根因不因通知而消失）。
+
+#### §3.11.2 W6-a 增补 · allow_deferred 联合态 + 任务池拉取（2026-11-07，src: on-device-residency W6）
+
+- **`on_device_complete` 新增可选参数 `allow_deferred`（缺省 false，存量语义零变化）**：调用方显式 opt-in 后，宿主端侧冷态（未装载/降级窗口）不再同步 failFast，而是将任务原子登记入宿主任务池并返回回执：
+  ```json
+  {"execution_mode": "deferred", "task_id": "...", "status": "queued", "expiry_ms": 86400000}
+  ```
+- **`on_device_task_status` 新增导出工具（host 面 Allowlist 已登记）**：以 `task_id` 拉取任务状态/结果——**Pull 为交付真理源**（Push best-effort，Android 12+ cgroup freezer 吞 oneway）。`pendingDelivery` 态查询即置 `delivered` 并回结果；`failedExhausted`/`expired` 对调用方可见不可恢复。
+- **任务保质期**缺省 24h（`expiry_ms` 可调，>24h 未消化作废清账）；配额 per-caller 8 条 queued / 全局 64 条；**计费点 = 执行时**（产出才计，K22 同源——受理入池不计）。
+- **交付寻址绑定内核 UID 推导身份**（`CallerIdentityResolver` 链，S07b 同源）：status/cancel 一律 callerKey 过滤（M5——A 插件不可见 B 的任务）；无内核身份的 deferred 请求不受理。
+- **毒丸防线（M6）**：回池累计 retries ≥3 → 死信 `FAILED_EXHAUSTED`（对调用方可见不可恢复），禁无限自旋。
+- **消费契机**：顺风车（宿主前台活跃 → WARM 窗口排空）+ 充电黄金窗口（ADR 已立，用户开关默认关）——**严禁后台定时器自发拉起模型**。
+- **宿主回归锚** = goodhub `test/coordinator/supply_task_pool_test.dart`（8 例：状态机/配额/M5/毒丸/持久化恢复/联合态/存量零变化/status 拉取）。
+- **跨仓前置**：插件 SDK `:contract` AIDL 不动（联合态装进现有 JSON 信封）；plugin-core 解析面 + `api.md` 随 SDK 下一版发布。
