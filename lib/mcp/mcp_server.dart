@@ -265,8 +265,13 @@ class McpServer {
       }));
       return _serverRequest('sampling/createMessage', sParams, sseFrame);
     }
+    // W6-a 端侧算力通路（on-device-residency 第七节）：与 sampling 并列，
+    // 经宿主导出面 on_device_complete 调端侧引擎（allow_deferred 可选）。
+    Future<Object?> onDeviceComplete(Object? odParams) async {
+      return _serverRequest('host/onDeviceComplete', odParams, sseFrame);
+    }
     try {
-      final content = await callTool(name, args, repo, sampling: sampling);
+      final content = await callTool(name, args, repo, sampling: sampling, onDeviceComplete: onDeviceComplete);
       sseFrame(jsonEncode({
         'jsonrpc': '2.0',
         'id': id,
@@ -351,6 +356,19 @@ class McpServer {
   /// 宿主经 `answerReverse` 回注唤醒 completer（与 HTTP SSE 版同源，仅承载通道不同）。
   Future<Object?> _binderSampling(Object? sParams) =>
       _serverRequest('sampling/createMessage', sParams, _emitOnEvent);
+
+  /// W6-a 端侧算力反向请求（host/onDeviceComplete | host/onDeviceTaskStatus）：
+  /// 与 sampling 共用 onEvent + answerReverse 通道（method 名通用，宿主按 method 路由，
+  /// 联合态装进现有 JSON 信封——ai-app-split.md §3.11.2 / on-device-residency 第七节）。
+  ///
+  /// **快速失败**：[onEventEmitter] 为 null（Binder 未接入）时直接抛错——等 90s 超时
+  /// 毫无意义，环境态显式回给调用方（UI 降级「宿主离线」）。
+  Future<Object?> reverseRequest(String method, Object? params) async {
+    if (onEventEmitter == null) {
+      throw McpRpcError(-32000, '宿主未连入（端侧算力需 GoodHub Binder 连接）');
+    }
+    return _serverRequest(method, params, _emitOnEvent);
+  }
 
   /// Binder `_async` 工具后台执行：真实结果/错误经 onEvent 终帧回注（#4）。
   Future<void> _runAsyncTool(Object? id, String name, Map<String, Object?> args) async {

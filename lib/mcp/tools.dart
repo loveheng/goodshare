@@ -12,6 +12,7 @@ import '../data/block_artifacts.dart';
 import '../data/repository.dart';
 import '../models/item.dart';
 import 'ai_proxy.dart';
+import 'instant_prompts.dart';
 import 'jsonrpc.dart';
 
 /// MCP 工具集（PRD §7）：list/get/add/query_machine_data/get_timeline_context/
@@ -886,13 +887,6 @@ List<String> _parseSamplingTags(Object? reply) {
   return [trimmed];
 }
 
-/// 即时摘要专用 system prompt（instant-ai-sampling.md §4.1a，施工照录）。
-const String _kInstantSummarySystem =
-    '你是中文摘要引擎。为给定内容输出一段直接可用的摘要正文，不要输出解释、前言或代码块包裹。';
-
-String _instantSummaryUser(InboxItem item, String body) =>
-    '请为以下内容生成一段简洁准确的中文摘要（200 字左右，概括核心内容与关键结论）：\n\n'
-    '条目标题：${item.humanTitle ?? '（无）'}\n\n正文：\n$body';
 
 /// 即时消费族统一代理面（instant 配额池；single-flight 去重 + 截断 + 降级 + TTFT）。
 final AiSamplingProxy _samplingProxy = AiSamplingProxy();
@@ -905,6 +899,7 @@ Future<List<Map<String, Object?>>> callTool(
   /// 承载通道（请求帧夹带在 SSE 响应流内）；null = 宿主未开流式/不支持，
   /// 消费工具返回结构化 status 而非报错。
   Future<Object?> Function(Object? params)? sampling,
+  Future<Object?> Function(Object? params)? onDeviceComplete,
 }) async {
   final handler = ItemActionHandler(repo);
   switch (name) {
@@ -1505,8 +1500,8 @@ Future<List<Map<String, Object?>>> callTool(
         }))];
       }
       final reply = await _samplingProxy.run(
-        systemPrompt: _kInstantSummarySystem,
-        userPrompt: _instantSummaryUser(item, body),
+        systemPrompt: kInstantSummarySystem,
+        userPrompt: instantSummaryUserPrompt(item, body),
         pool: 'instant',
         sampling: sampling,
         maxTokens: 1024,
@@ -1662,7 +1657,10 @@ Future<List<Map<String, Object?>>> callTool(
         return [_text(jsonEncode({'task_status': 'completed', ...r.toJson()}))];
       } on McpRpcError catch (e) {
         final code = e.data is Map ? (e.data as Map)['code'] : null;
-        await repo.finishTask(taskId, 'failed', note: '回写被拒：${code ?? e.message}');
+        // R1：note 必须带具体原因（例如命中的坏标签），不能只剩机器码；
+        // code 附在末尾，既有 version_conflict 对账断言仍成立。
+        await repo.finishTask(taskId, 'failed',
+            note: '回写被拒：${e.message}${code != null ? '（$code）' : ''}');
         rethrow;
       }
 
