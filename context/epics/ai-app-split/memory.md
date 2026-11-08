@@ -31,4 +31,5 @@ last-merge: 2026-10-13
 - [2026-10-15] **宿主闭环已通（用户确认）**：goodhub 侧接入 `claim/touch/apply_ai_task` 跑通远程 LLM 闭环——宿主证据：`lib/mcp/goodshare_task_api.dart`（三原语）+ `lib/task/task_loop_service.dart`（认领循环）+ `lib/ui/claim_loop_page.dart`（交互面）；BYOK 云端（StepFun step-3.7-flash，chat+tool_calls 双探针过）与 Binder 节点卡（T5/T6）均已在宿主仓归并。goodshare 侧接缝工作**全部完成**，LLM 工具族（summarize_item/extract_tags/block_summarize/template_apply）从「入队空转」变为「宿主消费产出」。
 
 ## 断点
-- [断点] **ai-app-split 本仓 Scope 已收官**（2026-10-15）：M1 三工具 ✅ / M2 减法 ✅ / M2.5+3 契约扩展 ✅ / 宿主闭环 ✅。后续：① ai-template P2（template_apply 消费方已就绪）可开工；② 按宿主实际使用反馈补接缝（如附件通道 FileProvider 延后件、长任务 progress 中途帧）；③ 4B 端侧实测等原端侧议题随引擎迁出，归宿主账本。
+- [断点] **W6-a 真机验收全绿收官（2026-11-08）**：六项清单 ①-⑥ 全部 ✓——⑤ not_found / ⑥ stale 本轮补齐（`task_inject` + `edit_body` 调试设施，真机实证：not_found 注记 + 摘登记；stale 失败注记 + 结果不落库），详见 devlog 2026-11-08 收官条。消费端（goodshare）Scope 闭环；遗留 = freezer 加固（FGS）另立排期、样本条目带测试 append 痕迹。
+- [断点]（2026-10-15，历史）ai-app-split 本仓 Scope 收官：M1 三工具 ✅ / M2 减法 ✅ / M2.5+3 契约扩展 ✅ / 宿主闭环 ✅。后续：ai-template P2 可开工、按宿主反馈补接缝（附件通道 FileProvider 延后件 / 长任务 progress 中途帧）、4B 端侧实测归宿主账本。

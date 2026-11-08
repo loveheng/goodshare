@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show debugPrint, kReleaseMode;
 import 'package:flutter/material.dart';
 
 // Binder 插件后台入口（headless FlutterEngine 经 McpBinderService 拉起，mcpBinderMain）。
@@ -34,14 +35,22 @@ import 'ai/translation_mlkit.dart';
 import 'data/block_artifacts.dart' show BlockArtifactKind;
 import 'data/db.dart';
 import 'data/repository.dart';
+import 'models/item.dart' show bodyMd5;
 import 'pages/home_shell.dart';
 import 'service/mcp_controller.dart';
+import 'service/on_device_service.dart';
 import 'share/attachments.dart';
 import 'share/share_intake.dart';
 import 'share/text_collector.dart';
 import 'service/mcp_bridge_channel.dart';
 import 'sync/backup_service.dart';
 import 'update/remote_config_store.dart';
+import 'pages/mcp_page.dart';
+
+import 'debug/debug_wiring.dart';
+import 'debug/goodshare_app_refs.dart';
+import 'debug/goodshare_debug_log.dart';
+import 'debug/goodshare_debug_screenshot.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -60,6 +69,15 @@ Future<void> main() async {
   // 预热数据库，避免首页先闪空态；顺带物理清理超过 30 天的已删条目
   await Db.instance();
   await repo.purgeDeleted();
+  // W6-a 端侧异步消费（ai-app-split.md §3.11.2）：UI 主 isolate 托管 Pull
+  // （回前台批量拉 + 前台 30s 轮询，退后台即停）；正文指纹只读端口注入，
+  // 服务不持有 Repository（分层边界 + 测试可注入 fake）。
+  await OnDeviceAsyncService.instance.init(
+    readBodyMd5: (id) async {
+      final it = await repo.byId(id);
+      return it == null ? null : bodyMd5(it.humanMd);
+    },
+  );
   // 动作层先建：摄入（TextCollector/ShareIntake）与 MCP 共用同一写入口
   // aiQueue 用 late：handler 的 onEnqueued 闭包延迟引用，装配期（下方）才赋值
   late final AiQueueService aiQueue;
@@ -89,6 +107,10 @@ Future<void> main() async {
   );
   final mcp = McpController(repo: repo);
   await mcp.load();
+  goodshareMcpController = mcp; // 提升全局，供调试桥状态快照 / 路由目标复用
+  goodshareActionHandler = handler; // 调试桥 edit_body 复用正规写入口
+  goodshareRepo = repo;
+  goodshareCaps = caps; // 调试桥 set_caps 复用正规开关通道
   // 冷启动自动恢复 MCP 服务（上次开启过则重新拉起，含 WifiLock 修复）
   await mcp.restoreIfNeeded();
   // §3.12 UI 主 isolate 的任务入队通知出口（fan-out）：真正的任务入口
@@ -165,17 +187,33 @@ Future<void> main() async {
   consumer.canProcess = () async => aiQueue.inferenceAllowed;
   await aiQueue.init();
   runApp(
-    GoodShareApp(
-      repo: repo,
-      handler: handler,
-      collector: collector,
-      mcp: mcp,
-      caps: caps,
-      models: models,
-      aiQueue: aiQueue,
-      backup: backup,
+    RepaintBoundary(
+      key: goodshareScreenshotBoundaryKey,
+      child: GoodShareApp(
+        repo: repo,
+        handler: handler,
+        collector: collector,
+        mcp: mcp,
+        caps: caps,
+        models: models,
+        aiQueue: aiQueue,
+        backup: backup,
+      ),
     ),
   );
+  // 真机 AI 调试桥（debug-only）：结构化观测 + 语义树 + 确定性动作。
+  // release 编译期剔除，不进生产产物；token 仅 logcat 可见、每次启动轮换。
+  if (!kReleaseMode) {
+    GoodShareDebugLogSink.install();
+    final bridge = buildDebugBridge();
+    // DEGRADE: 调试桥是 debug-only 观测面，端口被同机其他 App 占用等启动失败
+    // 不得拖垮主 App；失败原因留 [DEGRADE] 日志，观测面缺席由调用方显式感知。
+    try {
+      await bridge.start(port: 0);
+    } on Object catch (e) {
+      debugPrint('[DEGRADE] debug-bridge 启动失败（App 主流程不受影响）: $e');
+    }
+  }
 }
 
 /// mymind 视觉基准主题（ui-design §2.1，2026-09-30 拍板）。
@@ -342,6 +380,24 @@ ThemeData _mymindTheme() {
   );
 }
 
+/// Deep Link 调试路由表：goodshare://debug/&lt;page&gt; → 对应调试页。
+///
+/// 仅 debug/profile 构建经 Android `MainActivity.getInitialRoute` 翻成 `/debug/&lt;page&gt;`
+/// 抵达此处；release 无入口且无此路由（被 `!kReleaseMode` 滤掉）。未知调试页回落空路由，
+/// 不干扰正常 `home` 首页。
+Route<dynamic>? _onGenerateDebugRoute(RouteSettings settings) {
+  if (!kReleaseMode && settings.name?.startsWith('/debug/') == true) {
+    final page = settings.name!.substring('/debug/'.length);
+    if (page == 'mcp') {
+      return MaterialPageRoute(
+        settings: settings,
+        builder: (_) => McpPage(controller: goodshareMcpController),
+      );
+    }
+  }
+  return null;
+}
+
 class GoodShareApp extends StatelessWidget {
   const GoodShareApp({
     super.key,
@@ -388,6 +444,11 @@ class GoodShareApp extends StatelessWidget {
       // 恒定暗色：不跟随系统（ui-design §2.1 拍板）。
       darkTheme: _mymindTheme(),
       themeMode: ThemeMode.dark,
+      // Deep Link 调试路由（goodshare://debug/<page>）：仅 debug/profile 构建
+      // 经 MainActivity 翻成 /debug/<page> 抵达；release 无该 intent-filter，
+      // 且此处以 !kReleaseMode 门控，路由面不进生产。
+      onGenerateRoute: _onGenerateDebugRoute,
+      onUnknownRoute: (_) => MaterialPageRoute(builder: (_) => const SizedBox.shrink()),
       home: HomeShell(
         repo: repo,
         handler: handler,

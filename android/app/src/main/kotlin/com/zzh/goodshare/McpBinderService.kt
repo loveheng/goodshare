@@ -2,6 +2,7 @@ package com.zzh.goodshare
 
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import com.zzh.goodhub.mcp.IMcpCallback
 import com.zzh.goodhub.mcp.plugin.GoodHubPluginService
 import io.flutter.FlutterInjector
@@ -49,11 +50,16 @@ class McpBinderService : GoodHubPluginService(SERVER_ID, SERVER_TITLE) {
 
     override fun onCreate() {
         super.onCreate()
+        Log.i(TAG, "onCreate")
         initEngine()
     }
 
     private fun initEngine() {
-        if (flutterEngine != null) return
+        if (flutterEngine != null) {
+            Log.w(TAG, "initEngine skipped（引擎已存在）")
+            return
+        }
+        Log.i(TAG, "initEngine start（headless 引擎构造）")
         // 独立 headless 引擎（不挂 UI renderer）；与主 isolate 共用 App 进程，随 Binder 拉起。
         // FlutterEngine 构造器内部已通过 FlutterInjector 初始化 FlutterLoader（含资源抽取），
         // 故路径须取「引擎所用的同一个 loader」，绝不可 new FlutterLoader()——新实例未 init →
@@ -69,6 +75,8 @@ class McpBinderService : GoodHubPluginService(SERVER_ID, SERVER_TITLE) {
         }
         val ch = MethodChannel(engine.dartExecutor.binaryMessenger, CHANNEL)
         channel = ch
+        // W6-a 双向桥注册（UI 主 isolate → 本 isolate 的端侧反向请求管道）；onDestroy 摘除。
+        McpBinderBridge.attach(ch)
         ch.setMethodCallHandler { call, result ->
             when (call.method) {
                 "ready" -> {
@@ -92,6 +100,7 @@ class McpBinderService : GoodHubPluginService(SERVER_ID, SERVER_TITLE) {
                 else -> result.notImplemented()
             }
         }
+        Log.i(TAG, "attach 完成 → executeDartEntrypoint($ENTRYPOINT)")
         engine.dartExecutor.executeDartEntrypoint(
             DartExecutor.DartEntrypoint(
                 loader.findAppBundlePath(),
@@ -171,11 +180,13 @@ class McpBinderService : GoodHubPluginService(SERVER_ID, SERVER_TITLE) {
      */
     override fun onHostAnswerReverse(jsonRpcResponse: String) {
         // 引擎未就绪时静默丢弃（超时会由 completer.timeout 兜底）；invokeMethod 须主线程。
+        Log.i(TAG, "onHostAnswerReverse frame=${jsonRpcResponse.take(400)}")
         mainHandler.post { runCatching { channel?.invokeMethod("answerReverse", jsonRpcResponse) } }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        Log.w(TAG, "onDestroy（摘除桥 + 销毁引擎）")
         try {
             flutterEngine?.destroy()
         } catch (_: Exception) {
@@ -183,10 +194,13 @@ class McpBinderService : GoodHubPluginService(SERVER_ID, SERVER_TITLE) {
         }
         flutterEngine = null
         channel = null
+        McpBinderBridge.attach(null) // W6-a 双向桥随服务销毁摘除
         McpCallbackHub.attach(null) // 服务销毁：桥出口一并注销
     }
 
     companion object {
+        private const val TAG = "McpBinderService"
+
         /** serverId：与 AndroidManifest meta-data com.zzh.goodhub.SERVER_ID 保持一致（冻结）。 */
         const val SERVER_ID = "goodshare"
         /** serverTitle：与 AndroidManifest meta-data com.zzh.goodhub.SERVER_TITLE 保持一致（冻结）。 */

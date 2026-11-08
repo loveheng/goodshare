@@ -23,6 +23,7 @@ import 'package:rich_text/markdown_subset.dart'
         AiNormalizeResult;
 import '../models/item.dart';
 import '../media/block_media.dart' show BlockMedia;
+import 'ai_tags_guard.dart';
 import 'commands.dart';
 import '../ai/video_clips.dart';
 import 'machine_json_validator.dart';
@@ -1274,6 +1275,20 @@ class ItemActionHandler {
       values['machine_json'] = maskOn ? maskSensitiveText(raw) : raw;
     }
     if (r.tags.isNotEmpty) {
+      // 领域校验归数据 owner：goodhub 通用层不写服务适配，模型整段 markdown
+      // 会被通用分隔符切分变成碎片「标签」。不合规即拒绝整批回写（此处抛错时
+      // _write 尚未执行，条目零变更），原因经 ActionException → 任务 failed +
+      // last_note 对人与 AI 同时可见（R1/R3）；严禁静默净化或记成成功。
+      final tagProblems = invalidAiTags(item.tags, r.tags);
+      if (tagProblems.isNotEmpty) {
+        throw ActionException(
+          'AI 产出标签形态不合规：${tagProblems.take(3).join('；')}；'
+          '标签应为不超过 $kMaxAiTagLength 字的短关键词，一次最多 '
+          '$kMaxAiTagsPerResult 个。请重新提取或改由人工编辑标签',
+          code: ActionErrorCode.schemaInvalid,
+          hint: '重跑 extract_tags，或改用 update_item 手动维护标签',
+        );
+      }
       // 并集合并（2026-10-01 拍板）：AI 重新提取只增不删——标签的用户权威
       // 在人（手动增删走 update 命令整表替换），AI 提取只是代劳不全量覆写。
       final merged = <String>[...item.tags];

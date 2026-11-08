@@ -157,7 +157,15 @@ void phase3Groups() {
         ));
         // 长文 isolate 在途：首帧渲染空占位，不阻塞首帧
         expect(find.textContaining('章节'), findsNothing);
-        await Future<void>.delayed(const Duration(milliseconds: 200));
+        // 回填等待用轮询而非固定延迟：套件并发高负载下 isolate 解析 +
+        // 200ms 不够（2026-10-18 / 2026-11-08 两次实证 flaky，与下方
+        // ContentBodySliver 用例 2026-10-05 的加固同款）
+        final deadline = DateTime.now().add(const Duration(seconds: 5));
+        while (DateTime.now().isBefore(deadline)) {
+          await tester.pump();
+          if (find.textContaining('章节 0').evaluate().isNotEmpty) break;
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
         await tester.pump();
       });
       expect(find.textContaining('章节 0'), findsOneWidget);

@@ -38,3 +38,26 @@ epic: instant-sampling
 - **T5 剩余项（依赖物理设备，本机止步）**：真机联调（含 Binder 路径 `_async` 终帧回注无 ANR）+ 宿主退后台回程可达性（设计稿 §7 第7条）+ 双仓联调四态降级/version 回传端到端验证。设计稿 T3/T4/T5 状态行已同步（T3/T4 goodhub ✅、T5 🟡 进行中）。
 - **全量测试回归修正（2026-10-17，T5 前置）**：`flutter test --timeout 60s` 全集初跑暴露 **2 条 instant 相关陈旧期望**——T1 新增 `ai_summarize_now` 后 `mcp_tools_test.dart` 仍写死「清单 42 个」「readOnlyHint 只读清单不含 ai_summarize_now」。已修正（`test/mcp_tools_test.dart`：期望 42→43、readOnlySeven 增 `ai_summarize_now`，注释补 instant-ai-sampling T1 出处）。修正后全集剩 **1 条非相关 flaky**：`long_text_phase_test.dart`「Phase 3 Isolate 异步解析 RichTextView 回填渲染」在全集并行负载下偶挂、单独复跑 11/11 全过——属长文本 epic 既有时序 flaky（isolate+FakeAsync 调度竞争），与 instant-ai-sampling 无关、不在本 epic 范围，不阻塞 T5，建议另行挂 long-text epic 跟踪。生产侧 `ai_summarize_now` 的 `_kReadOnlyHints` 登记 T1 已正确，无需改码。
 - **跨仓对帐注记**：goodhub 侧 `pool` 口径须与 goodshare `ai-app-split.md` §3.11 完全一致——默认池 20/60min、instant 池 60/60min、内存态不落盘、Tier 1 私有扩展字段；§5.1 红线（host 禁业务名词、pool 不承载场景语义）须守住，二期扩即时标签/模板时 goodhub 零改。
+
+## 2026-11-05 · 统一调试桥接入（goodshare 基准实现）
+
+按「统一调试桥」标准把公共包 app_debug_bridge 接入 goodshare，供真机 AI 观测（结构化日志 / 控件树 / 确定性动作 / 状态快照）；release 编译期经 `kReleaseMode` 剔除，不进生产产物。本仓为后续 shiguang 同构镜像的基准模板。
+
+### 落子
+- `pubspec.yaml`：+ `app_debug_bridge: path: ../app_debug_bridge`（同目录公共包，物理单副本）。
+- `lib/debug/`（4 文件，基准模板）：
+  - `goodshare_app_refs.dart`：`late McpController goodshareMcpController` 全局提升（宿主无现成全局 locator，需调试桥在 runApp 前赋值）。
+  - `goodshare_debug_log.dart`：`GoodshareDebugLogSink` 重定向 `debugPrint` 进内存环形缓冲（500 上限、超出丢最旧），供 `/debug/logs` 回看。
+  - `goodshare_debug_routes.dart`：白名单 `mcp → McpPage(controller: goodshareMcpController)`。
+  - `debug_wiring.dart`：`buildDebugBridge()` 把三件（导航柄 `ToastManager.navigatorKey` / 上下文 / 路由白名单）注入公共包端口 + 状态快照取 `goodshareMcpController`。
+- `lib/main.dart`：`runApp` 前 `if (!kReleaseMode)` 装日志源 + `buildDebugBridge().start()` + 打印 token；`MaterialApp` 挂 `navigatorKey`；`onGenerateRoute` 限 `/debug/mcp → McpPage`（!kReleaseMode 门控）。
+- `android/app/src/main/kotlin/.../MainActivity.kt`：`getInitialRoute` + `debugRoute`（goodshare://debug/&lt;page&gt;）+ `onNewIntent` 内 `pushRoute`（singleTask 冷/热启动）。
+- `android/app/src/debug|profile/AndroidManifest.xml`：各加 `goodshare://debug` VIEW intent-filter（release 不合并）。
+
+### 验收
+- `flutter pub get` 拉入 app_debug_bridge；`flutter analyze` 改造文件零 issue。
+- 真机：装上 debug 包后 `adb shell am start -d "goodshare://debug/mcp" -n app.goodshare.goodshare/.MainActivity` 直达 MCP 服务页；token 见 logcat（`[debug-bridge]`，每次启动轮换）。
+
+### 边界
+- 公共包代码零宿主业务，路由面仅白名单可达；release 经 `kReleaseMode` 剔除。
+- shiguang 以本仓为模板同构镜像（见其 online epic devlog）；goodTemplate 因启动架构（`_BootPage` bootstrap 跳过风险）未接 Deep Link。

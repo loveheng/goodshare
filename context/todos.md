@@ -43,3 +43,5 @@ format: v3
 - [ ] [2026-10-09] (功能)(候)(层:L4)(重:轻) mermaid 在线载荷真机确认：pako（zlib+base64）若为 400 会自动退回明文 base64 重试一次——真机需确认哪种载荷实际生效，锁定后删掉另一条 (src: 2026-10-09 在线方案拍板)
 - [ ] [2026-10-09] (功能)(候)(层:L4)(重:轻) `lib/ui/mermaid_view.dart`（mermaid 在线渲染件）**已摘出渲染路径、零消费方**：用户拍板「加载好慢」改回代码块显示，组件保留待复用（在线方案完整）；与 rotary_dial / format_dial 同为「零业务语义待复用件」，长期无宿主则清偿 (src: 2026-10-09 mermaid 还原拍板)
 - [ ] (功能)(暂缓)(层:L1)(重:轻) 图文同分享文案修复（2026-10-09 移出 V2 二次收敛）：receive_sharing_intent 的 toJsonObject 只取 uri 丢文案（小红书/微博类图文帖）；需 fork 插件或自写 intent 解析——Android 原生层插件 fork 维护成本极高，延后待真实使用反馈再评估；goodshare epic 同名重复条目已于 2026-10-13 groom 销项，以本条为准 (src: v2-requirements §1.3 配套③ 移出拍板)
+- [ ] [2026-11-06] (风险)(层:L2)(重:中) 跨仓契约：本地管线回写与 apply_ai_result 抢 version，`version_conflict` 直接让 AI 任务 failed；测试侧已先等本条目本地任务终态消除噪声，生产侧需宿主重读 version 重试或入队冻结版本语义 (src: ai-e2e-pilot 真机验收)
+- [ ] [2026-11-06] (功能)(候)(层:L1)(重:轻) 公共包 app_debug_bridge 端口顺延协商 + goodhub 补 stateProvider/resetHandler/screenshotProvider 与手动 trigger action；现状靠宿主装配期互异端口 + 按包名发现 + 冷启动 catch-up 覆盖，接第三个 App 前再评估 (src: ai-e2e-pilot 跨仓移交件)

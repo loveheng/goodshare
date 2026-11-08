@@ -4,4 +4,18 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!-- AI 调试直达入口（仅 debug 构建，release 不合并 → 不进生产）：
+         goodshare://debug/<page> 由 MainActivity.getInitialRoute 翻成 /debug/<page>，
+         经 Flutter onGenerateRoute 推到对应调试页（当前 mcp → McpPage）。 -->
+    <application>
+        <activity android:name=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="goodshare" android:host="debug" />
+            </intent-filter>
+        </activity>
+    </application>
 </manifest>

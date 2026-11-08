@@ -260,6 +260,16 @@ class _SettingsPageState extends State<SettingsPage> {
             value: widget.aiQueue.backgroundProcessingEnabled,
             onChanged: (v) => widget.aiQueue.setBackgroundProcessingEnabled(v),
           ),
+          SwitchListTile(
+            secondary: const Icon(Icons.memory),
+            title: const Text('端侧异步模式（GoodHub）'),
+            subtitle: const Text(
+                '需 AI 宿主 App 在线。开启后即时摘要优先走宿主端侧算力：'
+                '宿主忙碌时任务入池显示「后台分析中」，回 App 或 30 秒内自动取回结果；'
+                '关闭则维持原云端链路'),
+            value: caps.onDeviceAsyncEnabled,
+            onChanged: (v) => caps.setOnDeviceAsyncEnabled(v),
+          ),
           const _SectionHeader('高级'),
           SwitchListTile(
             secondary: const Icon(Icons.code_outlined),

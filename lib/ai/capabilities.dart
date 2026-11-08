@@ -24,6 +24,7 @@ class AiCapabilities extends ChangeNotifier {
   static const _prefTranslationEnabled = 'ai_translation_enabled';
   static const _prefTargetLang = 'ai_translation_target';
   static const _prefSubtitleMode = 'ai_subtitle_mode';
+  static const _prefOnDeviceAsyncEnabled = 'ai_on_device_async_enabled';
 
   bool ocrEnabled = true; // 用户开关
   bool urlFetchEnabled = true; // 链接离线抓取网页正文（无设备能力依赖，不需要检测）
@@ -37,6 +38,12 @@ class AiCapabilities extends ChangeNotifier {
   String targetLang = 'zh'; // 目标语言（BCP-47）
   SubtitleMode subtitleMode = SubtitleMode.bilingual; // 字幕译文模式
   bool? translationAvailable; // 实时查询结果（null = 尚未查询）
+
+  // ───────── 端侧异步模式（W6-a，2026-11-07） ─────────
+  /// 「端侧异步模式」开关（默认关 = 存量语义零变化）：开启后即时摘要走宿主
+  /// 端侧算力（on_device_complete + allow_deferred）——冷态入池返回「后台分析中」
+  /// 占位，回前台 / 30s 轮询经 Pull 收敛结果（ai-app-split.md §3.11.2）。
+  bool onDeviceAsyncEnabled = false;
 
   /// 翻译引擎路由（main 装配注入）；null = 未接入翻译层。
   TranslationRouter? router;
@@ -59,6 +66,7 @@ class AiCapabilities extends ChangeNotifier {
     ocrEnabled = prefs.getBool(_prefOcrEnabled) ?? true;
     urlFetchEnabled = prefs.getBool(_prefUrlFetchEnabled) ?? true;
     asrEnabled = prefs.getBool(_prefAsrEnabled) ?? true;
+    onDeviceAsyncEnabled = prefs.getBool(_prefOnDeviceAsyncEnabled) ?? false;
     translationEnabled = prefs.getBool(_prefTranslationEnabled) ?? true;
     targetLang = prefs.getString(_prefTargetLang) ?? 'zh';
     if (!isSupportedTarget(targetLang)) targetLang = 'zh'; // 历史脏值兜底
@@ -116,6 +124,13 @@ class AiCapabilities extends ChangeNotifier {
     asrEnabled = v;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_prefAsrEnabled, v);
+    notifyListeners();
+  }
+
+  Future<void> setOnDeviceAsyncEnabled(bool v) async {
+    onDeviceAsyncEnabled = v;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_prefOnDeviceAsyncEnabled, v);
     notifyListeners();
   }
 

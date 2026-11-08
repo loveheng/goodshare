@@ -68,6 +68,8 @@ class _McpPageState extends State<McpPage> {
         padding: const EdgeInsets.all(12),
         children: [
           SwitchListTile(
+            // 调试桥锚点：真机自动化按 key 确定性启停服务，不依赖坐标。
+            key: const ValueKey('mcp-service-switch'),
             title: const Text('启用 MCP 服务'),
             subtitle: Text(c.running ? '运行中 · 端口 ${c.port}' : '未运行（前台服务保活，可切后台）'),
             value: c.running,
@@ -93,11 +95,16 @@ class _McpPageState extends State<McpPage> {
           ListTile(
             leading: const Icon(Icons.key_outlined),
             title: const Text('访问令牌（X-Api-Key）'),
-            subtitle: Text(_showToken ? (c.token ?? '') : '••••••••••••（点击右侧显示）'),
+            subtitle: Text(
+              _showToken ? (c.token ?? '') : '••••••••••••（点击右侧显示）',
+              // 调试桥锚点：自动化先点 reveal，再从 ui-tree 读明文令牌，全程不落盘。
+              key: const ValueKey('mcp-token-value'),
+            ),
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 IconButton(
+                  key: const ValueKey('mcp-token-reveal'),
                   icon: Icon(_showToken ? Icons.visibility_off : Icons.visibility),
                   onPressed: () => setState(() => _showToken = !_showToken),
                 ),

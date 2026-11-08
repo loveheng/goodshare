@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-17
+updated: 2026-11-06
 ---
 
 # goodshare 功能落点索引（数据）
@@ -29,11 +29,16 @@ updated: 2026-10-17
 | LLM 拆分（AI 宿主 App） | LLM 类任务（llm_summarize/llm_tags/block_summarize/template_apply）远程化：claim_ai_task/touch_ai_task/apply_ai_task 三工具（M1 ✅）、占位守卫（M2 ✅：QueueConsumer SQL 层排除远程集合，llm*.dart/LlmBridge.kt 已删）、sampling 反向推理（M3 ✅） | `lib/mcp/tools.dart`（三工具 + ai_suggest_tags）`lib/ai/queue_consumer.dart`（远程集合过滤） | docs/design/ai-app-split.md（接缝 SSOT） |
 | 内容生产模板 | templates CRUD（MCP AI 托管）+ 模板 skill resource + 人类只读预览页 + P2「按模板处理」（TemplateApplyCommand → template_apply:<id> 远程任务 → 只追加回写 template_output 三列）+ 详情页呈现规约 | `lib/action/`（TemplateApplyCommand/_templateApply/模板分支早退）`lib/data/repository.dart`（byIdTemplate/listTemplates）`lib/pages/item_detail_page.dart`（_showTemplatePicker/模板卡）`lib/pages/template_preview_page.dart` | docs/design/ai-template.md（模板域 SSOT） |
 
+| 真机自动化验收 | 摘要/分类两类 AI 能力的真机闭环验收：预检、造条目、宿主上线触发、语义等待、断言、清场、报告；调试桥多实例端口/令牌发现与结构化状态快照 | `scripts/e2e/`（`find scripts/e2e -type f`）`scripts/agent-tools/ai-e2e.sh` `lib/debug/` | docs/design/ai-e2e-pilot.md |
+| AI 结果回写护栏 | 标签形态领域校验（数量/长度/markdown 碎片/只增不删）、不合规整批拒绝 + failed note 可观测；goodhub 通用层零适配 | `lib/action/ai_tags_guard.dart` `lib/action/item_action_handler.dart`（_applyAiResult）`test/ai_tags_guard_test.dart` | docs/design/ai-e2e-pilot.md |
+
 ## 跨域隐式契约
 
 - 存储 ↔ MCP 工具：tools.dart 的返回结构是 list_items/get_item 的对外契约，改动需同步 test/mcp_server_test.dart。
 - 前台保活 ↔ 构建发布：targetSdk=34 与 dataSync 绑定，联动记入两处文档。
 - LLM 拆分 ↔ MCP 服务：claim/touch/apply 是第二客户端接入面，改动须同步 docs/design/ai-app-split.md 接缝契约。
+- 真机自动化 ↔ 调试桥/MCP：`/debug/state.app` 字段与 `get_item`/`get_job_status` 返回结构是断言契约，改动须同步 scripts/e2e/ai-capability-e2e.mjs 的用例声明与断言。
+- AI 结果回写 ↔ 通用宿主：tags 等领域校验归 goodshare 动作层（数据 owner），goodhub 只做通用推理透传、不为单个服务写适配；校验失败须落 ai_task_queue.last_note 供 UI 与 MCP 共读。
 
 ## 业务别名映射
 

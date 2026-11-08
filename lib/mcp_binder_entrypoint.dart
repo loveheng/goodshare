@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import 'data/repository.dart';
+import 'mcp/jsonrpc.dart';
 import 'mcp/mcp_server.dart';
 
 /// goodshare 本地 Binder 插件后台入口（headless FlutterEngine）。
@@ -23,6 +25,7 @@ const _kChannel = 'goodshare/mcp_binder';
 
 @pragma('vm:entry-point')
 void mcpBinderMain() {
+  debugPrint('[mcp_binder_entry] start（headless isolate 启动）');
   // 后台 isolate 无 UI，但 MethodChannel 需要 ServicesBinding 初始化。
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -56,6 +59,32 @@ void mcpBinderMain() {
         // 宿主已注册 IMcpCallback（registerCallback），onEvent 通道可用（#4/#5）。
         // 原生 pushEvent 在 callback 为 null 时静默丢弃，此处仅作可观测标记。
         return null;
+      case 'onDeviceCall':
+        // W6-a 双向调用（UI 主 isolate → 端侧反向请求）：args = {method, paramsJson}；
+        // method ∈ host/onDeviceComplete | host/onDeviceTaskStatus（宿主 Tier 1 契约）。
+        // 结果字符串原样回传（宿主 result 信封）；McpRpcError 以 PlatformException 抛出，
+        // 原生桥转 error 帧回 UI 侧（宿主失败显式可知，不静默吞）。
+        final args = (call.arguments as Map).cast<String, Object?>();
+        final method = args['method'] as String?;
+        final paramsJson = args['paramsJson'] as String?;
+        if (method == null || paramsJson == null) {
+          throw PlatformException(code: 'bad_args', message: '需要 {method, paramsJson}');
+        }
+        final params = jsonDecode(paramsJson);
+        if (params is! Map<String, Object?>) {
+          throw PlatformException(code: 'bad_args', message: 'paramsJson 需为 JSON 对象');
+        }
+        Object? result;
+        try {
+          result = await server.reverseRequest(method, params);
+        } on McpRpcError catch (e) {
+          // 宿主错误帧（90s 超时 / -32000 等）：显式转可读 PlatformException——
+          // 不转译时 MethodChannel 默认 error message = e.toString() 裸类名
+          // （UI 失败注记实证缺陷，W6-a 联调 2026-11-07）。
+          throw PlatformException(
+              code: 'host_error', message: '端侧请求失败：${e.message}');
+        }
+        return jsonEncode(result);
       default:
         throw PlatformException(code: 'not_implemented', message: call.method);
     }
@@ -63,5 +92,6 @@ void mcpBinderMain() {
 
   // 通知原生侧引擎就绪，解除 McpBinderService.call 首调竞态等待。
   // 用 microtask 确保上面 handler 已注册后再发 ready。
+  debugPrint('[mcp_binder_entry] handler 注册完成，发 ready');
   scheduleMicrotask(() => channel.invokeMethod<void>('ready'));
 }

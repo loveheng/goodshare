@@ -4,6 +4,7 @@ format: v2
 ---
 
 # 完成列表
+- [2026-11-06] goodshare 侧落地 AI 结果回写标签领域护栏：`ai_tags_guard.dart` 纯函数 + `_applyAiResult` 标签并集前整批拒绝 + `apply_ai_result` failed note 带具体坏标签；goodhub 通用能力层零改动；`test/ai_tags_guard_test.dart` 8 条，真机 `--case tags --repeat 3` 3/3 护栏生效、`--case all` 2/2 PASS (域: ai-e2e-pilot)
 - [2026-09-30] 行内媒体块 MVP 真机侧载验收全绿（图片首帧定版/双音频互斥/.amr 降级卡/视频全屏浮层/滚动零跳动，用户逐项确认）；验收环境=回环媒体服务器+分享 intent 注入；顺手修 firstUrl 尾部括号剥离 (域: goodshare)
 - [2026-09-30] 块编辑器打磨完成：激活块 IME 避让（ensureVisible 视口顶缘+键盘差量重触发）+ 粘贴多段按空行拆块（单次变更检测，手敲回车不触发）；md 语法自动拆块维持驳回 (域: goodshare)
 - [2026-09-28] OCR 国内适配完成：bundled 中文库切换 + 真机断网验证通过（用户确认） (域: goodshare)

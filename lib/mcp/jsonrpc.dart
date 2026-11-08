@@ -23,6 +23,11 @@ class McpRpcError implements Exception {
         'message': message,
         if (data != null) 'data': data,
       };
+
+  /// 可读形态（W6-a 联调教训：跨 MethodChannel 泄漏时默认 toString 为
+  /// "Instance of 'McpRpcError'"，UI 失败注记只显示原始类名）。
+  @override
+  String toString() => 'McpRpcError($code): $message';
 }
 
 /// JSON-RPC 错误码

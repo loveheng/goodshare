@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-10-17
+updated: 2026-11-06
 ---
 
 # docs/ 结构索引
@@ -69,6 +69,8 @@ updated: 2026-10-17
 - [rich-text-media.md](design/rich-text-media.md) — 富文本行内媒体块设计：Image/Audio/Video 三块类型的三出口语法、ContentBody 呈现（AspectRatio 占位/播放条/封面播放卡）、编辑态直接操纵、插入链路分期（音频先行，图片/视频 V2）；顶级媒体与行内媒体的边界划分。
 - [md-template-schema.md](design/md-template-schema.md) — Markdown 模板文件格式约定（V2 资产协议）：Front Matter Schema + `{{slot}}` 占位符、解析容忍度基线（不崩溃不乱码）、存储边界（documents/templates/ 不进条目、进备份）；渲染/执行见 agent-workflow-skill.md。
 - [agent-workflow-skill.md](design/agent-workflow-skill.md) — V4 Agent 工作流与 Skill 体系：模板（用户视角）/Skill（AI 视角）一体、SlotSpan 双向渲染 AST 扩展、HCI 四对策（零阻力入口/先猜后问/生命周期/延迟透明化）、执行引擎归 AI 客户端、save_skill 高权限门控。
+
+- [ai-e2e-pilot.md](design/ai-e2e-pilot.md) — 真机 AI 能力自动化验收（试点）：跨 App AI 任务闭环的分层（设备可测性 / 薄管道 CLI / 声明式用例编排）、端口与令牌发现契约、摘要与分类双态断言、重复采样与失败现场、数据 owner 侧标签回写护栏（goodhub 保持通用）。
 
 ## engineering（工程规范）
 

@@ -93,7 +93,11 @@ node mcp-bridge/e2e-check.mjs     #      # ④ 桥接端到端（改 mcp-bridge/
 flutter build apk --debug         # 构建 → build/app/outputs/flutter-apk/app-debug.apk
 adb reverse tcp:8765 tcp:8765     # USB 场景让桌面访问手机端 /mcp
 toolbox run build-apk --install   # apk  # 构建 debug 包并 adb 安装（--release/--abi 出 release 分包，--fat 整包）
+toolbox run ai-e2e --device <ID> --precheck  # 真机 AI 能力自动化链路预检（摘要/分类）
+toolbox run ai-e2e --device <ID> --case all  # aie2e  # 真机摘要/分类闭环验收（契约见 docs/design/ai-e2e-pilot.md）
 ```
+
+> 真机自动化前置：goodshare/goodhub 均为同签名 debug 包，宿主 AI 引擎就绪；调试桥端口 8767(goodhub)/8768(goodshare)，PC 经 `adb forward tcp:8765 tcp:8765` 访问 MCP。报告与失败现场在 `build/e2e/`（gitignore）。
 
 ### 3. 打包与发布（Release Workflow）
 

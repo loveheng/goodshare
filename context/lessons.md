@@ -2,8 +2,8 @@
 dev-loop: lessons
 format: v1
 epic: global
-total-merged: 4
-last-merge: 2026-10-09
+total-merged: 5
+last-merge: 2026-11-06
 ---
 
 # lessons
@@ -77,3 +77,17 @@ PRAGMA sqlite_version 在 sqflite_common_ffi 返回空结果集，快照代码 .
 格式转盘行内置灰不生效：手势路径读 kDialCategories 常量表 disabled 位（恒 false）而非组件入参 inlineDisabled ➔ 静态数据表只放结构常量，随运行态变化的开关真值必须取自组件入参/状态；几何命中测试精确边界断言（恰 r=44/恰 -150°）经双精度 atan2/sqrt 往返必抖动 ➔ 边界语义用旁值双探针 (Ref: misc)
 
 转盘反悔停留交互改造丢提交：三级选中后停留期内一打字即触发 keyPressed 收合，原实现把挂起中的选择作废——快节奏「选完立刻打字」流静默丢格式（真机实证「选了没效果」） ➔ 把「立即生效」改为「延迟生效」时，所有既有打断路径（打字即收/失焦收/宿主闭合）必须重新处置：打断应视为强确认（post-frame 先落地挂起选择再退场），而非作废；交互语义变更的影响面=全生命周期而非新增路径 (Ref: goodshare)
+
+## 待归并（inbox）
+
+- [e2e] 现象: 护栏已触发但验收报「version 变了，回写未被整批拒绝」 | 根因: extract_tags/summarize 入队命令本身写 is_processed=0 并递增 version，拿造条目后的旧 version 当基准会误判 | 处置: 入队后再取一次 get_item 快照作为「回写是否发生」的 version 基准，护栏路径要求 version 与入队后相同 | 回归: ai-e2e --case tags --repeat 3 3/3 护栏生效 PASS；报告 evidence.versionAtEnqueue 可核对 (Ref: ai-e2e-pilot)
+
+## 真机自动化（e2e）
+
+通用宿主只提供推理与任务管线，不为单个服务做适配；领域形态校验归数据 owner 的 AI 结果回写动作层，不合规产出必须拒绝并给出可行动原因（last_note），禁止静默净化或记成成功。验收侧用形态护栏断言 + --repeat N 重复采样量化 AI 产出不确定性。回归：--self-test 含「抓整段文本切碎/抓超长标签」坏样本，--case tags --repeat 3 如实暴露 0/3 PASS。
+
+造条目会顺带入队本地管线任务，其回写与远程 apply_ai_result 抢 expected_version 乐观锁，表现为「回写被拒：version_conflict」且任务 failed、产出为空；用例入队前须按 list_jobs 等本条目本地任务全部终态，生产侧竞态另记跨仓移交件，不放宽断言。回归：ai-e2e --case all 摘要稳定 PASS，报告 evidence.localJobsAtEnqueue 可核对。
+
+状态类观测一律走注入端口的结构化 JSON（stateProvider），不用控件树显隐：setState 后控件树要下一帧重建，页面栈叠加时锚点命中的可能是非栈顶实例，UI 显隐状态不是可靠观测源；UI 动作只用于触发开关类操作。回归：ai-e2e precheck 不依赖 mcp-token-value/reveal 锚点，--self-test 10/10。
+
+logcat 是环形缓冲，[debug-bridge] 启动行会被冲刷；App 已在前台时 am start 不重跑入口、令牌行不会重新产出（令牌每次启动轮换且只经 logcat）。发现失败须 am force-stop + am start 真冷启动自愈，并轮询 /debug/action ping 的 contextReady；MCP 令牌改从 /debug/state.app.mcpToken 结构化读取。回归：ai-e2e --precheck 在日志被冲刷后仍通过，报告无令牌泄露。

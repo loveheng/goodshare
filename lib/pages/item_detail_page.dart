@@ -27,11 +27,13 @@ import '../ui/toast.dart';
 import '../ui/overflow_sheet.dart';
 import '../ui/tag_editor_sheet.dart';
 
-import '../models/item.dart';
 import '../media/block_media.dart';
+import '../mcp/instant_prompts.dart';
+import '../models/item.dart';
 import '../models/annotation.dart';
 import '../models/template.dart';
 import '../service/host_launch_channel.dart';
+import '../service/on_device_service.dart';
 import '../service/settings_store.dart';
 import '../ui/actions/item_actions.dart';
 import '../ui/ai_diff.dart';
@@ -335,6 +337,14 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     '马上就好…',
   ];
 
+  // ── W6-a 端侧异步模式（ai-app-split.md §3.11.2）：开关开启时即时摘要走宿主
+  // 端侧算力（allow_deferred=true）。冷态入池 →「后台分析中」占位；Pull 收敛
+  // （回前台 / 30s 轮询）归 OnDeviceAsyncService 托管，页面只持交互态并消费事件。
+  bool _instantDeferred = false;
+  String? _instantDeferredTaskId;
+  String? _instantFailedNote; // W6-a 失败原因（宿主帧 / 过期 / stale / 宿主未连入）
+  StreamSubscription<OnDeviceTaskEvent>? _onDeviceSub;
+
   /// AI 写回会话状态机（ai-writeback-revert §4/§5）：悬浮条显隐、还原 /
   /// 恢复 AI 改动、以及「用户手改即接管」的 settle 判定都归它。
   /// 读态也持有——AI 写完回后用户打开详情页就应看到待决提示。
@@ -435,6 +445,33 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
       readText: _currentBodyText,
     )..onTakeover = _onAiTakeover;
     _aiSession!.sync(_item);
+    // W6-a：消费端侧任务终态事件（result/failed/stale）+ 恢复在途任务占位
+    // （占位跨页面切换 / App 重启持久，见 OnDeviceAsyncService）。
+    _onDeviceSub = OnDeviceAsyncService.instance.events.listen((ev) {
+      if (!mounted || ev.itemId != _item.id) return;
+      setState(() {
+        _instantDeferred = false;
+        _instantDeferredTaskId = null;
+        _instantRunning = false;
+        if (ev.isResult) {
+          _instantPreview = ev.result;
+          _instantTs = DateTime.now();
+        } else {
+          _instantFailed = true;
+          _instantNoChange = false;
+          _instantFailedNote = ev.reason;
+        }
+      });
+      if (ev.isResult) _snack('端侧分析完成，摘要可一键采用或忽略');
+    });
+    final pendingOnDevice =
+        OnDeviceAsyncService.instance.tasksForItem(_item.id ?? '');
+    if (widget.caps.onDeviceAsyncEnabled && pendingOnDevice.isNotEmpty) {
+      setState(() {
+        _instantDeferred = true;
+        _instantDeferredTaskId = pendingOnDevice.first.taskId;
+      });
+    }
   }
 
   @override
@@ -447,6 +484,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   @override
   void dispose() {
     _lifecycleSub?.cancel();
+    _onDeviceSub?.cancel();
     _instantTimer?.cancel();
     _hostWaitTimer?.cancel();
     // §8.3：dispose 是最后一道 flush 点——先 flush 完再 dispose 控制器
@@ -503,7 +541,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   // 真·采样流式路径等 goodhub Binder 接好再做。UX：inline 骨架加载（含
   // 转后台处理链接 + 文案轮转）→ 预览卡（采用/忽略 + 时效标注）→ 失败/无变化降级。
   Future<void> _runInstantSummary() async {
-    if (_instantRunning || !mounted) return;
+    if (_instantRunning || _instantDeferred || !mounted) return;
     final prev = _item.summaryMd?.trim() ?? '';
     setState(() {
       _instantRunning = true;
@@ -512,8 +550,16 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
       _instantNoChange = false;
       _instantLoadingStep = 0;
       _instantPrevSummary = prev;
+      _instantDeferred = false;
+      _instantDeferredTaskId = null;
+      _instantFailedNote = null;
     });
     _startInstantLoadingText();
+    // W6-a：开关开 → 端侧路径（冷态入池回占位）；关 → 既有云端管线（零变化）。
+    if (widget.caps.onDeviceAsyncEnabled) {
+      await _runInstantOnDevice(prev);
+      return;
+    }
     try {
       await widget.handler.execute(
         SummarizeCommand(_item.id!),
@@ -538,6 +584,76 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
       _instantTimer?.cancel();
       _instantTimer = null;
       if (mounted) setState(() => _instantRunning = false);
+    }
+  }
+
+  /// W6-a 端侧路径（开关开启时）：allow_deferred=true 走宿主端侧算力。
+  /// Immediate = 温热态秒级直出（既有预览流程）；Deferred = 登记占位，Pull
+  /// 收敛归 [OnDeviceAsyncService]（回前台 / 前台 30s 轮询），页面只消费事件。
+  /// 错误语义：宿主未连入（环境态）→ 失败注记；宿主 error 帧（配额/拒绝）→
+  /// toast + 失败注记（降级显式可知，不静默吞）。
+  Future<void> _runInstantOnDevice(String prev) async {
+    final body = _currentBodyText();
+    try {
+      final outcome = await OnDeviceAsyncService.instance.complete(
+        instruction: kInstantSummarySystem,
+        input: instantSummaryUserPrompt(_item, body),
+        allowDeferred: true,
+      );
+      if (!mounted) return;
+      if (outcome is OnDeviceImmediate) {
+        final text = outcome.text.trim();
+        setState(() {
+          _instantRunning = false;
+          if (text.isEmpty) {
+            _instantFailed = true;
+            _instantFailedNote = '宿主未产出内容';
+          } else if (text == prev) {
+            _instantNoChange = true;
+          } else {
+            _instantPreview = text;
+            _instantTs = DateTime.now();
+          }
+        });
+        if (_instantPreview != null) {
+          _snack('已生成摘要，可一键采用或忽略');
+        }
+        return;
+      }
+      if (outcome is OnDeviceDeferred) {
+        await OnDeviceAsyncService.instance.registerDeferred(
+          taskId: outcome.taskId,
+          itemId: _item.id!,
+          bodyMd5: bodyMd5(_item.humanMd),
+          instruction: '即时摘要',
+          expiryMs: outcome.expiryMs,
+        );
+        if (!mounted) return;
+        setState(() {
+          _instantRunning = false;
+          _instantDeferred = true;
+          _instantDeferredTaskId = outcome.taskId;
+        });
+        _snack('已排队后台分析，结果自动回填');
+      }
+    } on OnDeviceHostUnavailable {
+      if (!mounted) return;
+      setState(() {
+        _instantRunning = false;
+        _instantFailed = true;
+        _instantFailedNote = '宿主未连入（GoodHub 未运行或未绑定）';
+      });
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      _snack(e.message ?? '端侧推理失败');
+      setState(() {
+        _instantRunning = false;
+        _instantFailed = true;
+        _instantFailedNote = e.message;
+      });
+    } finally {
+      _instantTimer?.cancel();
+      _instantTimer = null;
     }
   }
 
@@ -625,6 +741,58 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     );
   }
 
+  /// W6-a deferred 占位卡（「后台分析中」）：冷态入池后的等待态——不阻塞、
+  /// 零轮询感知（Pull 收敛事件驱动）；可取消（摘本地占位，宿主到期清账兜底）。
+  Widget _buildInstantDeferred() {
+    final scheme = Theme.of(context).colorScheme;
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 200),
+      alignment: Alignment.topCenter,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SizedBox(height: Insets.sm),
+          Row(
+            children: [
+              Icon(Icons.hourglass_bottom,
+                  size: 16, color: scheme.onSurfaceVariant),
+              const SizedBox(width: Insets.xs),
+              Expanded(
+                child: Text(
+                  '后台分析中',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+              ),
+              TextButton(
+                  onPressed: _cancelInstantDeferred, child: const Text('取消')),
+            ],
+          ),
+          Text(
+            '宿主空闲时消费此任务；回前台或 30 秒内自动取回结果（最长 24 小时）',
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: Insets.sm),
+        ],
+      ),
+    );
+  }
+
+  /// 取消 deferred 占位：摘本地登记（宿主侧 queued 撤销接口宿主未开放，
+  /// 摘除后结果到达无人认领，宿主保质期清账兜底）。
+  Future<void> _cancelInstantDeferred() async {
+    final id = _instantDeferredTaskId;
+    if (id != null) await OnDeviceAsyncService.instance.dropTask(id);
+    if (mounted) {
+      setState(() {
+        _instantDeferred = false;
+        _instantDeferredTaskId = null;
+      });
+    }
+  }
+
   Widget _buildInstantPreview() {
     final scheme = Theme.of(context).colorScheme;
     final ts = _instantTs;
@@ -676,7 +844,9 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
     final scheme = Theme.of(context).colorScheme;
     final msg = _instantNoChange
         ? '摘要无变化（可能内容过短或模型无新产出）'
-        : '摘要生成失败，可转后台查看或重试';
+        : (_instantFailedNote != null && _instantFailedNote!.isNotEmpty
+            ? _instantFailedNote!
+            : '摘要生成失败，可转后台查看或重试');
     return AnimatedSize(
       duration: const Duration(milliseconds: 200),
       alignment: Alignment.topCenter,
@@ -704,6 +874,7 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
   /// 摘要卡正文：T2 即时三态优先，否则回落既有展示（深度摘要 / 摄入期 TLDR / 空态）。
   Widget _summaryInstantBody(String summary, String tldrFallback, bool hasSummary) {
     if (_instantRunning) return _buildInstantLoading();
+    if (_instantDeferred) return _buildInstantDeferred();
     if (_instantFailed || _instantNoChange) return _buildInstantResultNote();
     if (_instantPreview != null) return _buildInstantPreview();
     if (hasSummary) return RichTextView(markdown: summary, shrinkWrap: true);
@@ -2295,9 +2466,12 @@ class _ItemDetailPageState extends State<ItemDetailPage> with RepoAutoReload {
         children: [
           if (onInstant != null)
             IconButton(
+              // 调试/e2e 锚点（§G2）：bolt 无文本语义，UI 自动化按 key 点击，
+              // 免坐标换算漂移（tap_node key 锚点 = ValueKey 值）。
+              key: const ValueKey('instant-bolt'),
               tooltip: '即时摘要',
               icon: Icon(Icons.bolt, size: 18, color: scheme.onSurfaceVariant),
-              onPressed: _instantRunning ? null : onInstant,
+              onPressed: (_instantRunning || _instantDeferred) ? null : onInstant,
             ),
           if (onAdd != null)
             IconButton(

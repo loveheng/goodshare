@@ -119,6 +119,16 @@ class MainActivity : FlutterActivity() {
                         val json = JSONObject(args as Map<String, Any?>).toString()
                         result.success(McpCallbackHub.broadcast(json))
                     }
+                } else if (call.method == "onDeviceCall") {
+                    // W6-a 端侧算力消费（双向调用）：args = {method, paramsJson}；
+                    // 转发到 Binder isolate 的 McpServer.reverseRequest（host/onDeviceComplete |
+                    // host/onDeviceTaskStatus），结果字符串原样回传（Dart 层解析联合态）。
+                    val dArgs = call.arguments as? Map<*, *>
+                    if (dArgs == null) {
+                        result.error("bad_args", "onDeviceCall 需要 {method, paramsJson}", null)
+                    } else {
+                        McpBinderBridge.invoke("onDeviceCall", dArgs, result)
+                    }
                 } else {
                     result.notImplemented()
                 }
@@ -128,6 +138,28 @@ class MainActivity : FlutterActivity() {
             MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "goodshare/media"),
             this,
         )
+    }
+
+    // AI 调试直达（仅 debug/profile Manifest 声明 goodshare://debug 入口）：
+    // 冷启动把 VIEW intent 翻成 initialRoute；singleTask 热启动走 onNewIntent
+    // 经 NavigationChannel.pushRoute 推给 Dart（Navigator.pushNamed）。
+    // release 无该 intent-filter，且 Dart 侧 onGenerateRoute 以 !kReleaseMode
+    // 装配，路由面不进生产。
+    // super 的可空返回（无 route extra 时）须显式落到默认首页路由。
+    override fun getInitialRoute(): String =
+        debugRoute(intent) ?: super.getInitialRoute() ?: "/"
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val route = debugRoute(intent) ?: return
+        flutterEngine?.navigationChannel?.pushRoute(route)
+    }
+
+    private fun debugRoute(source: Intent?): String? {
+        val data = source?.data ?: return null
+        if (data.scheme != "goodshare" || data.host != "debug") return null
+        val page = data.path?.trim('/')?.takeIf { it.isNotEmpty() } ?: return null
+        return "/debug/$page"
     }
 
     companion object {
