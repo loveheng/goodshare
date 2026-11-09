@@ -308,3 +308,7 @@ LLM 任务输入纯文本 → 接缝零附件。后续 ASR 等重任务远程化
 - **消费契机**：顺风车（宿主前台活跃 → WARM 窗口排空）+ 充电黄金窗口（ADR 已立，用户开关默认关）——**严禁后台定时器自发拉起模型**。
 - **宿主回归锚** = goodhub `test/coordinator/supply_task_pool_test.dart`（8 例：状态机/配额/M5/毒丸/持久化恢复/联合态/存量零变化/status 拉取）。
 - **跨仓前置**：插件 SDK `:contract` AIDL 不动（联合态装进现有 JSON 信封）；plugin-core 解析面 + `api.md` 随 SDK 下一版发布。
+
+## 10. 接入方联调 conformance 套件（2026-11-09）
+
+接入方真机联调的**机械验收唯一出处** = goodhub-mcp-sdk 仓 `conformance/`（runner + 每接入方一份薄配置，PC 侧 JSON-RPC 驱动；断言面 = initialize / SHARED 目录可见 / PRIVATE 目录不可见（default-deny）/ SHARED tools/call 真调通）。本文只登记接缝裁决：① 联调验证随契约走（单副本在 SDK 仓），**禁止在各接入方仓重复写宿主联调测试**；② goodshare 样本（`conformance/configs/goodshare.json`）为旧式全 PRIVATE 插件负样本——目录不可见 + 知名直达仍可达（§8 非 ACL 语义）；③ blob 分片（`mcp-blob://`）契约落地后随套件扩展。设计 SSOT = goodhub 仓 `docs/design/integration-test-refactor.md` §R3。
