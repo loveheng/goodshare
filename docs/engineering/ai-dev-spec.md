@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-11-01
+updated: 2026-11-08
 ---
 
 # AI 协作开发规范（engineering/）
@@ -60,6 +60,7 @@ updated: 2026-11-01
 
 - 停用词契约（D-3 重构 2026-11-01）：`generationParams.stopSequences: List<String>` **原始字符串下发**，编码判定下沉各 Runner Native 自治（自绑 tokenizer 实时 match）。**禁预编码 token id 跨后端下发**——GGUF（BPE 词表）与 `.litertlm`（SentencePiece）词表无关联，同一组 id 跨栈语义错乱。AIDL/Bridge/Runner 任一层改此契约须同轮修本条。
 - 生成参数其余键（`maxTokens`/`temperature`/`topP`/`foreground`/`promptFilePath`）键名与缺省值单源 = goodhub `SessionTicketWire.GenerationParams`，禁缝外重抄。
+- 对外推理原语 `ai/complete`（2026-11-08 M-A 立法，goodhub ai-capability-export）：method 常量 / 生成阶段四值（`_meta.phase`）/ 结构化失败十二码 / `retry_after_ms` 字段键**单源 = goodhub-mcp-sdk 仓 `:contract` `McpContract.AI_*`（api.md §8）**；`config` 声明键（`maxTokens`/`temperature`/`responseFormat`）宿主装配映射进 `GenerationParams` 时禁另造键名成双源。接缝裁决 = ai-app-split.md §3.13。
 
 ### 工具描述引导（给 AI 的"接口文档"）
 

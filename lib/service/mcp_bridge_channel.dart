@@ -50,7 +50,8 @@ class McpBridgeChannel {
   }
 
   /// W6-a 端侧算力双向调用（UI 主 isolate → 原生 → Binder isolate → 宿主）：
-  /// [method] ∈ host/onDeviceComplete | host/onDeviceTaskStatus（宿主 Tier 1 契约）。
+  /// [method] ∈ ai/complete | host/onDeviceTaskStatus（宿主契约 0.5.0——
+  /// 2026-11-09 收编迁移：推理入口收口 ai/complete，拉取面仍私有）。
   /// 返回宿主 result 信封（含 content.text 联合态 JSON）；**null = 桥不可用**
   /// （非 Android / 宿主未连入 / 服务未拉起——调用方按「宿主离线」降级）。
   /// 宿主侧错误（配额/冷态拒绝/身份不可辨）以 [PlatformException] 抛出，

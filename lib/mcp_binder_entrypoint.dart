@@ -61,7 +61,8 @@ void mcpBinderMain() {
         return null;
       case 'onDeviceCall':
         // W6-a 双向调用（UI 主 isolate → 端侧反向请求）：args = {method, paramsJson}；
-        // method ∈ host/onDeviceComplete | host/onDeviceTaskStatus（宿主 Tier 1 契约）。
+        // method ∈ ai/complete | host/onDeviceTaskStatus（宿主契约 0.5.0——
+        // 2026-11-09 收编迁移：推理入口收口 ai/complete，拉取面仍私有）。
         // 结果字符串原样回传（宿主 result 信封）；McpRpcError 以 PlatformException 抛出，
         // 原生桥转 error 帧回 UI 侧（宿主失败显式可知，不静默吞）。
         final args = (call.arguments as Map).cast<String, Object?>();

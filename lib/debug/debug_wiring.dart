@@ -34,6 +34,7 @@ Map<String, Object?> _stateProvider() => <String, Object?>{
       // W6-a 端侧登记表快照（联调设施 §G1a）：e2e 断言「占位保持/摘登记/无残留」
       // 的状态真源，替代日志反推；语义 = tasksSnapshot()（空表 = 无在途 deferred）。
       'onDeviceTasks': OnDeviceAsyncService.instance.tasksSnapshot(),
+      'onDeviceEvents': OnDeviceAsyncService.instance.eventsSnapshot(),
       // host_sim 注入态回显（§G6）：e2e 前置复位检查。
       'hostSimNotReady': McpBridgeChannel.debugNotReady,
     };
@@ -66,6 +67,7 @@ Future<Object?> _executeGoodshareDebugAction(
   NavigatorState? navigatorOverride,
 }) async {
   if (action == 'edit_body') return _editBodyDebugAction(args);
+  if (action == 'on_device_analyze') return _onDeviceAnalyzeDebugAction(args);
   if (action == 'task_inject') return _injectTaskDebugAction(args);
   if (action == 'task_clear') return _taskClearDebugAction();
   if (action == 'set_caps') return _setCapsDebugAction(args);
@@ -119,6 +121,62 @@ Future<Object?> _editBodyDebugAction(Map<String, Object?> args) async {
     'action': 'edit_body',
     'itemId': target.id,
     'result': r.toJson(),
+  };
+}
+
+/// `on_device_analyze` 调试动作（ai-capability-export 收编迁移 e2e，2026-11-09）：
+/// 条目后台分析的**管线级直达**——经 [OnDeviceAsyncService.complete]
+///（迁移后消费链：反向帧 `ai/complete` + `allow_deferred`）发起，联合态分派：
+/// Deferred → [registerDeferred] 登记（占位/轮询/收敛与真实按钮同管线）；
+/// Immediate → 直接回产出。args：`{titleMatch, instruction?}`。
+Future<Object?> _onDeviceAnalyzeDebugAction(Map<String, Object?> args) async {
+  final titleMatch = args['titleMatch']?.toString() ?? '';
+  final instruction =
+      args['instruction']?.toString() ?? '用一句话概括以下内容，无前缀';
+  if (titleMatch.isEmpty) {
+    return <String, Object?>{
+      'ok': false,
+      'error': 'bad_args',
+      'detail': 'on_device_analyze 需要 {titleMatch, instruction?}',
+    };
+  }
+  final items = await goodshareRepo.list(limit: 200);
+  final target = items.firstWhere(
+    (it) => (it.humanTitle ?? '').contains(titleMatch),
+    orElse: () => throw StateError('title 未命中: $titleMatch'),
+  );
+  if (target.id == null) {
+    return <String, Object?>{'ok': false, 'error': 'not_found', 'detail': '条目无 id'};
+  }
+  final body = target.humanMd ?? '';
+  final outcome = await OnDeviceAsyncService.instance.complete(
+    instruction: instruction,
+    input: body,
+    allowDeferred: true,
+  );
+  if (outcome is OnDeviceDeferred) {
+    await OnDeviceAsyncService.instance.registerDeferred(
+      taskId: outcome.taskId,
+      itemId: target.id!,
+      bodyMd5: bodyMd5(body),
+      instruction: instruction,
+      expiryMs: outcome.expiryMs < 0 ? null : outcome.expiryMs,
+    );
+    return <String, Object?>{
+      'ok': true,
+      'action': 'on_device_analyze',
+      'mode': 'deferred',
+      'taskId': outcome.taskId,
+      'itemId': target.id,
+    };
+  }
+  final immediate = outcome as OnDeviceImmediate;
+  return <String, Object?>{
+    'ok': true,
+    'action': 'on_device_analyze',
+    'mode': 'immediate',
+    'text': immediate.text,
+    'itemId': target.id,
   };
 }
 

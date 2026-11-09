@@ -177,10 +177,35 @@ class OnDeviceAsyncService {
   late final StreamController<OnDeviceTaskEvent> _events =
       StreamController<OnDeviceTaskEvent>.broadcast();
 
+  /// 事件发射单点（含环形快照记录——禁旁路 add）。
+
   /// 结果到达时读当前正文指纹的端口（组合根注入 repo.byId → bodyMd5）。
   Future<String?> Function(String itemId)? _readBodyMd5;
 
   Stream<OnDeviceTaskEvent> get events => _events.stream;
+
+  /// 最近事件环形缓冲（调试桥 /debug/state 消费的自动化断言面——broadcast
+  /// 流无回放，迟接入的观察者读不到历史；快照 = 结果卡/失败收敛到达的
+  /// 机械取证，ai-capability-export 收编迁移 e2e 用）。
+  final List<OnDeviceTaskEvent> _eventLog = <OnDeviceTaskEvent>[];
+  static const int _eventLogCap = 10;
+
+  void _emit(OnDeviceTaskEvent e) {
+    _eventLog.add(e);
+    if (_eventLog.length > _eventLogCap) _eventLog.removeAt(0);
+    _events.add(e);
+  }
+
+  List<Map<String, Object?>> eventsSnapshot() => [
+        for (final e in _eventLog)
+          {
+            'kind': e.kind.name,
+            'taskId': e.taskId,
+            'itemId': e.itemId,
+            if (e.result != null) 'result': e.result,
+            if (e.reason != null) 'reason': e.reason,
+          },
+      ];
 
   /// 待处理任务快照（UI 占位恢复用：页面打开时查本条目是否有在途 deferred）。
   List<OnDeviceTaskRecord> tasksForItem(String itemId) =>
@@ -211,7 +236,9 @@ class OnDeviceAsyncService {
     });
   }
 
-  /// 发起端侧推理（反向 method `host/onDeviceComplete`）。
+  /// 发起端侧推理（标准原语 `ai/complete`，2026-11-09 收编迁移——
+  /// 契约 = goodhub-mcp-sdk api.md §8/§8.7 0.5.0；私有 method
+  /// `host/onDeviceComplete` 退役）。
   /// [allowDeferred] = false 时宿主冷态走同步 failFast（存量语义零变化）。
   /// 抛错语义：[OnDeviceHostUnavailable]（环境态）/ [PlatformException]（宿主失败帧）。
   Future<OnDeviceOutcome> complete({
@@ -220,13 +247,13 @@ class OnDeviceAsyncService {
     bool allowDeferred = false,
   }) async {
     final env = await _bridge.onDeviceCall(
-      'host/onDeviceComplete',
+      'ai/complete',
       {'instruction': instruction, 'input': input, 'allow_deferred': allowDeferred},
     );
     if (env == null) throw const OnDeviceHostUnavailable();
     final text = _extractText(env);
     if (text == null) {
-      throw StateError('host/onDeviceComplete 回程缺 content.text（宿主契约违约）');
+      throw StateError('ai/complete 回程缺 content.text（宿主契约违约）');
     }
     return OnDeviceOutcome.parse(text);
   }
@@ -361,7 +388,7 @@ class OnDeviceAsyncService {
     _tasks.removeWhere((t) => t.taskId == rec.taskId);
     await _save();
     _ensureTimer();
-    if (event != null && !_events.isClosed) _events.add(event);
+    if (event != null && !_events.isClosed) _emit(event);
   }
 
   /// 本地过期清账（expiryAtMs 已过 → failed 事件 + 摘登记）。

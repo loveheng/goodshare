@@ -1,6 +1,6 @@
 ---
 status: active
-updated: 2026-11-04
+updated: 2026-11-09
 ---
 
 # AI 宿主 App 拆分契约（M0 接缝）
@@ -157,9 +157,11 @@ capabilities 声明：`'sampling': {}`；语义 = MCP 标准 `sampling/createMes
 | 隔离与围栏（宿主侧） | 临时会话语义（goodhub architecture §15）：推理仅用请求自带消息，无记忆沙盒注入、无 UI 轨迹；N7 出站围栏经云引擎装饰器单咽喉自然覆盖 |
 | 宿主 Polyfill | server 未声明 sampling → 宿主不强制流式、不开消费 handler（Tier 2 零破坏）；宿主未启用 handler → server 请求收到 `-32601`，不悬挂 |
 
-### 3.11.2 端侧算力转发反向接缝 · host/onDeviceComplete（W5 增量，2026-11-04）
+### 3.11.2 端侧算力转发反向接缝 · host/onDeviceComplete（W5 增量，2026-11-04；**2026-11-09 退役——收编进 `ai/complete`**）
 
-- **私有反向 method（Tier 1，与 sampling/createMessage 并列）**：同机插件 App 经 `tools/call` 请求作用域内的反向请求帧发 `{"jsonrpc":"2.0","id":"srv_<n>","method":"host/onDeviceComplete","params":{"instruction":"<任务指令>","input":"<原文>"}}`，宿主经**端侧供给面**单发推理并回 result `{"role":"assistant","model":"goodhub-on-device","content":{"type":"text","text":"<产出>"}}`。
+> **退役状态（2026-11-09 用户拍板「收编进 ai/complete」）**：推理入口收口标准原语 `ai/complete`（§3.13 + 契约仓 api.md §8/§8.7 0.5.0——`allow_deferred`/`expiry_ms` 已收编进 params，联合态回执形状与解析纪律不变）；**goodshare 消费面已迁移**（`on_device_service.complete` + `mcp_server.onDeviceComplete` 均发 `ai/complete`）。拉取面 `host/onDeviceTaskStatus` **保留**（Pull = 交付真理源，引用 ai/complete 回执 task_id）。宿主侧旧 method 响应**已删除**（2026-11-09 退役清账：宿主回 -32601，退役钉 = goodhub `reverse_wiring_test`「host/onDeviceComplete 退役」防复活）；SDK plugin-core 0.5.1 起 `REVERSE_METHOD` 切 `ai/complete`（`McpToolContext.onDeviceComplete` 签名零变化）。以下原文留档（历史接缝形状）。
+
+- **私有反向 method（Tier 1，与 sampling/createMessage 并列；已退役）**：同机插件 App 经 `tools/call` 请求作用域内的反向请求帧发 `{"jsonrpc":"2.0","id":"srv_<n>","method":"host/onDeviceComplete","params":{"instruction":"<任务指令>","input":"<原文>"}}`，宿主经**端侧供给面**单发推理并回 result `{"role":"assistant","model":"goodhub-on-device","content":{"type":"text","text":"<产出>"}}`。
 - **与 sampling/createMessage 并存不互替**：sampling 反向请求走宿主**云端**引擎；本接缝走宿主**端侧**算力（离线/低延迟/不耗宿主云端成本），由转发方按需选择。
 - **降级语义显式可知（红线）**：端侧算力尽力而为——未装载/降级窗口/PII 拦截/并发与频次超限均回 error 帧（code -32000，message 含原因与「宿主不兜底云端」提示），**宿主不自动兜底云端**，转发方须自行处置失败；调用幂等无副作用，可重试。
 - **配额**：宿主侧 K22 事务语义（并发上限 2 执行槽 + 频次滑动窗口 20 次/60min，复用反向请求配额池形态；频次仅实际产出计入）。
@@ -222,6 +224,28 @@ capabilities 声明：`'sampling': {}`；语义 = MCP 标准 `sampling/createMes
 - **无通知能力 = 零影响**：不发通知 / 宿主不支持 → 退化为纯拉模型（catch-up 兜底），与本节之前行为完全一致
 - 与 sampling（§3.11）**通道共存**：两者共用 `onEvent`，靠「有无 id」路由（反向请求有 id+method，通知无 id）——`BinderTransport` 已实现该路由，零冲突
 - §3.2 / §3.3 / §3.4 语义**零变更**（claim/touch/apply 参数、返回、幂等、乐观锁全部不变）
+
+### 3.13 对外 AI 能力原语 · ai/complete（2026-11-08 M-A 立法，goodhub ai-capability-export）
+
+> 推理能力反向输出的统一接入标准：外部 App 消费 goodhub 的 AI 算力。宿主只供 `complete(instruction, input, config) -> 聚合文本` 一个原语（能力原语化裁决不破），任务语义由调用方编排。设计稿 = goodhub 仓 `docs/design/ai-capability-export.md`；**线级契约正文单源 = goodhub-mcp-sdk 仓 `api.md` §8 + `:contract` `McpContract.AI_*` 常量组（0.4.0），本文只装接缝裁决，禁复制报文细节**。
+
+| 项 | 契约 |
+|---|---|
+| method | `ai/complete`（推理原语）+ `ai/cancel`（异步取消，幂等）——JSON-RPC method 层扩展，**AIDL 接口签名零变更** |
+| 承载通道 | 本地插件经 `IMcpCallback.onEvent` 推反向请求帧（有 id+method）→ 宿主经 `IMcpChannel.answerReverse` 回帧；远程调用方走网关投影 `host__ai__complete`（Allowlist 显式登记过三关） |
+| 长任务 | 沿用 `_async` 约定（§1.2.2 同形）：宿主立即回 `{"_async": true}`，progress 帧 + 同 id 终帧经 `onEvent` 推送 |
+| 进度语义 | `notifications/progress` 的 `params._meta.phase` 四值（`STARTING_HOST`/`LOADING_MODEL`/`QUEUING`/`GENERATING`）；`_meta.delta` 为 v2 流式预留位，v1 禁发射（UTF-8 半字符红线） |
+| 失败语义 | 结构化十二码表（`error.code = -32000` + `error.data.status`；含 `DEVICE_THROTTLED`/`PREEMPTED_BY_HOST`），`data.retry_after_ms` 仅提示非承诺、SDK 不自动重试 |
+| 文本边界 | `input` 禁 Base64 媒体；超 128KB 线回 `BUDGET_EXCEEDED` 诚实降级（`mcp-blob://` 留真实撞线后二期） |
+| 路由权（D1 拍板） | 端侧 / 云端由设备主在 goodhub 设置选择，`config` 不含路由字段；`completeSync` 便捷壳固定默认端侧；云端档（BYOK 成本）对第三方调用方逐个显式授权 |
+
+**推理路由收口（D2 拍板，封死双推理路由）**：
+
+- `sampling/createMessage`（§3.11）**保留兼容对外**（存量插件契约），宿主实现退化为 `ai/complete` 的适配壳——`pool` 分池配额语义不变。
+- `host/onDeviceComplete`（§3.11.2）私有 method 收口：退役或映射为 `ai/complete` 别名，迁移期两法并存；`allow_deferred` 联合态语义并入 `ai/complete` 受理链（W6 任务池为宿主内部实现，不外泄协议面）。
+- 三路径（sampling / onDeviceComplete / ai/complete）收敛后共享同一宿主受理链：隔离临时会话、K22 配额、K17 死亡联动、ops.log 审计各只写一遍。
+
+**宿主回归锚**：goodhub `test/coordinator/ai_complete_service_test.dart`（20 例：路由三态/隔离/取消幂等/死亡清理/fast-fail/保活三钥匙/温控熔断/抢占未让出/预算/配额/联合态收编三例）+ `app_capability_profile_test.dart`（8 例）+ 真机 e2e 四枪（2026-11-08：投影成功/冷态 fast-fail/消费端 Binder 全链/TaskStatus 修复）。**收编迁移回归** = goodshare 855 例全绿（2026-11-09）。
 
 ## 4. 占位守卫（M2 验收第一条）
 

@@ -80,6 +80,10 @@ PRAGMA sqlite_version 在 sqflite_common_ffi 返回空结果集，快照代码 .
 
 ## 待归并（inbox）
 
+- [on-device-engine] 引擎装载 GPU backend 稳定失败 Input tensor not found（同文件昨天能跑今天不能——文件完整性对账 complete:true 排除截断，一度误判源文件损坏） ➔ 数据清零（integration test 装机）同时删了两族运行库；litertlm 模型的 NPU 档运行库缺位 → Runner 静默 fallback GPU → 该模型 GPU delegate 输入签名不兼容即报 tensor not found——**运行库缺位的 fallback 失败伪装成模型损坏** ➔ 设置页装回 LiteRT-LM NPU 运行库（litertlm-npu-install，65MB 级下载件）即愈（NPU 档 112ms TTFT）；排查顺序 = 先 asset_probe 对账文件 → 再查运行库安装态（两族运行库是数据目录内的下载件，随数据清零消失） (Ref: goodhub-local-plugin) (Ref: goodhub-local-plugin)
+
+- [flutter] 跑 flutter test integration_test/*.dart -d <device> 后真机 App 数据全清（模型资产/池 WAL/SharedPreferences 全没——host 侧 asset_probe 取证 modelsDirExists=false，on_device_analyze 从宿主未连入漂移到 no_target_model） ➔ flutter tool 对 integration_test 的 Android 装机走 uninstall+install（非 install -r），数据目录随卸载清零；表象与宿主未连入/未信任混同误导定位 ➔ 跑 integration e2e 后必须重建正式入口并预期数据清零（涉及模型资产的真机验证在 e2e 后重导入）；真机状态取证用桥只读 action（pool_dump/asset_probe）替代日志反推——asset_probe 即本轮补的取证面 (Ref: goodhub-local-plugin) (Ref: goodhub-local-plugin)
+
 - [e2e] 现象: 护栏已触发但验收报「version 变了，回写未被整批拒绝」 | 根因: extract_tags/summarize 入队命令本身写 is_processed=0 并递增 version，拿造条目后的旧 version 当基准会误判 | 处置: 入队后再取一次 get_item 快照作为「回写是否发生」的 version 基准，护栏路径要求 version 与入队后相同 | 回归: ai-e2e --case tags --repeat 3 3/3 护栏生效 PASS；报告 evidence.versionAtEnqueue 可核对 (Ref: ai-e2e-pilot)
 
 ## 真机自动化（e2e）

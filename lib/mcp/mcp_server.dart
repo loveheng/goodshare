@@ -265,10 +265,11 @@ class McpServer {
       }));
       return _serverRequest('sampling/createMessage', sParams, sseFrame);
     }
-    // W6-a 端侧算力通路（on-device-residency 第七节）：与 sampling 并列，
-    // 经宿主导出面 on_device_complete 调端侧引擎（allow_deferred 可选）。
+    // 端侧算力通路（2026-11-09 收编迁移：标准原语 `ai/complete`，契约
+    // = goodhub-mcp-sdk api.md §8/§8.7 0.5.0；私有 method
+    // `host/onDeviceComplete` 退役——allow_deferred 已收编进 params）。
     Future<Object?> onDeviceComplete(Object? odParams) async {
-      return _serverRequest('host/onDeviceComplete', odParams, sseFrame);
+      return _serverRequest('ai/complete', odParams, sseFrame);
     }
     try {
       final content = await callTool(name, args, repo, sampling: sampling, onDeviceComplete: onDeviceComplete);
@@ -357,7 +358,7 @@ class McpServer {
   Future<Object?> _binderSampling(Object? sParams) =>
       _serverRequest('sampling/createMessage', sParams, _emitOnEvent);
 
-  /// W6-a 端侧算力反向请求（host/onDeviceComplete | host/onDeviceTaskStatus）：
+  /// 端侧算力反向请求（ai/complete | host/onDeviceTaskStatus，契约 0.5.0）：
   /// 与 sampling 共用 onEvent + answerReverse 通道（method 名通用，宿主按 method 路由，
   /// 联合态装进现有 JSON 信封——ai-app-split.md §3.11.2 / on-device-residency 第七节）。
   ///

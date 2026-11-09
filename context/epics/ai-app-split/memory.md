@@ -33,3 +33,4 @@ last-merge: 2026-10-13
 ## 断点
 - [断点] **W6-a 真机验收全绿收官（2026-11-08）**：六项清单 ①-⑥ 全部 ✓——⑤ not_found / ⑥ stale 本轮补齐（`task_inject` + `edit_body` 调试设施，真机实证：not_found 注记 + 摘登记；stale 失败注记 + 结果不落库），详见 devlog 2026-11-08 收官条。消费端（goodshare）Scope 闭环；遗留 = freezer 加固（FGS）另立排期、样本条目带测试 append 痕迹。
 - [断点]（2026-10-15，历史）ai-app-split 本仓 Scope 收官：M1 三工具 ✅ / M2 减法 ✅ / M2.5+3 契约扩展 ✅ / 宿主闭环 ✅。后续：ai-template P2 可开工、按宿主反馈补接缝（附件通道 FileProvider 延后件 / 长任务 progress 中途帧）、4B 端侧实测归宿主账本。
+- [断点] **ai-app-split epic 收尾（2026-11-09）**：核心 Scope 全绿收官——M1/M2/M3/M4 全完成 + W6-a 真机验收六项清单 ①-⑥ 全绿 + §G1-G6 联调设施补全；本仓改动（W6-a 收官 `task_inject`/`edit_body` 调试设施 + §G1-G6 + 契约/工程文档）已提交。遗留 = 四项 `候` 级延后件转出（端侧宿主离线补发 / 云端无终态 / 宿主 pendingDelivery 清账 / freezer FGS 加固）；on-device executor 空产出 = litertlm 0.16.0 NPU 栈 SDK 缺陷（R4 升 AAR 0.18.1 待拍板，已绕 Qwen3.5-2B 验收基准档，不归本 epic 修）。
