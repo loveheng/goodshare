@@ -1,8 +1,8 @@
 {
-  "versionCode": 8070,
-  "versionName": "1.3.2",
+  "versionCode": 8071,
+  "versionName": "1.3.3",
   "applicationId": "com.zzh.goodshare",
-  "apkUrl": "https://r2.oklhj.eu.org/updates/goodshare/goodshare-v1.3.2.apk",
-  "sha256": "6465ede5b0179b5c7a5ef3224dfa3caba0ca2471453280f76adb00cb77644d78",
-  "changelog": "chore(mcp): 接入 goodhub-mcp-plugin-core 0.2.0 并统一中文展示名「拾贝」"
+  "apkUrl": "https://r2.oklhj.eu.org/updates/goodshare/goodshare-v1.3.3.apk",
+  "sha256": "a2e3599a80536ce08811649b6606066824689cb16a9dac6ae46264ff3fc05be0",
+  "changelog": "chore(release): 升级 goodhub-mcp-sdk 至 0.6.0，应用升版 1.3.3"
 }
